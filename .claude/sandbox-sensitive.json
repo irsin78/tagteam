@@ -1,0 +1,74 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [],
+    "filesystem": {
+      "denyRead": [
+        "~/.claude",
+        "~/.ssh",
+        "~/.aws",
+        "~/.codex",
+        "~/.gemini",
+        "~/.config/gh",
+        "~/.netrc",
+        "~/.npmrc",
+        "~/.pypirc",
+        "~/.docker",
+        "~/.kube",
+        "~/.config/gcloud"
+      ]
+    },
+    "credentials": {
+      "files": [
+        {
+          "path": "~/.claude/.credentials.json",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.ssh",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.aws",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.codex/auth.json",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.netrc",
+          "mode": "deny"
+        }
+      ],
+      "envVars": [
+        {
+          "name": "GITHUB_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "GH_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "NPM_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "mode": "deny"
+        },
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "mode": "deny"
+        }
+      ]
+    },
+    "network": {
+      "allowedDomains": [],
+      "strictAllowlist": true
+    }
+  }
+}

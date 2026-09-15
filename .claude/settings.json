@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "subagentPromptCacheTtl": "1h",
+  "worktree": {
+    "baseRef": "head"
+  },
+  "env": {
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "4"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(bash .claude/scripts/codex-run.sh:*)",
+      "Bash(bash .claude/scripts/claude-run.sh:*)",
+      "Bash(bash .claude/scripts/control-plane-hash.sh:*)",
+      "Bash(bash .claude/scripts/agy-run.sh:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git commit:*)",
+      "Bash(where.exe:*)",
+      "Bash(which:*)"
+    ],
+    "ask": [
+      "Bash(HARNESS_ALLOW_FULL_ACCESS=*)",
+      "Bash(HARNESS_ALLOW_CONTROL_PLANE=*)",
+      "Bash(HARNESS_ALLOW_REMOTE_DELETE=*)",
+      "Bash(HARNESS_ALLOW_AGY_COMMAND=*)",
+      "Bash(HARNESS_ALLOW_UNTRUSTED_HOOKS=*)",
+      "Bash(HARNESS_ALLOW_WORKTREE_RESET=*)",
+      "Bash(git push:*)",
+      "Bash(bash .claude/scripts/local-run.sh:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
+      "Bash(git checkout --:*)",
+      "Bash(rm -rf .git:*)",
+      "Bash(rm -r .git:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.codex/auth.json)",
+      "Read(~/.gemini/oauth_creds.json)",
+      "Read(~/.gemini/google_accounts.json)",
+      "Read(~/.netrc)",
+      "Read(~/.config/gh/hosts.yml)",
+      "Read(~/.npmrc)",
+      "Read(~/.pypirc)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.kube/config)",
+      "Read(~/.config/gcloud/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/deny_dangerous.py"
+            ],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/deny_dangerous.py"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/session_preflight.py"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/stop_gate.py",
+              "--new-prompt"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/stop_gate.py"
+            ],
+            "timeout": 300
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/verify_delegation.py"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

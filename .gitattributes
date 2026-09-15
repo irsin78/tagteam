@@ -1,0 +1,16 @@
+# Line endings: LF everywhere — in the repository AND in the working copy
+# on every platform. Every consumer of this harness (bash, python, pwsh,
+# Claude Code's own file tools) handles LF, and those tools write LF, so a
+# platform-native (CRLF-on-Windows) working copy only produced a mixed
+# tree plus "LF will be replaced by CRLF" noise, and a checkout that
+# rewrote LF -> CRLF changed the raw-byte control-plane hashes
+# (session_preflight.py / control-plane-hash.sh) with no content change.
+#
+# `text=auto` normalizes content Git detects as text to LF on commit;
+# `eol=lf` fixes the working-copy ending regardless of the machine's
+# core.autocrlf / core.eol. No per-machine git config is required
+# (measured 2026-09-03, git 2.55: `* text=auto` alone already converted
+# on checkout under core.autocrlf=false, so the old "set autocrlf=true
+# on every machine" step was never necessary). Shell scripts in
+# particular must stay LF — CRLF breaks the shebang on macOS/Linux.
+* text=auto eol=lf

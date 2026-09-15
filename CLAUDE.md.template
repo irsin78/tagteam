@@ -1,0 +1,107 @@
+# Claude Code harness instructions
+
+<!-- Copy to CLAUDE.md in the project root or merge with existing
+     instructions. Fill Project policy. No global host switch is needed. -->
+
+## Resolve this session's role first
+HARNESS_DELEGATE_RUN=1 or a parent-assigned task means DELEGATE: role is already
+resolved. Skip the Orchestrator workflow and all its linked reading/setup.
+Do not run harness-route.py or load harness rules/manuals for onboarding.
+Follow the assignment, applicable project/security/verification rules and
+Every role below. Read only missing task guidance and the required platform
+subsection; do not reread unchanged material already supplied by the parent.
+Otherwise, human-started Claude Code is the ORCHESTRATOR (host `claude`),
+regardless of terminal, desktop or IDE.
+
+<!-- norm:commit-orchestrator-only -->
+Only the orchestrator performs authorized git commit/push/merge. Delegates
+never commit/push, destroy history or revert existing work. A task does
+not authorize unrelated external actions. Reuse authorization already given.
+<!-- norm:control-plane-forbidden -->
+Delegates cannot edit harness enforcement/configuration (the control plane),
+except scoped maintenance through an already authorized launcher with
+HARNESS_ALLOW_CONTROL_PLANE=1; commit/push remain forbidden. The orchestrator
+may maintain the harness within the user's task. Host permissions and the
+direct-command accident checks still apply; no universal containment guarantee is made.
+See docs/runtime-boundary.md for default hooks, optional tools and their limits.
+
+## Orchestrator workflow
+Read `.claude/rules/session-role.md` for the shared role and execution contract.
+Git is optional and does not change the host. Use the shared process launchers
+from the project root in non-Git projects; Git worktree agents require Git.
+Resolve delegated work with
+`python .claude/scripts/harness-route.py --host claude --role implement`.
+
+<!-- norm:delegation-route -->
+Before choosing direct implementation or delegation, read only "Direct work or
+delegation" in `docs/orchestration/delegation-matrix.md`. When delegating, also use
+its assignment and author-separation sections; read fallback only when needed.
+Handle targeted reads directly. Several new behaviors with interacting
+input/output/validation paths take the cross-vendor route even inside one file,
+and a same-vendor native worker is not an independent substitute for it. If a
+direct change grows past the scope you actually inspected, stop expanding it,
+preserve the partial work, say so and delegate the remaining implementation;
+continue without waiting for a new user turn.
+<!-- norm:delegation-announcement -->
+Before launching, state task, capability tier with its reason, and the actual
+model/effort and selection reason. Announce changed assignments. Follow the
+matrix's announcement contract; this adds no approval pause.
+<!-- norm:verification-tiers -->
+Use `.claude/rules/verification-tiering.md` for affected checks and risk-based
+independent review, and `delegate-output-trust.md` for inspecting actual worker
+output before relying on it. Read `docs/orchestration/retry-policy.md` when
+diagnosing failures. Reuse valid evidence; required checks that cannot pass
+are incomplete, not a reason to loop.
+<!-- norm:budget-declaration -->
+Budget: HARNESS_BUDGET > local bindings budget > normal.
+Usage is declared; session startup makes no quota or endpoint request. Tight budget drops optional work, not required checks;
+an exhausted vendor follows the matrix's availability fallback. Never switch the
+main host/model automatically for quota exhaustion or keep cycling through workers.
+<!-- norm:mission-workflow -->
+For implementation, first read `.claude/rules/mission-artifacts.md` for mission
+files, the user-confirmed spec, the small grounded conversational-spec exception
+and the session continuation guard. Reuse prior confirmation and keep
+implementing, verifying and fixing until acceptance, across phases and reviews;
+only a new user decision/authorization, an explicit pause or a real blocker ends
+the turn, and announcing the next step is not performing it. `plan-check-gate.md`
+covers the conditional external plan review, not routine approval.
+Give workers the confirmed goal/spec, file scope/current inputs, constraints,
+verification and output contract; let them decide reversible details. Use the
+selected launcher directly. Read only its needed recipe in docs/harness-manual.md.
+
+If no fresh HARNESS PLATFORM output arrived, run
+`python .claude/scripts/harness-session.py start --host claude` from the root.
+Read the indicated platform note. If `.claude/.stop-gate` is present, run
+`python .claude/scripts/harness-session.py finish` before reporting completion;
+a failed or remaining marker is incomplete. Otherwise task verification is
+sufficient. These steps do not prove hook trust or replace PreToolUse guards.
+
+## Every role
+In a headless session, a denied command does not establish that all shell tools
+are unavailable. An already allowed task check may still run: use its known
+command as written. Do not rewrite a denied action to bypass permission; report
+that operation's limitation if approval is missing.
+
+Workers implement the assignment, do not spawn agents or model CLIs, and
+return CHANGED / VERIFY / NOTES or NEEDS_INPUT for missing requirements.
+If the environment blocks verification, return the changes and exact failed
+check for the parent to resolve; do not expand into permission repair or cleanup.
+Host launcher-controller recipes are only for assignments explicitly asking
+for that bounded pipeline; they cannot spawn further controller agents.
+Apply `.claude/rules/security-boundary.md` to permission/data decisions.
+Use python/py on Windows and the route's real Bash `shell` path for .sh
+launchers (PowerShell: `& <shell> <launcher> ...`), not a WindowsApps alias.
+
+## Project policy (fill when applying this template)
+- Verification and acceptance: TODO (commands and observable completion criteria).
+- Conventions: TODO (path to existing project guidance).
+- Protected files/data and permitted worker scope: TODO (project-specific paths).
+- Consequential risks and required reviews: TODO (effects, not keyword lists).
+- External actions/release checks needing authorization: TODO (project workflow).
+- Model/role exceptions: `.claude/model-bindings.local.json` (see .example).
+
+Project policy supplies domain-specific detail; the template provides role,
+scope, permission and evidence contracts. Do not invent domain restrictions.
+Common changes need demonstrated reuse or a harness-contract defect. Reassess
+only policies affected by actual adoption, repeated failure or observed
+performance changes; docs/design-principles.md explains the scope.
