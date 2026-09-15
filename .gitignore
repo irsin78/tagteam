@@ -1,0 +1,91 @@
+### Claude Code harness
+# Per-machine accumulation: absolute paths, usernames, scratch dirs,
+# and past session queries. Never share this file.
+.claude/settings.local.json
+# Model bindings local layer: local endpoints, owned subscriptions, measured values
+.claude/model-bindings.local.json
+# Hook-produced local evidence (see .claude/hooks/)
+.claude/.delegation-log.jsonl
+.claude/.delegation-memory.json
+.claude/.preflight-status
+# Per-agent memory written by agents with `memory: project`. Machine- and
+# session-local; committing it would carry one machine's learnings into
+# every drop-in target.
+.claude/agent-memory/
+
+### macOS
+# Finder metadata
+.DS_Store
+
+# Thumbnails
+._*
+
+# Custom folder icons
+Icon
+
+
+# Volume root files
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+### Windows
+# Windows thumbnail cache files
+Thumbs.db
+
+# Folder config file
+[Dd]esktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows shortcuts
+*.lnk
+
+### Linux
+# Backup files
+*~
+
+# Temporary files from deleted open files
+.fuse_hidden*
+
+# KDE directory preferences
+.directory
+
+# Linux trash folder
+.Trash-*
+
+# NFS temporary files
+.nfs*
+# harness local artifacts
+.claude/codex-logs/
+.claude/agy-logs/
+.claude/claude-logs/
+.claude/local-logs/
+.claude/cmd-logs/
+.claude/.probe-cache
+# launcher regression fixtures (test_launchers.sh)
+.claude/.test-tmp/
+.claude/.stop-gate
+# Session-scoped mission pointers; durable task state stays in docs/missions/.
+.claude/.mission-open/
+# r15: orchestrator approval marker for settings changes, permission-prompt audit log, subagent worktrees
+.claude/.control-plane-approved
+.claude/.approvals.jsonl
+.claude/.denials.jsonl
+.claude/worktrees/
+__pycache__/
+
+# Legacy local planning history; new mission records under docs/missions/ are tracked.
+.planning/
+# Raw mission logs and disposable scratch data, not intent/spec/plan/state.
+docs/missions/**/logs/
+docs/missions/**/scratch/
+# Diagnostic payload dump: kept ignored so that re-enabling the dump can
+# never commit raw payloads.
+.claude/.payload-dump
+.claude/.payload-dump.jsonl

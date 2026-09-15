@@ -1,0 +1,857 @@
+{
+  "schema_version": 1,
+  "description": "Role -> tier -> binding. The rules (rules/) speak only of tiers and roles; the concrete model and effort are set here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
+  "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole). harness-route.py selects a route from host_routes, the role, the bindings and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
+  "updated": "2026-09-10",
+  "catalog_checked": "2026-09-06",
+  "tiers": {
+    "A": {
+      "name": "Top-level judgment",
+      "signals": [
+        "open decisions",
+        "ambiguity or cross-cutting scope",
+        "blast radius",
+        "audience level"
+      ]
+    },
+    "B": {
+      "name": "Strong reasoning",
+      "signals": [
+        "strong reasoning needed, but the open decisions are closed"
+      ]
+    },
+    "C": {
+      "name": "Standard",
+      "signals": [
+        "implementation or writing against a closed spec"
+      ]
+    },
+    "D": {
+      "name": "Mechanical",
+      "signals": [
+        "mechanical work",
+        "isolation duty"
+      ]
+    }
+  },
+  "vendors": {
+    "claude": {
+      "host": "Claude Code",
+      "quota": "Claude plan"
+    },
+    "openai": {
+      "cli": "codex",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "quota": "ChatGPT plan",
+      "guidance_checked": "2026-09-09",
+      "guidance_sources": [
+        "https://developers.openai.com/api/docs/guides/latest-model",
+        "https://developers.openai.com/api/docs/models/gpt-6-astra",
+        "https://learn.chatgpt.com/docs/models",
+        "https://learn.chatgpt.com/docs/config-file/config-reference"
+      ],
+      "effort_note": "The Astra API lists low/medium/high/xhigh/max explicitly. Codex app Ultra is an automatic sub-agent mode; the delegation launcher and router refuse it under the no-redelegation contract. max is -b only. The enumeration in the official config-reference is separate and does not replace a measured success on the installed CLI. The human main session's model and mode are never changed.",
+      "catalog": {
+        "checked": "2026-09-06",
+        "source": "~/.codex/models_cache.json (codex-cli 0.153.4)",
+        "listed": [
+          "gpt-6-astra (priority 1, efforts low..ultra, default medium)",
+          "gpt-5.6-sol",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
+          "gpt-5.5",
+          "gpt-5.4-mini",
+          "gpt-5.3-codex-spark"
+        ]
+      }
+    },
+    "google": {
+      "cli": "agy",
+      "launcher": ".claude/scripts/agy-run.sh",
+      "quota": "Google AI plan",
+      "catalog": {
+        "checked": "2026-09-06",
+        "source": "agy models (agy 1.1.26)",
+        "listed": [
+          "gemini-3.8-flash (high/medium/low)",
+          "gemini-3.7-flash (high/medium/low)",
+          "gemini-3.6-flash",
+          "gemini-3.1-pro (high/low)"
+        ]
+      }
+    },
+    "local": {
+      "status": "unverified",
+      "endpoint": null,
+      "properties": [
+        "zero marginal token cost",
+        "no quota",
+        "data never leaves the LAN (which does not mean the same machine — security-boundary.md)"
+      ],
+      "note": "Model, hardware and endpoint live in model-bindings.local.json. vendors.local.endpoint requires base_url and model; wire, max_tokens and max_input_chars are optional. The request timeout is local-run.sh -t seconds (default 300, max 570). Requests happen only through local-run.sh; SessionStart never queries the server. Input format, access limits and failure handling: docs/runtime-boundary.md. Addresses, model names and measured figures stay in local settings only."
+    }
+  },
+  "bindings": {
+    "A": {
+      "claude": {
+        "role": [
+          "orchestrate",
+          "decide"
+        ],
+        "tier": "A",
+        "vendor": "claude",
+        "model": "claude-fable-5-1",
+        "effort": "xhigh",
+        "ttft_s": 110,
+        "endpoint": "claude-code",
+        "evidence": "experience",
+        "sources": [
+          "artificial_analysis"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "note": "For work that needs high judgment. The user keeps the main session's model choice. AA 9-06: xhigh 54* (max 57/$6.12/274s) — on par with GPT-6 Astra xhigh (54) and Opus 5 max (54). An index marked * is an AA estimate (cost not shown).",
+        "intelligence_index": 54,
+        "effective_cost": null,
+        "deepswe_pass1": {
+          "_model": "claude-fable-5 (5.1 not listed)",
+          "high": 0.69,
+          "xhigh": 0.7,
+          "max": 0.7
+        }
+      },
+      "openai": {
+        "role": [
+          "decide"
+        ],
+        "tier": "A",
+        "vendor": "openai",
+        "model": "gpt-6-astra",
+        "effort": "high",
+        "ttft_s": 103,
+        "endpoint": "codex-cli",
+        "evidence": "leaderboard",
+        "sources": [
+          "artificial_analysis",
+          "deepswe",
+          "llm_stats"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "note": "Route for work that needs high judgment. The current default effort is high; xhigh is requested explicitly when needed. Judge per-effort performance, cost and latency together with the measurements below.",
+        "intelligence_index": 54,
+        "effective_cost": 1.85,
+        "deepswe_pass1": {
+          "low": 0.67,
+          "medium": 0.73,
+          "high": 0.73,
+          "xhigh": 0.74,
+          "max": 0.73
+        }
+      }
+    },
+    "B": {
+      "claude": {
+        "role": [
+          "orchestrate",
+          "decide",
+          "review",
+          "image_verify"
+        ],
+        "tier": "B",
+        "vendor": "claude",
+        "model": "claude-opus-5",
+        "effort": "high",
+        "ttft_s": 21,
+        "endpoint": "claude-code",
+        "evidence": "leaderboard",
+        "sources": [
+          "artificial_analysis",
+          "deepswe",
+          "llm_stats"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "note": "Tier B judgment, verification and implementation route. Does not pin the main session's model. AA 9-06 52/$2.44/21s, DeepSWE high 73%.",
+        "intelligence_index": 52,
+        "effective_cost": 2.44,
+        "deepswe_pass1": {
+          "low": 0.58,
+          "medium": 0.69,
+          "high": 0.73,
+          "xhigh": 0.73,
+          "max": 0.74
+        }
+      },
+      "openai": {
+        "role": [
+          "decide",
+          "review",
+          "implement"
+        ],
+        "tier": "B",
+        "vendor": "openai",
+        "model": "gpt-6-astra",
+        "effort": "medium",
+        "ttft_s": 11,
+        "endpoint": "codex-cli",
+        "evidence": "leaderboard",
+        "sources": [
+          "artificial_analysis",
+          "deepswe",
+          "llm_stats"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "deepswe_pass1": {
+          "low": 0.67,
+          "medium": 0.73,
+          "high": 0.73,
+          "xhigh": 0.74,
+          "max": 0.73
+        },
+        "intelligence_index": 52,
+        "effective_cost": 1.16,
+        "note": "Tier B judgment and verification, and the promotion candidate on the implementation ladder. The default implementation entry follows roles.implement.ladder. Judge current AA and DeepSWE figures together with latency and cost.",
+        "alternatives": [
+          {
+            "model": "gpt-5.6-sol",
+            "effort": "high",
+            "intelligence_index": 48,
+            "effective_cost": 0.61,
+            "ttft_s": 19,
+            "deepswe_pass1": {
+              "low": 0.45,
+              "medium": 0.61,
+              "high": 0.69,
+              "xhigh": 0.71,
+              "max": 0.73
+            },
+            "condition": "implementation ladder entry (ladder[0]) — measured; the cheapest tier-B band per task",
+            "evidence": "leaderboard",
+            "sources": [
+              "artificial_analysis",
+              "deepswe"
+            ]
+          }
+        ]
+      },
+      "local": {
+        "role": [],
+        "tier": "B",
+        "vendor": "local",
+        "evidence": "unrecorded",
+        "sources": [],
+        "updated": "2026-09-03",
+        "catalog_checked": "2026-09-03",
+        "status": "unverified",
+        "note": "spare"
+      }
+    },
+    "C": {
+      "claude": {
+        "role": [
+          "implement",
+          "write",
+          "review"
+        ],
+        "tier": "C",
+        "vendor": "claude",
+        "model": "claude-opus-5",
+        "effort": "medium",
+        "intelligence_index": 50,
+        "effective_cost": 1.36,
+        "ttft_s": 6.1,
+        "endpoint": "claude-code",
+        "evidence": "leaderboard",
+        "sources": [
+          "artificial_analysis"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "excluded": [
+          {
+            "model": "claude-sonnet-5",
+            "reason": "AA 9-06: Sonnet 5 max 45 / $3.31 / 204s vs Opus 5 medium 50 / $1.36 / 6.1s; DeepSWE Sonnet 5 max 54% ($26.40) vs Opus 5 medium 69% ($3.29) — behind on score, effective cost and time"
+          }
+        ],
+        "deepswe_pass1": {
+          "medium": 0.69
+        }
+      },
+      "openai": {
+        "role": [
+          "implement",
+          "write",
+          "review"
+        ],
+        "tier": "C",
+        "vendor": "openai",
+        "model": "gpt-6-astra",
+        "effort": "low",
+        "ttft_s": 2.5,
+        "endpoint": "codex-cli",
+        "evidence": "leaderboard",
+        "sources": [
+          "artificial_analysis",
+          "deepswe"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "note": "Standard work against a confirmed spec, and a candidate for the conditional review gate. The measured basis for low effort lives in this slot; the actual implementation route and alternatives follow roles.implement.",
+        "alternatives": [
+          {
+            "model": "gpt-5.6-terra",
+            "effort": "high",
+            "intelligence_index": 41,
+            "effective_cost": 0.3,
+            "ttft_s": 3.7,
+            "condition": "when a mechanical, closed-spec task is selected explicitly with -m (not listed on DeepSWE)",
+            "evidence": "leaderboard",
+            "sources": [
+              "artificial_analysis"
+            ]
+          },
+          {
+            "model": "gpt-5.6-luna",
+            "effort": "max",
+            "intelligence_index": 43,
+            "effective_cost": 0.1,
+            "ttft_s": 150,
+            "deepswe_pass1": {
+              "low": 0.02,
+              "medium": 0.11,
+              "high": 0.44,
+              "xhigh": 0.57,
+              "max": 0.67
+            },
+            "condition": "low-cost alternative for long implementations only, detached runs only (max means 2-4 minutes of latency on any vendor)",
+            "evidence": "leaderboard",
+            "sources": [
+              "artificial_analysis",
+              "deepswe"
+            ]
+          }
+        ],
+        "intelligence_index": 49,
+        "effective_cost": 0.63,
+        "deepswe_pass1": {
+          "low": 0.67
+        }
+      },
+      "google": {
+        "role": [
+          "write"
+        ],
+        "tier": "C",
+        "vendor": "google",
+        "model": "gemini-3.8-flash",
+        "effort": "medium",
+        "ttft_s": 8.3,
+        "output_speed_tps": 246,
+        "endpoint": "agy-cli",
+        "evidence": "leaderboard",
+        "sources": [
+          "artificial_analysis"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "note": "HTML/CSS specialty route. See the measurements below for the performance and latency gap between medium and high. Because agy restricts commands by default, any build or test it needs is confirmed on a separately allowed execution path.",
+        "intelligence_index": 47,
+        "effective_cost": null,
+        "deepswe_pass1": {
+          "medium": 0.71,
+          "high": 0.74
+        },
+        "alternatives": [
+          {
+            "model": "gemini-3.8-flash",
+            "effort": "high",
+            "intelligence_index": 47,
+            "effective_cost": 0.74,
+            "ttft_s": 10.4,
+            "output_speed_tps": 311,
+            "deepswe_pass1": {
+              "high": 0.74
+            },
+            "condition": "long writing or implementation (DeepSWE 74% $2.36; AA ties with medium)",
+            "evidence": "leaderboard",
+            "sources": [
+              "artificial_analysis",
+              "deepswe"
+            ]
+          }
+        ]
+      },
+      "local": {
+        "role": [],
+        "tier": "C",
+        "vendor": "local",
+        "evidence": "unrecorded",
+        "sources": [],
+        "updated": "2026-09-03",
+        "catalog_checked": "2026-09-03",
+        "status": "unverified",
+        "note": "spare, unverified"
+      }
+    },
+    "D": {
+      "claude": {
+        "role": [
+          "explore_fetch"
+        ],
+        "tier": "D",
+        "vendor": "claude",
+        "model": "claude-haiku-4-5",
+        "ttft_s": 19.6,
+        "endpoint": "claude-code",
+        "evidence": "leaderboard",
+        "sources": [
+          "artificial_analysis"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "note": "Non-reasoning, isolation duty. AA 9-06 22/$0.20; the listed first-chunk latency of 19.6s differs greatly from the 9-03 record (0.7s), so the measurement setup seems to have changed — recorded as shown on the page.",
+        "intelligence_index": 22,
+        "effective_cost": 0.2
+      },
+      "openai": {
+        "role": [
+          "explore_fetch"
+        ],
+        "tier": "D",
+        "vendor": "openai",
+        "model": "gpt-5.6-luna",
+        "effort": "high",
+        "intelligence_index": 37,
+        "ttft_s": 22,
+        "endpoint": "codex-cli",
+        "evidence": "leaderboard",
+        "sources": [
+          "artificial_analysis"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "alternatives": [
+          {
+            "model": "gpt-5.6-terra",
+            "effort": "medium",
+            "intelligence_index": 37,
+            "ttft_s": 1.7,
+            "condition": "default for image verification (codex -i)",
+            "evidence": "leaderboard",
+            "sources": [
+              "artificial_analysis"
+            ]
+          }
+        ],
+        "effective_cost": null,
+        "deepswe_pass1": {
+          "high": 0.44
+        },
+        "note": "Candidate for mechanical work. Judge capability and first-response latency as well as low cost; small reads can be handled directly."
+      },
+      "google": {
+        "role": [
+          "write"
+        ],
+        "tier": "D",
+        "vendor": "google",
+        "model": "gemini-3.8-flash",
+        "effort": "low",
+        "ttft_s": 0.8,
+        "endpoint": "agy-cli",
+        "evidence": "leaderboard",
+        "sources": [
+          "artificial_analysis"
+        ],
+        "updated": "2026-09-06",
+        "catalog_checked": "2026-09-06",
+        "status": "active",
+        "note": "Candidate for HTML/CSS and static prototypes. Follow specialties and the current measurements in this slot.",
+        "intelligence_index": 42,
+        "output_speed_tps": 265
+      },
+      "local": {
+        "role": [
+          "bulk_local_read"
+        ],
+        "tier": "D",
+        "vendor": "local",
+        "endpoint": "local-run.sh",
+        "evidence": "measured",
+        "sources": [],
+        "updated": "2026-09-04",
+        "catalog_checked": "2026-09-04",
+        "status": "conditional",
+        "note": "Optional route for tier-D bulk local reads (local-run.sh). Call it when needed, after confirming the endpoint declaration and the project's data boundary. There is no readiness check at start-up; availability failures are told apart by the actual call result. Model, address and figures stay in local settings only."
+      }
+    }
+  },
+  "roles": {
+    "orchestrate": {
+      "tier": [
+        "A",
+        "B"
+      ],
+      "session_default_tier": "B",
+      "switch": "User-selected main model stays selected; no automatic host/model switch.",
+      "note": "The host the human started is the orchestrator. Bindings are recommended tiers and never change an already chosen main model automatically."
+    },
+    "decide": {
+      "tier": [
+        "A",
+        "B"
+      ],
+      "vendor": "any",
+      "second_opinion": {
+        "when": "Consequential uncertainty unresolved by task checks, or project/user-required advice; not every planning folder.",
+        "vendor": "different from actual design author(s); defaults to host author unless --author-vendor supplied",
+        "tier": [
+          "A",
+          "B"
+        ],
+        "sandbox": "read-only",
+        "note": "max is -b + --wait only. Codex delegate ultra is refused because it redelegates automatically. Model and app support evidence follows vendors.openai.guidance_sources.",
+        "effort_rule": "Use the selected host/role binding and launcher-supported effort; no common vendor-independent effort floor."
+      }
+    },
+    "implement": {
+      "tier": [
+        "C",
+        "B",
+        "A"
+      ],
+      "ladder": [
+        {
+          "vendor": "openai",
+          "model": "gpt-5.6-sol",
+          "effort": "high"
+        },
+        {
+          "vendor": "openai",
+          "model": "gpt-6-astra",
+          "effort": "medium"
+        },
+        {
+          "vendor": "openai",
+          "model": "gpt-6-astra",
+          "effort": "high"
+        }
+      ],
+      "escalate_when": "one step, only when a reasoning shortfall is diagnosed",
+      "cheap_entry": {
+        "vendor": "openai",
+        "model": "gpt-5.6-luna",
+        "effort": "max",
+        "condition": "only for long closed-spec work where a completion cost/time gain is expected, detached runs only. The existing key name is kept for compatibility; this is not a cheapest-first policy."
+      },
+      "ladder_note": "Current model/effort values are the ladder entries above; older xhigh comparisons are measurements, not execution settings.",
+      "excluded_steps": [
+        {
+          "model": "gpt-5.6-sol",
+          "effort": "xhigh",
+          "reason": "DeepSWE 71% $3.60 TTFT 64s — behind Astra medium (73% $4.38 11s) on score and latency"
+        },
+        {
+          "model": "gpt-5.6-sol",
+          "effort": "max",
+          "reason": "DeepSWE 73% $6.46 TTFT 163s — Astra medium reaches the same score at 2/3 the cost and 1/15 the latency"
+        }
+      ],
+      "claude_ladder": [
+        {
+          "binding": "B/claude"
+        },
+        {
+          "binding": "A/claude"
+        }
+      ],
+      "claude_ladder_note": "Default implementation under Codex orchestration is B/claude. One step up to A/claude when a reasoning shortfall is diagnosed. Explicitly mechanical work: C/claude. Initial policy before tuning on real runs."
+    },
+    "write": {
+      "tier": [],
+      "tier_rule": "decided by audience and open decisions",
+      "vendor_rule": "decided by writing specialty (specialties); fields without a specialty use the tier default"
+    },
+    "review": {
+      "tier": [],
+      "tier_rule": "the risk tier is the floor",
+      "tier_floor_by_risk": {
+        "tier2": "B",
+        "tier1": "C",
+        "tier0": null
+      },
+      "tier1_route": "Affected checks + diff; when independent review is needed, review_gate with actual target authors (--author-vendor) selects a different vendor.",
+      "tier2_route": "review_deep (B+) with actual implementer authors; optional separate spec gate uses designer authors. Required pairs must also use different reviewer vendors.",
+      "tier2_inline_rule": "Supply focused inline context or an exact bounded readable file/range. If access is unavailable inline the target or report incomplete; never review unseen material.",
+      "tier2_vendor_precedence_exception": "Choose a vendor different from the author. The reviewer is not pinned to the orchestrating vendor, and when two reviews are required the reviewers must differ from each other too.",
+      "round_limit": 2,
+      "round_limit_note": "Normally one round; second only for a blocker. Confirmation counts; no recurring whole-repo review."
+    },
+    "image_verify": {
+      "tier": [
+        "D"
+      ],
+      "default": {
+        "vendor": "openai",
+        "model": "gpt-5.6-terra",
+        "effort": "medium",
+        "route": "codex -i"
+      },
+      "hard_cases": {
+        "vendor": "claude",
+        "tier": "B",
+        "model": "claude-opus-5",
+        "effort": "high"
+      },
+      "excluded": [
+        "gpt-5.6-luna",
+        "claude-haiku-4-5"
+      ]
+    },
+    "explore_fetch": {
+      "tier": [
+        "D"
+      ],
+      "claude_exhausted": {
+        "vendor": "openai",
+        "model": "gpt-5.6-luna",
+        "sandbox": "read-only"
+      },
+      "local_when": "Bulk local reads only; declared endpoint ready and tight/exhausted budget, subject to project data boundary. Never web content."
+    }
+  },
+  "vendor_precedence": {
+    "rationale": "Separating design, implementation and review across a perspective different from the author's comes first; spreading quota is a side benefit. The route is re-selected from the actual authoring vendor, risk and availability.",
+    "overridden_by": "specialties and hard constraints (vision, web, isolation, platform, data that must not leave) beat this order. Never the other way round.",
+    "by_orchestrator": {
+      "claude": [
+        "openai",
+        "google",
+        "claude",
+        "local"
+      ],
+      "codex": [
+        "claude",
+        "google",
+        "openai",
+        "local"
+      ]
+    },
+    "applies_to": [
+      "write",
+      "decide"
+    ],
+    "note": "Implementation, advisory and review routes are chosen per host through host_routes. The existing implement ladder is the OpenAI lane, claude_ladder the Claude lane. The HTML specialty is kept."
+  },
+  "budget": {
+    "declared_by": "user",
+    "rationale": "The user's declaration feeds route selection. No automatic usage lookup and no main-model switching.",
+    "resolution": [
+      "environment variable HARNESS_BUDGET",
+      "the budget key in .claude/model-bindings.local.json",
+      "normal (default)"
+    ],
+    "values": {
+      "normal": "No additional declared budget limit. Does not guarantee the account's actual remaining usage.",
+      "tight": "Keep the order; skip optional work only — second opinions, tier promotions.",
+      "exhausted:<vendor>": "Skip that vendor's slot. Example: exhausted:openai."
+    },
+    "note": "harness-route.py reads the declaration; a missing or unrecognised value is normal. SessionStart neither queries usage nor injects a BUDGET line. tight/exhausted never justify skipping required verification."
+  },
+  "specialties": [
+    {
+      "specialty": "HTML/CSS and static prototype authoring",
+      "vendor": "google",
+      "tiers": [
+        "C",
+        "D"
+      ],
+      "evidence": "experience",
+      "rationale": "experience + 5x output speed + separate quota"
+    },
+    {
+      "specialty": "writing: design documents / operating manuals / per-language text / commit and release notes",
+      "vendor": null,
+      "tiers": [],
+      "evidence": "unrecorded",
+      "rationale": "no writing score on the leaderboards — spare"
+    }
+  ],
+  "sources": {
+    "catalog": {
+      "artificial_analysis": {
+        "rank": "primary",
+        "name": "Artificial Analysis",
+        "url": "https://artificialanalysis.ai/leaderboards/models",
+        "provides": "intelligence index; cost, latency and speed per effort",
+        "updated": "2026-09-06",
+        "note": "9-06 index recalculation confirmed (scale_note). Cross-checked directly in a browser — matches the haiku-fetcher summary."
+      },
+      "deepswe": {
+        "rank": "secondary",
+        "name": "DeepSWE",
+        "url": "https://deepswe.datacurve.ai",
+        "provides": "long-horizon agentic implementation pass@1, effort sensitivity",
+        "updated": "2026-09-03",
+        "checked": "2026-09-06",
+        "note": "v1.1, 113 tasks, 2026-09-03 edition. The all-effort-levels grid was read directly in a browser. Terra and Fable 5.1 not listed (claude-fable-5 only).",
+        "rationale": "Updated later than the primary (AA) but measured on long-horizon agentic tasks, so it is highly reliable — hence secondary. When a new model is on AA but not yet on DeepSWE, fill the slot from the primary and re-check once DeepSWE lists it (policy.rules)."
+      },
+      "llm_stats": {
+        "rank": "cross-check",
+        "name": "LLM Stats",
+        "url": "https://llm-stats.com",
+        "provides": "sub-scores by field, Code Arena, list prices",
+        "updated": "2026-09-06",
+        "note": "GPT-6 Astra released 2026-09-04, list price $10/$50 per 1M, 1.1M ctx; Sol $5/$30; 3.7 Flash $0.75/$3.75. The 3.8 Flash page is unavailable (upstream recovery in progress) — no benchmark score shown."
+      },
+      "openlm": {
+        "rank": "reference",
+        "name": "openlm.ai aggregate",
+        "url": "https://openlm.ai",
+        "provides": "relative position of unlisted models",
+        "updated": "2026-09-03"
+      },
+      "vellum": {
+        "rank": "reference",
+        "name": "Vellum",
+        "url": "https://vellum.ai",
+        "provides": "relative position of unlisted models",
+        "updated": "2026-08-18"
+      }
+    },
+    "policy": {
+      "rules": "Fill a slot from the primary; confirm when the secondary lands in the same band, and when they disagree follow the secondary for long implementations only and record it in the evidence column. Items on neither source are filled from own measurements or experience, with the evidence type marked.",
+      "recheck_trigger": "Actual model adoption, repeated task failure or observed performance change; reassess only affected bindings/policies.",
+      "last_recheck": {
+        "date": "2026-09-06",
+        "trigger": "gpt-6-astra listed in the codex catalog / gemini-3.8-flash in the agy catalog + AA publishing effort grids for both"
+      }
+    }
+  },
+  "scale_note": "Re-checked 2026-09-06: the AA intelligence index was recalculated, so 9-03 records (e.g. Opus 5 medium 59/$0.72) are not directly comparable. Every intelligence_index, effective_cost and ttft_s in this file is on the 9-06 scale (e.g. Opus 5 medium 50/$1.36/6.1s). Trigger for the re-check: gpt-6-astra in the codex catalog and gemini-3.8-flash in the agy catalog.",
+  "host_routes": {
+    "claude": {
+      "implement": {
+        "vendor": "openai",
+        "launcher": ".claude/scripts/codex-run.sh",
+        "ladder": "ladder",
+        "sandbox": "workspace-write",
+        "fallback": "host-native worker; see docs/orchestration/delegation-matrix.md"
+      },
+      "decide": {
+        "vendor": "openai",
+        "launcher": ".claude/scripts/codex-run.sh",
+        "binding": "A/openai",
+        "sandbox": "read-only"
+      },
+      "plan_review": {
+        "vendor": "openai",
+        "launcher": ".claude/scripts/codex-run.sh",
+        "binding": "A/openai",
+        "sandbox": "read-only"
+      },
+      "review_gate": {
+        "vendor": "openai",
+        "launcher": ".claude/scripts/codex-run.sh",
+        "binding": "C/openai",
+        "sandbox": "read-only"
+      },
+      "review_deep": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "B/claude",
+        "sandbox": "read-only"
+      },
+      "explore": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "D/claude",
+        "sandbox": "read-only"
+      },
+      "web": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "D/claude",
+        "sandbox": "read-only",
+        "claude_role": "web"
+      },
+      "write": {
+        "vendor": "openai",
+        "launcher": ".claude/scripts/codex-run.sh",
+        "binding": "C/openai",
+        "sandbox": "workspace-write"
+      }
+    },
+    "codex": {
+      "implement": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "ladder": "claude_ladder",
+        "sandbox": "workspace-write",
+        "fallback": "host-native worker; see docs/orchestration/delegation-matrix.md"
+      },
+      "decide": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "A/claude",
+        "sandbox": "read-only"
+      },
+      "plan_review": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "A/claude",
+        "sandbox": "read-only"
+      },
+      "review_gate": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "C/claude",
+        "sandbox": "read-only"
+      },
+      "review_deep": {
+        "vendor": "openai",
+        "launcher": ".claude/scripts/codex-run.sh",
+        "binding": "B/openai",
+        "sandbox": "read-only"
+      },
+      "explore": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "D/claude",
+        "sandbox": "read-only"
+      },
+      "web": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "D/claude",
+        "sandbox": "read-only",
+        "claude_role": "web"
+      },
+      "write": {
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "C/claude",
+        "sandbox": "workspace-write"
+      }
+    }
+  },
+  "selection_policy": {
+    "basis": "Benchmarks (capability, cost, latency, source, date) set initial bindings. Preserve measured scores and distinguish unmeasured cells.",
+    "objective": "Sufficient task capability at efficient total completion cost/time, including handoff, verification and retries.",
+    "adjust_when": "Repeated real-task mismatch; inspect existing run evidence and use local overrides for project-specific differences.",
+    "scope": "No new composite score, obligatory telemetry or global policy review merely for a model release.",
+    "cross_review": "Host chooses the orchestrator; actual artifact authors choose eligible implementers/reviewers. Pass all authors using --author-vendor. Reviews require explicit provenance and a fresh worker; different vendors do not guarantee correctness."
+  }
+}
