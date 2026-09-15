@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "codex-run report",
+  "description": "Pass to codex-run.sh -o to force codex's final message into the harness STATUS/CHANGED/VERIFY/NOTES contract (codex exec --output-schema). Every property is required and no extras are allowed, as OpenAI structured outputs demand.",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["DONE", "FAILED", "NEEDS_INPUT"],
+      "description": "DONE = task complete and verification passed; FAILED = could not complete; NEEDS_INPUT = blocked on a question for the orchestrator"
+    },
+    "changed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Repo-relative paths of files created, modified, or deleted (empty when none)"
+    },
+    "verify": {
+      "type": "string",
+      "description": "The verification command run and its outcome (exit code + one-line summary), or 'n/a'"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Deviations from the spec, open questions, or an empty string"
+    }
+  },
+  "required": ["status", "changed", "verify", "notes"],
+  "additionalProperties": false
+}

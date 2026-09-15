@@ -1,0 +1,22 @@
+{
+  "_comment": "Copy as model-bindings.local.json. Dictionaries merge; arrays/scalars replace. Omit unused overrides to keep public defaults. Project domain policy goes in root CLAUDE.md/AGENTS.md.",
+  "schema_version": 1,
+  "budget_comment": "Optional budget string: normal, tight, exhausted:<vendor>. Omit budget for normal. Startup never probes quota; declare changes when needed.",
+  "subscriptions": {
+    "claude": null,
+    "openai": null,
+    "google": null
+  },
+  "vendors": {
+    "local": {
+      "endpoint": null
+    }
+  },
+  "local_endpoint_comment": "When used, set vendors.local.endpoint to {base_url, model, wire, timeout_ms}; base_url/model required. Confirm the project data boundary before sending content.",
+  "bindings": {},
+  "host_routes": {},
+  "roles": {},
+  "override_comment": "For example bindings.C.claude.model/effort changes that cell; host_routes.codex.implement selects its ladder. Do not put empty specialties here: arrays replace the public list.",
+  "measurements": [],
+  "measurements_comment": "Only relevant observations for repeated mismatches: role/model, elapsed time, verify result, retries, date. No obligatory scoring or telemetry campaign."
+}
