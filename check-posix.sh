@@ -8,7 +8,7 @@
 #   --launchers         also run .claude/scripts/test_launchers.sh (duration depends on selected groups and environment;
 #                       by default only its presence is checked)
 #   --template-dir DIR  compare this project's harness files with the
-#                       claude-harness template checkout (or set
+#                       tagteam template checkout (or set
 #                       HARNESS_TEMPLATE_DIR); every divergence is listed
 #                       as DRIFT (INFO -- drift can be deliberate, so it
 #                       never fails the preflight)
@@ -341,7 +341,7 @@ if [ -n "$TEMPLATE_DIR" ]; then
         echo "INFO: template drift: $drift of $compared harness files differ from '$TEMPLATE_DIR' (INFO only; reconcile deliberately in either direction)."
     fi
 else
-    echo "INFO: template drift check skipped (pass --template-dir or set HARNESS_TEMPLATE_DIR to the claude-harness checkout)."
+    echo "INFO: template drift check skipped (pass --template-dir or set HARNESS_TEMPLATE_DIR to the tagteam checkout)."
 fi
 
 echo "SUMMARY: $WARNINGS warning(s)."

@@ -2,7 +2,7 @@
 # This script is read-only and compatible with Windows PowerShell 5.1.
 #
 # Optional: -TemplateDir <path> (or $env:HARNESS_TEMPLATE_DIR) points at the
-# claude-harness template checkout; harness files in THIS project are then
+# tagteam template checkout; harness files in THIS project are then
 # hash-compared against it and every divergence is listed as DRIFT (INFO —
 # drift can be deliberate, so it never fails the preflight; it only makes
 # the hand-sync debt visible, which is the Plugins re-evaluation signal).
@@ -442,7 +442,7 @@ if ($TemplateDir) {
     }
 }
 else {
-    Write-Host "INFO: template drift check skipped (pass -TemplateDir or set HARNESS_TEMPLATE_DIR to the claude-harness checkout)."
+    Write-Host "INFO: template drift check skipped (pass -TemplateDir or set HARNESS_TEMPLATE_DIR to the tagteam checkout)."
 }
 
 Write-Host "SUMMARY: $warningCount warning(s)."
