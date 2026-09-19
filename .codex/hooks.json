@@ -5,9 +5,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/session_preflight.py",
+            "command": "python3 .claude/hooks/session_preflight.py",
             "timeout": 30,
-            "statusMessage": "harness preflight"
+            "statusMessage": "harness preflight",
+            "commandWindows": "python .claude/hooks/session_preflight.py"
           }
         ]
       }
@@ -18,9 +19,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/deny_dangerous.py --host codex",
+            "command": "python3 .claude/hooks/deny_dangerous.py --host codex",
             "timeout": 30,
-            "statusMessage": "harness guard"
+            "statusMessage": "harness guard",
+            "commandWindows": "python .claude/hooks/deny_dangerous.py --host codex"
           }
         ]
       }
@@ -30,9 +32,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/stop_gate.py --host codex --new-prompt",
+            "command": "python3 .claude/hooks/stop_gate.py --host codex --new-prompt",
             "timeout": 10,
-            "statusMessage": "harness mission scope"
+            "statusMessage": "harness mission scope",
+            "commandWindows": "python .claude/hooks/stop_gate.py --host codex --new-prompt"
           }
         ]
       }
@@ -42,9 +45,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/stop_gate.py --host codex",
+            "command": "python3 .claude/hooks/stop_gate.py --host codex",
             "timeout": 180,
-            "statusMessage": "harness stop gate"
+            "statusMessage": "harness stop gate",
+            "commandWindows": "python .claude/hooks/stop_gate.py --host codex"
           }
         ]
       }

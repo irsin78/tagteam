@@ -338,6 +338,47 @@ class HostRoutes(unittest.TestCase):
                 self.assertEqual(generated[event][0]['hooks'][0]['timeout'],
                                  hooks[event][0]['hooks'][0]['timeout'])
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX PATH fixtures use executable symlinks')
+    def test_generator_detects_working_python3_before_writing(self):
+        import shutil
+        bash = routes.find_bash()
+        if not bash:
+            self.skipTest('Bash is required')
+        with tempfile.TemporaryDirectory(prefix='python discovery-') as temp:
+            root = Path(temp)
+            (root / '.claude').mkdir()
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            for tool in ('dirname', 'sed', 'git'):
+                (bin_dir / tool).symlink_to(shutil.which(tool))
+            env = dict(os.environ, PATH=str(bin_dir))
+            output = root / 'hooks.json'
+            command = [bash, str(HERE / 'gen-codex-hooks.sh'), '--out', str(output), '--force']
+            for available in ('python3', 'python'):
+                with self.subTest(available=available):
+                    candidate = bin_dir / available
+                    candidate.symlink_to(sys.executable)
+                    result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    hooks = json.loads(output.read_text())['hooks']
+                    executable = subprocess.check_output(
+                        [str(candidate), '-c', 'import sys; print(sys.executable)'], text=True).strip()
+                    self.assertIn(executable, hooks['Stop'][0]['hooks'][0]['command'])
+                    candidate.unlink()
+                    # A non-working python3 (e.g. a Store alias) must not hide python.
+                    if available == 'python3':
+                        candidate.write_text('#!/bin/sh\nexit 1\n')
+                        candidate.chmod(0o755)
+            before = output.read_bytes()
+            result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('no working Python 3', result.stderr)
+            self.assertEqual(output.read_bytes(), before)
+            result = subprocess.run(command + ['--python', str(bin_dir / 'python3')],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(output.read_bytes(), before)
+
     def test_generator_uses_nongit_harness_root_from_subdirectory(self):
         if not (ROOT / '.codex/hooks.json').exists():
             self.skipTest('Codex hooks are not installed on this project')
