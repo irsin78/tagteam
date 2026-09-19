@@ -799,11 +799,22 @@ the marker and are treated like main Claude sessions).
    UserPromptSubmit, Stop) through `/hooks`. Registration is stored in
    `~/.codex/config.toml` as
    `[hooks.state.'<absolute hooks.json path>:<event>:0:0'] trusted_hash`.
-2. **Generator for different paths**: Keys are absolute paths and cannot be
-   prepackaged in the repository. Relative definitions do not work if python is
-   absent from hook process PATH or the working root differs. In that case, run
-   `bash .claude/scripts/gen-codex-hooks.sh [--out <path>] [--python <exe>]`
-   to generate absolute-path definitions and register trust again.
+2. **Detect Python during installation**: Run
+   `bash .claude/scripts/gen-codex-hooks.sh --force` on the target machine, then
+   register trust. The generator tries `python3`, then `python`, verifies that
+   Python 3 actually runs, and writes absolute interpreter and project paths.
+   An explicit `--python <exe>` is validated too. Regenerate on each machine;
+   generated paths are machine-specific. The distributed defaults use `python3`
+   on macOS/Linux and `python` via `commandWindows` on Windows.
+   Detection happens during generation, not on every hook invocation, so the
+   generated commands do not depend on the desktop app inheriting your shell's
+   PATH. If detection fails, the existing definition is left unchanged. Run the
+   generator again after moving the project or changing the Python installation
+   path, then retrust the changed hooks with `/hooks`. Keep machine-specific
+   generated paths out of the distributable template.
+   **Upgrade note:** this update changes the distributed hook definitions.
+   After upgrading, regenerate for the target machine and retrust with `/hooks`,
+   even if the hooks were trusted before the update.
 3. **Three layers of checks**:
    - `check-posix.sh` / `check-windows-aliases.ps1` read installed
      `.codex/hooks.json` events and check that registration entries exist. They

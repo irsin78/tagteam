@@ -9,6 +9,25 @@ preflight, the codex sandbox/Store-alias failure mode, and the direct
 
 ## macOS (zsh)
 
+### Codex hooks: Python command discovery
+
+macOS may provide `python3` without an unversioned `python` command. A hook
+configured as `python .claude/hooks/...` then fails with command-not-found
+(exit 127), even if the same configuration works on Windows.
+
+During installation, run from the target project root:
+
+```sh
+bash .claude/scripts/gen-codex-hooks.sh --force
+```
+
+The generator verifies Python 3 (`python3`, then `python`) and writes absolute
+interpreter and script paths. This also avoids relying on the desktop app's
+PATH. Review and trust the generated definitions with `/hooks`. Regenerate and
+retrust after moving the project or changing the interpreter installation path.
+This generator updates Codex hooks only; Claude settings and other scripts
+that invoke `python` still require that command or their own configuration.
+
 ### 1. Filename normalization (NFC/NFD) — the biggest trap
 
 macOS filesystems return filenames in **NFD**. Windows has no equivalent

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Write a Codex hooks definition with ABSOLUTE paths.
 #
-# The committed .codex/hooks.json uses repo-relative commands, which is what
-# a normal `codex` run in the repository root resolves. Use this generator
-# when that is not true for a checkout: a different working root, a python
-# that is not on the hook process's PATH, or a second copy of the harness
-# that must be trusted separately.
+# The distributed template uses repo-relative commands. Run this generator
+# during installation to bind hooks to the target interpreter and project.
+# Regenerate after moving the project or changing the Python installation.
+# Generated definitions are machine-local; do not distribute their paths.
 #
 # Codex records hook trust against the ABSOLUTE PATH of the hooks file plus
 # the definition's hash, so a generated file must be trusted again (`/hooks`
@@ -16,8 +15,8 @@
 # Usage:
 #   bash .claude/scripts/gen-codex-hooks.sh [--out <path>] [--python <exe>] [--force]
 #
-# Defaults: --out <repo>/.codex/hooks.json, --python the `python` on PATH
-# (falls back to python3). Refuses to overwrite an existing file without
+# Defaults: --out <repo>/.codex/hooks.json, --python a working Python 3
+# (tries python3, then python). Refuses to overwrite an existing file without
 # --force. bash 3.2 compatible (macOS) -- no associative arrays, no mapfile.
 set -u
 
@@ -42,13 +41,23 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$PY" ]; then
-    if command -v python >/dev/null 2>&1; then PY=$(command -v python)
-    elif command -v python3 >/dev/null 2>&1; then PY=$(command -v python3)
-    else
-        echo "gen-codex-hooks: no python on PATH -- pass --python <exe>" >&2
+    for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 &&
+            "$candidate" -c 'import sys; sys.exit(sys.version_info.major != 3)' >/dev/null 2>&1; then
+            PY=$(command -v "$candidate")
+            break
+        fi
+    done
+    if [ -z "$PY" ]; then
+        echo "gen-codex-hooks: no working Python 3 on PATH -- pass --python <exe>" >&2
         exit 2
     fi
 fi
+# Resolve aliases/shims to the actual interpreter and reject Python 2 or
+# non-working Store aliases before creating or overwriting any definition.
+PY=$("$PY" -c 'import sys; sys.exit("Python 3 is required") if sys.version_info.major != 3 else None; print(sys.executable)') || exit 2
+PY=${PY%$'\r'}
+[ -n "$PY" ] || { echo "gen-codex-hooks: empty Python executable" >&2; exit 2; }
 
 # Reuse the launchers' Git/non-Git root discovery; do not scan contents.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
