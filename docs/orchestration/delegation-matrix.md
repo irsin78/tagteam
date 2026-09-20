@@ -76,7 +76,11 @@ only after inspecting partial output/changes. Unknown errors remain failures.
 Never classify arbitrary merged-log text as a CLI error or blindly retry revoked
 credentials. Required independent advice/review cannot use a same-vendor fallback.
 
-Explore/web may fall back to a constrained native reader (read-only/web-only).
+Web uses the agy `agy-fetcher` specialization first when its named, web-only
+agent's installed definition matches the checked-in source and it is discoverable;
+web output must include evidence and sources, while `FETCH_INCOMPLETE` or any
+other AGY_UNAVAILABLE result falls back once to Claude's
+`haiku-fetcher`. Explore/web may otherwise fall back to a constrained native reader (read-only/web-only).
 No isolated web reader means unavailable; pass only the parent's necessary summary
 of untrusted material to implementers. Local bulk reading is optional, declared,
 D-only under tight/exhausted budget; use local-run.sh's file manifest, never commands

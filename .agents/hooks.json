@@ -1,0 +1,16 @@
+{
+  "agy-fetch-cache-only": {
+    "PreToolUse": [
+      {
+        "matcher": "view_file|read_url_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ~/.gemini/config/hooks/agy_fetch_view_guard.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

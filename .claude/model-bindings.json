@@ -2,7 +2,7 @@
   "schema_version": 1,
   "description": "Role -> tier -> binding. The rules (rules/) speak only of tiers and roles; the concrete model and effort are set here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole). harness-route.py selects a route from host_routes, the role, the bindings and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-09-10",
+  "updated": "2026-09-19",
   "catalog_checked": "2026-09-06",
   "tiers": {
     "A": {
@@ -347,7 +347,8 @@
       },
       "google": {
         "role": [
-          "write"
+          "write",
+          "explore_fetch"
         ],
         "tier": "C",
         "vendor": "google",
@@ -462,7 +463,8 @@
       },
       "google": {
         "role": [
-          "write"
+          "write",
+          "explore_fetch"
         ],
         "tier": "D",
         "vendor": "google",
@@ -477,7 +479,7 @@
         "updated": "2026-09-06",
         "catalog_checked": "2026-09-06",
         "status": "active",
-        "note": "Candidate for HTML/CSS and static prototypes. Follow specialties and the current measurements in this slot.",
+        "note": "Candidate for HTML/CSS, static prototypes and constrained URL summaries. In an initial 2026-09-19 four-page URL test, two answers were accurate and two had substantive factual errors. With the globally installed cache-only read hook and evidence receipts, a final 2026-09-20 four-page test produced three accurate answers and one safe AGY_UNAVAILABLE on truncated content; calls used 6.3K-68.4K tokens. The earlier two-page sample completed in 15.6s with an estimated $0.0082 overage-equivalent cost; these small samples are directional, not a general benchmark.",
         "intelligence_index": 42,
         "output_speed_tps": 265
       },
@@ -781,11 +783,12 @@
         "sandbox": "read-only"
       },
       "web": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "D/claude",
+        "vendor": "google",
+        "launcher": ".claude/scripts/agy-run.sh",
+        "binding": "D/google",
         "sandbox": "read-only",
-        "claude_role": "web"
+        "agy_role": "web",
+        "fallback": "haiku-fetcher"
       },
       "write": {
         "vendor": "openai",
@@ -833,11 +836,12 @@
         "sandbox": "read-only"
       },
       "web": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "D/claude",
+        "vendor": "google",
+        "launcher": ".claude/scripts/agy-run.sh",
+        "binding": "D/google",
         "sandbox": "read-only",
-        "claude_role": "web"
+        "agy_role": "web",
+        "fallback": "haiku-fetcher"
       },
       "write": {
         "vendor": "claude",

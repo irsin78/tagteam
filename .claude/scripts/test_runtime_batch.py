@@ -86,11 +86,15 @@ admit_run
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="runtime-batch-")
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         (self.root / ".claude/rules").mkdir(parents=True)
         self.personal = self.root / "personal"
         (self.personal / ".codex").mkdir(parents=True)
-        self.env = dict(os.environ, HOME=self.personal.as_posix())
+        shim = self.root / "bin"
+        shim.mkdir()
+        (shim / "python").symlink_to(sys.executable)
+        self.env = dict(os.environ, HOME=self.personal.as_posix(),
+                        PATH=shim.as_posix() + os.pathsep + os.environ.get("PATH", ""))
 
     def hashes(self):
         result = subprocess.run([find_bash(), str(HERE / "control-plane-hash.sh")],

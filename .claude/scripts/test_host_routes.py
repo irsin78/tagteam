@@ -119,6 +119,15 @@ class HostRoutes(unittest.TestCase):
             self.assertTrue(route['launcher'].endswith(launcher))
             self.assertEqual(route['sandbox'], 'workspace-write')
 
+    def test_web_prefers_agy_with_haiku_fallback(self):
+        for host in ('codex', 'claude'):
+            route = routes.resolve(self.data, host, 'web')
+            self.assertEqual(route['vendor'], 'google')
+            self.assertTrue(route['launcher'].endswith('agy-run.sh'))
+            self.assertEqual(route['agy_role'], 'web')
+            self.assertEqual(route['fallback'], 'haiku-fetcher')
+            self.assertEqual(route['sandbox'], 'read-only')
+
     def test_advisory_is_other_vendor_and_readonly(self):
         for host, vendor in [('codex', 'claude'), ('claude', 'openai')]:
             for role in ('decide', 'plan_review'):
