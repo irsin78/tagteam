@@ -2,7 +2,7 @@
   "schema_version": 1,
   "description": "Role -> tier -> binding. The rules (rules/) speak only of tiers and roles; the concrete model and effort are set here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole). harness-route.py selects a route from host_routes, the role, the bindings and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-09-19",
+  "updated": "2026-09-20",
   "catalog_checked": "2026-09-06",
   "tiers": {
     "A": {
@@ -479,7 +479,7 @@
         "updated": "2026-09-06",
         "catalog_checked": "2026-09-06",
         "status": "active",
-        "note": "Candidate for HTML/CSS, static prototypes and constrained URL summaries. In an initial 2026-09-19 four-page URL test, two answers were accurate and two had substantive factual errors. With the globally installed cache-only read hook and evidence receipts, a final 2026-09-20 four-page test produced three accurate answers and one safe AGY_UNAVAILABLE on truncated content; calls used 6.3K-68.4K tokens. The earlier two-page sample completed in 15.6s with an estimated $0.0082 overage-equivalent cost; these small samples are directional, not a general benchmark.",
+        "note": "Candidate for HTML/CSS, static prototypes and web-page summaries. The web lane no longer uses agy to fetch: agy 1.2.7 read_url_content trims a gzip body at the compressed Content-Length and lost 84-85% of every measured docs.python.org page (2026-09-20), while pages served without Content-Length came through whole. The launcher fetches and this slot only summarizes. After that change a page that previously failed finished in 10-13s using 7.7K-8.2K tokens with all evidence quotations matched; the same page previously cost 22.2K tokens, 23s and fell back. Small samples, directional only.",
         "intelligence_index": 42,
         "output_speed_tps": 265
       },

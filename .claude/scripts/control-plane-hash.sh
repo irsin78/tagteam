@@ -42,8 +42,8 @@ def inventory():
             paths[name] = Path(name)
     if sys.argv[1]:
         for name in (".claude/settings.json", ".claude/CLAUDE.md", ".gemini/antigravity-cli/settings.json",
-                     ".gemini/config/agents/agy-fetcher.md",
-                     ".gemini/config/hooks.json", ".gemini/config/hooks/agy_fetch_view_guard.py",
+                     ".gemini/config/agents/agy-summarizer.md",
+                     ".gemini/config/hooks.json", ".gemini/config/hooks/agy_web_no_tools.py",
                      ".codex/config.toml", ".codex/AGENTS.md", ".codex/AGENTS.override.md"):
             path = Path(sys.argv[1]) / name
             if path.is_file():

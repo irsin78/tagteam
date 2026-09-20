@@ -10,8 +10,8 @@ general non-design documents, HTML/CSS/static prototypes, bulk comments,
 scaffolding/experimental tests, and the restricted external-URL fetch route
 (images: the codex launcher `-i` row, never agy). This skill is the HOW. Write
 mode is for pure-write tasks whose handoff is worthwhile. Web mode is read-only
-and accepts untrusted URL content only through the checked-in `agy-fetcher`
-agent. The worker must not own its grading gate; tasks requiring execution use
+The launcher itself fetches the caller's URLs and hands the text to the
+checked-in `agy-summarizer`, an agent with no tools. The worker must not own its grading gate; tasks requiring execution use
 a capable route instead. Domain-specific file restrictions come from the
 project (rules/security-boundary.md).
 
@@ -68,8 +68,10 @@ project (rules/security-boundary.md).
 - Availability (exit 2 `AGY_UNAVAILABLE`): missing binary or python,
   missing prompt file, unparseable global settings, no `write_file` entry in
   `permissions.allow` for write mode, or no exactly installed and discoverable
-  `agy-fetcher` for web mode (the global copy must byte-match the checked-in
-  `.agents/agents/agy-fetcher.md`); a web response without `EVIDENCE:` and
+  `agy-summarizer` for web mode (the global copy must byte-match the checked-in
+  `.agents/agents/agy-summarizer.md`); a URL the launcher cannot fetch; a web
+  response whose `EVIDENCE:` quotations are absent from the fetched text, or
+  without `EVIDENCE:` and
   `SOURCES:`, or with `FETCH_INCOMPLETE:`; an agy `error` naming quota / rate
   limit / login (echoed as `AGY_ERROR:`), no parseable JSON result (one
   automatic retry when the first attempt produced no output AND changed
@@ -84,11 +86,11 @@ project (rules/security-boundary.md).
   `control-plane-hash.sh` snapshot (fail-closed).
 - Call: write mode uses `agy --log-file … --effort … --output-format json
   --print-timeout <t>s -p "$(cat prompt)"`. Web mode adds `--agent
-  agy-fetcher --dangerously-skip-permissions --disable-slash-commands`; that
-  bypass is bounded by the globally installed `agy-fetch-cache-only` hook:
-  `read_url_content` is limited to exact caller-named hosts and rejects
-  local/private hosts, while `view_file` is limited to the current conversation's
-  generated URL-cache `content.md`. `excludeDefaultComponents: true` and the explicit tool
+  agy-summarizer --disable-slash-commands` and no permission-skip flag: the
+  agent declares no tools, so nothing needs approving. The globally installed
+  `agy-web-no-tools` hook denies every tool call as a backstop against agy
+  substituting a tooled default agent. URL policy runs in the launcher
+  (`web_fetch.py`) before any request is made. `excludeDefaultComponents: true` and the explicit tool
   list remain in force; the agent inherits global customizations so that this
   PreToolUse guard can run.
   Both are wrapped in GNU `timeout`
