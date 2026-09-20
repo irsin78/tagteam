@@ -150,6 +150,21 @@ to the input character limit and flagged with INPUT_TRUNCATED.
 
 ## Shared launcher parts and optional tools
 
+The agy external-URL lane allows `read_url_content` only for HTTP(S) hosts
+explicitly named in the prompt and rejects local/private hosts. Its global
+PreToolUse hook also restricts `view_file` to generated URL-cache `content.md`
+for the current conversation. Before launch, installed agent and hook files are
+compared with repository definitions; after launch, workspace and control-plane
+changes are checked. Under `--dangerously-skip-permissions`, the effective
+boundary depends on this tool list and hook. The hook checks the URL string at
+tool-call time and cannot separately verify the HTTP client's DNS result or
+redirect destination. The entire global `~/.gemini/config/hooks.json` is in the
+control-plane hash, so changing an unrelated global hook during a run also
+blocks that run.
+An actual non-interactive agy 1.2.7 run on 2026-09-20 observed the PreToolUse
+hook deny a `view_file` request outside the workspace, validating marker
+propagation and the hook response on the live execution path.
+
 The local read path does not take a workspace snapshot. A report's
 `CHANGED: not measured` is not an observation of no change. When change
 evidence is needed, confirm it separately in the adopting project.

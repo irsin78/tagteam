@@ -222,9 +222,17 @@ pid_stime() {
         ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //'
     fi
 }
-# Command basename of a pid (MSYS prints full Windows paths for native
-# processes, so strip both separator kinds).
-pid_comm() { ps -p "$1" 2>/dev/null | awk 'NR==2 {print $NF}' | sed -e 's#.*[/\\]##' -e 's/\.exe$//'; }
+# Command basename of a pid. POSIX `ps` appends the full argument vector in
+# its default CMD column, so `$NF` can be an arbitrary final argument (macOS
+# exposed this as `done` for `bash -c ... done`). Ask for `comm` explicitly;
+# keep the MSYS fallback because its ps field support differs.
+pid_comm() {
+    if [ "$RS_IS_WINDOWS" -eq 1 ]; then
+        ps -p "$1" 2>/dev/null | awk 'NR==2 {print $NF}' | sed -e 's#.*[/\\]##' -e 's/\.exe$//'
+    else
+        ps -o comm= -p "$1" 2>/dev/null | sed -e 's/^ *//' -e 's#.*[/\\]##' -e 's/\.exe$//'
+    fi
+}
 # pid_is_ours <pid> <recorded-stime>: alive AND the same process. Start
 # times are compared when both are known AND in the same form; a form
 # change (a run that crossed midnight on MSYS) is undecidable and does

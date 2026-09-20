@@ -47,7 +47,7 @@ echo "GROUPS: $TEST_GROUPS"
 # under a detached run): scrub every launcher marker and the detach
 # plumbing so the launchers under test start from a clean environment.
 # Cases set what they need explicitly per invocation.
-unset HARNESS_SAVE_BASELINE HARNESS_ALLOW_CONTROL_PLANE HARNESS_ALLOW_AGY_COMMAND HARNESS_ALLOW_FULL_ACCESS       HARNESS_ALLOW_FORGET HARNESS_AGY_SETTINGS HARNESS_STATE_DIR HARNESS_TREE_KEY       HARNESS_RUN_ID HARNESS_RUN_CHILD STUB_ACTION STUB_VERIFY_PATH
+unset HARNESS_SAVE_BASELINE HARNESS_ALLOW_CONTROL_PLANE HARNESS_ALLOW_AGY_COMMAND HARNESS_ALLOW_FULL_ACCESS       HARNESS_ALLOW_FORGET HARNESS_AGY_SETTINGS HARNESS_AGY_WEB HARNESS_STATE_DIR HARNESS_TREE_KEY       HARNESS_RUN_ID HARNESS_RUN_CHILD STUB_ACTION STUB_VERIFY_PATH STUB_AGENT_MISSING
 
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     echo "FAIL: bash 4+ required"
@@ -185,6 +185,12 @@ cat > "$STUB_BIN/agy" <<'STUB'
 #!/usr/bin/env bash
 set -u
 printf '%s\n' "$*" >> "$FIXTURE_ROOT/agy-args.log"
+if [ "${1:-}" = agent ]; then
+    [ "${STUB_AGENT_MISSING:-}" = 1 ] || echo agy-fetcher
+    exit 0
+fi
+echo "${HARNESS_AGY_WEB:-unset}" > "$FIXTURE_ROOT/agy-web-env.log"
+echo "${HARNESS_AGY_URL_HOSTS:-unset}" > "$FIXTURE_ROOT/agy-web-hosts.log"
 case "${STUB_ACTION:-none}" in
     notice) printf '{}\n' > .claude/.preflight-status ;;
     none) ;;
@@ -192,6 +198,7 @@ case "${STUB_ACTION:-none}" in
     init-git) git init -q ;;
     break-index) printf 'broken index' > .git/index ;;
     write:*) printf '%s\n' 'stub-output' > "${STUB_ACTION#write:}" ;;
+    delayed-write:*) sleep 1.1; printf '%s\n' 'stub-output' > "${STUB_ACTION#delayed-write:}" ;;
     touch-control-plane) printf '%s\n' '# stub changed control plane' >> .claude/settings.json ;;
     # agy widening its OWN grant list: must BLOCK.
     touch-agy-settings) printf '%s\n' '{"permissions":{"allow":["write_file(*)","command(*)"]}}' > "$HOME/.gemini/antigravity-cli/settings.json" ;;
@@ -208,10 +215,23 @@ case "${STUB_ACTION:-none}" in
         printf '%s\n' '{"status":"SUCCESS","response":"","num_turns":1,"usage":{"total_tokens":3}}'
         exit 0
         ;;
+    empty-write)
+        printf '%s\n' 'unexpected' > unexpected.txt
+        printf '%s\n' '{"status":"SUCCESS","response":"","num_turns":1,"usage":{"total_tokens":3}}'
+        exit 0
+        ;;
+    incomplete)
+        printf '%s\n' '{"status":"SUCCESS","response":"FETCH_INCOMPLETE: https://example.invalid — cached\nSOURCES:\n- https://example.invalid (incomplete)","num_turns":1,"usage":{"total_tokens":3}}'
+        exit 0
+        ;;
+    incomplete-decorated)
+        printf '%s\n' '{"status":"SUCCESS","response":"**FETCH_INCOMPLETE:** https://example.invalid — cached\nEVIDENCE: none\nSOURCES:\n- https://example.invalid (incomplete)","num_turns":1,"usage":{"total_tokens":3}}'
+        exit 0
+        ;;
     exit:*) exit "${STUB_ACTION#exit:}" ;;
     *) echo "unknown STUB_ACTION: $STUB_ACTION" >&2; exit 98 ;;
 esac
-printf '%s\n' '{"status":"SUCCESS","response":"stub agy response","num_turns":1,"usage":{"total_tokens":17}}'
+printf '%s\n' '{"status":"SUCCESS","response":"stub agy response\nEVIDENCE: stub\nSOURCES: stub","num_turns":1,"usage":{"total_tokens":17}}'
 STUB
 chmod +x "$STUB_BIN/agy"
 
@@ -280,11 +300,18 @@ fresh_case() {
     CASE_REPO="$TEST_ROOT/case-$CASE_NO/repo"
     CASE_HOME="$TEST_ROOT/case-$CASE_NO/home"
     [ "${1:-}" != nongit ] || CASE_REPO="$NON_GIT_ROOT/case-$CASE_NO/repo"
-    mkdir -p "$CASE_REPO/.claude" "$CASE_HOME/.gemini/antigravity-cli"
+    mkdir -p "$CASE_REPO/.claude" "$CASE_REPO/.agents/agents" "$CASE_REPO/.agents/hooks" \
+        "$CASE_HOME/.gemini/antigravity-cli" "$CASE_HOME/.gemini/config/agents" "$CASE_HOME/.gemini/config/hooks"
+    cp "$REPO_ROOT/.agents/agents/agy-fetcher.md" "$CASE_REPO/.agents/agents/agy-fetcher.md"
+    cp "$REPO_ROOT/.agents/hooks.json" "$CASE_REPO/.agents/hooks.json"
+    cp "$REPO_ROOT/.agents/hooks/agy_fetch_view_guard.py" "$CASE_REPO/.agents/hooks/agy_fetch_view_guard.py"
+    cp "$REPO_ROOT/.agents/agents/agy-fetcher.md" "$CASE_HOME/.gemini/config/agents/agy-fetcher.md"
+    cp "$REPO_ROOT/.agents/hooks.json" "$CASE_HOME/.gemini/config/hooks.json"
+    cp "$REPO_ROOT/.agents/hooks/agy_fetch_view_guard.py" "$CASE_HOME/.gemini/config/hooks/agy_fetch_view_guard.py"
     printf '%s\n' '{"permissions":{"allow":["write_file(*)"],"deny":[]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
     printf '%s\n' '{"permissions":{}}' > "$CASE_REPO/.claude/settings.json"
     printf '%s\n' '.claude/codex-logs/' '.claude/agy-logs/' '.claude/claude-logs/' '.claude/.probe-cache' > "$CASE_REPO/.gitignore"
-    printf '%s\n' 'test prompt' > "$CASE_REPO/prompt.txt"
+    printf '%s\n' 'test prompt https://example.invalid/' > "$CASE_REPO/prompt.txt"
     [ "${1:-}" != nongit ] || return 0
     (
         cd "$CASE_REPO" || exit 1
@@ -360,7 +387,7 @@ plant_record() {
     (
         cd "$CASE_REPO" || exit 1
         env HOME="$CASE_HOME" PATH="$STUB_BIN:$ORIGINAL_PATH" RID="$rid" PLANT_PID="$pid" PLANT_SANDBOX="$sandbox" \
-            RUN_STATE_PATH="$RUN_STATE" bash -c '
+            RUN_STATE_PATH="$RUN_STATE" "$BASH" -c '
                 TOOL=codex RUN_ID=$RID TIMEOUT=570 SANDBOX=$PLANT_SANDBOX
                 . "$RUN_STATE_PATH" || exit 1
                 LAUNCHER_PID=$PLANT_PID
@@ -375,7 +402,7 @@ plant_record() {
 
 start_live_shell() {
     set -m
-    (while :; do sleep 300; done) &
+    "$BASH" -c 'trap "exit 0" TERM; while :; do sleep 300 & wait $!; done' &
     LIVE_PID=$!
     set +m
     BG_PIDS+=("$LIVE_PID")
@@ -419,7 +446,7 @@ fresh_case
 LAST_OUT="$TEST_ROOT/codex-absent.out"
 (
     cd "$CASE_REPO" || exit 99
-    env HOME="$CASE_HOME" PATH="$NO_CODEX_BIN:$ORIGINAL_GIT_DIR:/usr/bin:/bin" bash "$CODEX_RUN" -p prompt.txt
+    env HOME="$CASE_HOME" PATH="$NO_CODEX_BIN:$ORIGINAL_GIT_DIR:/usr/bin:/bin" "$BASH" "$CODEX_RUN" -p prompt.txt
 ) > "$LAST_OUT" 2>&1
 LAST_RC=$?
 ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'CODEX_UNAVAILABLE: codex binary not found' && ok=1
@@ -481,6 +508,105 @@ rm -f "$TEST_ROOT/agy-args.log"
 run_capture agy-large-prompt bash "$AGY_RUN" -p large.txt
 ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" '> 30000' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
 expect_case "agy rejects prompt over 30 KB" "$ok" "exit=$LAST_RC"
+
+fresh_case
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-invalid-model bash "$AGY_RUN" -p prompt.txt -m '-bad'
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'invalid model token' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy rejects a model token beginning with a dash" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf '%s\n' '{"permissions":{"allow":[]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+run_capture agy-web env STUB_ACTION=none HARNESS_RUN_ID=agyweb bash "$AGY_RUN" \
+    -a web -m gemini-3.8-flash -e low -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE.*role=web.*model=gemini-3.8-flash' \
+    && has "$LAST_OUT" '^WEB_AGENT: agy-fetcher' \
+    && has "$TEST_ROOT/agy-args.log" '--agent agy-fetcher' \
+    && has "$TEST_ROOT/agy-args.log" '--dangerously-skip-permissions' \
+    && has "$TEST_ROOT/agy-args.log" '--disable-slash-commands' \
+    && has "$TEST_ROOT/agy-web-env.log" '^1$' \
+    && has "$TEST_ROOT/agy-web-hosts.log" '^example\.invalid$' && ok=1
+expect_case "agy web uses only the verified named agent and selected model" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf '%s\n' 'summarize the page' > "$CASE_REPO/prompt.txt"
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-web-no-url bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'must name at least one explicit http' \
+    && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy web requires an explicit caller URL" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf '%s\n' 'summarize http://127.0.0.1:8080/private' > "$CASE_REPO/prompt.txt"
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-web-local-url bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'refuses local/private URL hosts: 127.0.0.1' \
+    && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy web rejects local and private URL hosts" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf '%s\n' 'summarize https://example.invalid,other.invalid/page' > "$CASE_REPO/prompt.txt"
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-web-delimited-host bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'must name at least one explicit http' \
+    && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy web rejects host-list delimiter injection" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-web-missing env STUB_AGENT_MISSING=1 bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" "required web-only agent 'agy-fetcher' is not discoverable" && ok=1
+expect_case "agy web refuses silent default-agent fallback" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf '\n# stale global copy\n' >> "$CASE_HOME/.gemini/config/agents/agy-fetcher.md"
+run_capture agy-web-stale-agent bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'install the exact checked-in' && ok=1
+expect_case "agy web rejects a stale global agent definition" "$ok" "exit=$LAST_RC"
+
+fresh_case
+"$REAL_PY" -c 'from pathlib import Path; p=Path(__import__("sys").argv[1]); p.write_text(p.read_text().replace("\"matcher\": \"view_file|read_url_content\"", "\"matcher\": \"run_command\""))' "$CASE_REPO/.agents/hooks.json"
+run_capture agy-web-stale-hook bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'hook wiring or fail-closed probe failed' && ok=1
+expect_case "agy web rejects stale hook wiring" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-web-write env STUB_ACTION=write:unexpected.txt bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'CHANGED_CONTENT' && ! has "$LAST_OUT" '^STATUS: DONE' && ok=1
+expect_case "agy web fails when the workspace changes" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-web-empty env STUB_ACTION=empty bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE' && has "$LAST_OUT" 'attempts=2' && ok=1
+expect_case "agy web empty response falls back instead of succeeding" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-web-incomplete env STUB_ACTION=incomplete bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE' \
+    && has "$LAST_OUT" '^WEB_RECEIPT: incomplete' && ok=1
+expect_case "agy web incomplete fetch falls back instead of hallucinating" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-web-incomplete-decorated env STUB_ACTION=incomplete-decorated bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE' \
+    && has "$LAST_OUT" '^WEB_RECEIPT: incomplete' && ok=1
+expect_case "agy web recognizes decorated incomplete receipts" "$ok" "exit=$LAST_RC"
+
+fresh_case
+"$REAL_PY" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["unrelated-hook"]={"PreInvocation":[]}; open(p,"w").write(json.dumps(d))' "$CASE_HOME/.gemini/config/hooks.json"
+run_capture agy-web-extra-global-hook env STUB_ACTION=none bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+expect_case "agy web preserves unrelated global hook entries" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-web-empty-write env STUB_ACTION=empty-write bash "$AGY_RUN" -a web -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(unusable result after workspace changes\)' && ok=1
+expect_case "agy web never hides a mutation behind empty-result fallback" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-web-output bash "$AGY_RUN" -a web -p prompt.txt -x output.txt
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'web mode cannot declare output files' && ok=1
+expect_case "agy web rejects write-output contracts" "$ok" "exit=$LAST_RC"
 
 
 fi
@@ -779,7 +905,7 @@ fresh_case
 LAST_OUT="$TEST_ROOT/claude-absent.out"
 (
     cd "$CASE_REPO" || exit 99
-    env HOME="$CASE_HOME" PATH="$NO_CODEX_BIN:$ORIGINAL_GIT_DIR:/usr/bin:/bin" bash "$CLAUDE_RUN" -p prompt.txt
+    env HOME="$CASE_HOME" PATH="$NO_CODEX_BIN:$ORIGINAL_GIT_DIR:/usr/bin:/bin" "$BASH" "$CLAUDE_RUN" -p prompt.txt
 ) > "$LAST_OUT" 2>&1
 LAST_RC=$?
 ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" '^CLAUDE_UNAVAILABLE: claude is not on PATH' && ok=1
@@ -826,8 +952,13 @@ fi
 if selected agy; then
 fresh_case
 target="$CASE_REPO/agy-output.txt"
+rm -f "$TEST_ROOT/agy-args.log"
 run_capture agy-produced env STUB_ACTION="write:$target" HARNESS_RUN_ID=agyproduced bash "$AGY_RUN" -p prompt.txt -x "$target"
-ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PRODUCED:' && state_field_is agyproduced exit 0 && ok=1
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PRODUCED:' \
+    && state_field_is agyproduced exit 0 \
+    && has "$TEST_ROOT/agy-web-env.log" '^unset$' \
+    && ! has "$TEST_ROOT/agy-args.log" '--agent' \
+    && ! has "$TEST_ROOT/agy-args.log" '--dangerously-skip-permissions' && ok=1
 timing_ok "$LAST_OUT" 1 0 || ok=0
 expect_case "agy expected output produced" "$ok" "exit=$LAST_RC"
 
@@ -840,9 +971,9 @@ expect_case "agy missing expected output fails" "$ok" "exit=$LAST_RC"
 fresh_case
 target="$CASE_REPO/same-size.txt"
 printf '%s\n' 'stub-output' > "$target"
-run_capture agy-same-size env STUB_ACTION="write:$target" HARNESS_RUN_ID=agysamesize bash "$AGY_RUN" -p prompt.txt -x "$target"
+run_capture agy-same-size env STUB_ACTION="delayed-write:$target" HARNESS_RUN_ID=agysamesize bash "$AGY_RUN" -p prompt.txt -x "$target"
 ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^PRODUCED:' && ok=1
-expect_case "agy same-size same-second rewrite is produced" "$ok" "exit=$LAST_RC"
+expect_case "agy delayed same-size rewrite is produced on second-resolution stat" "$ok" "exit=$LAST_RC"
 
 
 fi

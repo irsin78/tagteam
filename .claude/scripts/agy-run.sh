@@ -14,6 +14,14 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     exit 2
 fi
 EFFORT=medium
+MODEL=
+WORKER_ROLE=write
+WEB_AGENT=agy-fetcher
+WEB_AGENT_SOURCE=.agents/agents/agy-fetcher.md
+WEB_HOOK_CONFIG=.agents/hooks.json
+WEB_HOOK_GUARD=.agents/hooks/agy_fetch_view_guard.py
+WEB_HOOK_GLOBAL_CONFIG=$HOME/.gemini/config/hooks.json
+WEB_HOOK_INSTALLED=$HOME/.gemini/config/hooks/agy_fetch_view_guard.py
 LOG_DIR=.claude/agy-logs
 PROMPT_FILE=
 EXPECTED=
@@ -31,7 +39,7 @@ timing_init "$LAUNCH_CLOCK"
 . "$SCRIPT_DIR/run-state.sh" || exit 4
 
 usage() {
-    echo 'Usage: agy-run.sh -p <prompt-file> [-e low|medium|high] [-x <expected-output-file>[,...]] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b]' >&2
+    echo 'Usage: agy-run.sh -p <prompt-file> [-a write|web] [-m MODEL] [-e low|medium|high] [-x <expected-output-file>[,...]] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b]' >&2
     echo '       agy-run.sh --status <RUN_ID>' >&2
     echo '       agy-run.sh --wait <RUN_ID> [-t SECONDS<=570]' >&2
     echo 'HARNESS_DENIED: bad invocation (a typo is a policy error, not an availability failure)' >&2
@@ -41,9 +49,11 @@ usage() {
 # Read-back commands: no delegation, no quota — only the state record.
 launcher_readback "$@"
 
-while getopts ":p:e:x:l:t:b" opt; do
+while getopts ":p:a:m:e:x:l:t:b" opt; do
     case "$opt" in
         p) PROMPT_FILE=$OPTARG ;;
+        a) WORKER_ROLE=$OPTARG ;;
+        m) MODEL=$OPTARG ;;
         e) EFFORT=$OPTARG ;;
         x) EXPECTED=$OPTARG ;;
         l) LOG_DIR=$OPTARG ;;
@@ -58,6 +68,22 @@ case "$EFFORT" in
     low|medium|high) ;;
     *) echo "HARNESS_DENIED: unknown effort '$EFFORT' (low|medium|high)" >&2; exit 4 ;;
 esac
+case "$WORKER_ROLE" in
+    write|web) ;;
+    *) echo "HARNESS_DENIED: unknown agy role '$WORKER_ROLE' (write|web)" >&2; exit 4 ;;
+esac
+case "$MODEL" in
+    "") ;;
+    [A-Za-z0-9]*)
+        case "$MODEL" in
+            *[!A-Za-z0-9._-]*) echo "HARNESS_DENIED: invalid model token '$MODEL'" >&2; exit 4 ;;
+        esac ;;
+    *) echo "HARNESS_DENIED: invalid model token '$MODEL'" >&2; exit 4 ;;
+esac
+[ "$WORKER_ROLE" != web ] || [ -z "$EXPECTED" ] || {
+    echo "HARNESS_DENIED: agy web mode cannot declare output files (-x)" >&2
+    exit 4
+}
 case "$LOG_DIR" in
     ""|/*|*\\*|[A-Za-z]:*|..|../*|*/..|*/../*)
         echo "HARNESS_DENIED: -l must be a repo-relative directory without '..' or backslashes (got '$LOG_DIR')" >&2
@@ -78,8 +104,8 @@ if [ "$PROMPT_BYTES" -gt "$PROMPT_MAX_BYTES" ]; then
     echo "HARNESS_DENIED: prompt file is $PROMPT_BYTES bytes (> $PROMPT_MAX_BYTES; agy takes the prompt as a command-line argument — split the task)" >&2
     exit 4
 fi
-# Grant sanity (security-boundary.md): headless agy auto-approves only what
-# its GLOBAL settings allow. The harness grant is write_file(*) alone; a
+# Grant sanity (security-boundary.md): write-mode agy auto-approves only what
+# its GLOBAL settings allow. The harness write grant is write_file(*) alone; a
 # `command` grant turns any injection into command execution, so it needs
 # the same per-task user approval as codex full access.
 PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
@@ -87,6 +113,9 @@ if [ -z "$PY" ]; then
     echo "AGY_UNAVAILABLE: python/python3 not found on PATH (the launcher parses agy's JSON with it; on Windows the Store alias stub does not count — docs/harness-manual.md, install section step 0)" >&2
     exit 2
 fi
+HOOK_PATH_PREFIX=
+HOOK_PY=
+WEB_URL_HOSTS=
 if [ ! -f "$AGY_SETTINGS" ]; then
     echo "AGY_UNAVAILABLE: agy global settings not found at $AGY_SETTINGS (headless auto-approval unconfigured — docs/harness-manual.md, install section)" >&2
     exit 2
@@ -111,13 +140,138 @@ if [ "${GRANTS%% *}" = 1 ] && [ "${HARNESS_ALLOW_AGY_COMMAND:-}" != "1" ]; then
     echo "HARNESS_DENIED: $AGY_SETTINGS grants command(...) to headless agy — remove it, or (per-task, with explicit user approval) run with HARNESS_ALLOW_AGY_COMMAND=1" >&2
     exit 4
 fi
-if [ "${GRANTS##* }" != 1 ]; then
-    echo "AGY_UNAVAILABLE: no write_file grant in permissions.allow of $AGY_SETTINGS — every agy lane is a write task (docs/harness-manual.md, install section)" >&2
+if [ "$WORKER_ROLE" = write ] && [ "${GRANTS##* }" != 1 ]; then
+    echo "AGY_UNAVAILABLE: no write_file grant in permissions.allow of $AGY_SETTINGS — required for agy write mode (docs/harness-manual.md, install section)" >&2
     exit 2
 fi
 if ! command -v agy >/dev/null 2>&1; then
     echo "AGY_UNAVAILABLE: agy binary not found" >&2
     exit 2
+fi
+if [ "$WORKER_ROLE" = web ]; then
+    URL_INFO=$("$PY" - "$PROMPT_FILE" <<'PY_WEB_URLS'
+import ipaddress, re, sys
+from pathlib import Path
+from urllib.parse import urlsplit
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+hosts = []
+local = []
+for raw in re.findall(r"https?://[^\s<>\"']+", text, flags=re.I):
+    host = (urlsplit(raw.rstrip(".,);]}")).hostname or "").lower().rstrip(".")
+    if not host or "," in host:
+        raise SystemExit(4)
+    if host in hosts:
+        continue
+    hosts.append(host)
+    blocked = host == "localhost" or host.endswith(".localhost") or host.endswith(".local") \
+        or host == "metadata.google.internal"
+    try:
+        address = ipaddress.ip_address(host)
+        blocked = blocked or address.is_private or address.is_loopback or address.is_link_local \
+            or address.is_multicast or address.is_reserved or address.is_unspecified
+    except ValueError:
+        pass
+    if blocked:
+        local.append(host)
+if not hosts:
+    raise SystemExit(3)
+print(",".join(hosts) + "\t" + ",".join(local))
+PY_WEB_URLS
+    ) || {
+        echo "HARNESS_DENIED: agy web prompt must name at least one explicit http(s) URL" >&2
+        exit 4
+    }
+    WEB_URL_HOSTS=${URL_INFO%%$'\t'*}
+    WEB_LOCAL_HOSTS=${URL_INFO#*$'\t'}
+    if [ -n "$WEB_LOCAL_HOSTS" ]; then
+        echo "HARNESS_DENIED: agy web mode refuses local/private URL hosts: $WEB_LOCAL_HOSTS" >&2
+        exit 4
+    fi
+    HOOK_PY=$(command -v python 2>/dev/null || true)
+    if [ -z "$HOOK_PY" ] || ! "$HOOK_PY" -c 'raise SystemExit(0)' >/dev/null 2>&1; then
+        HOOK_SHIM_DIR=$LOG_DIR/.hook-bin
+        mkdir -p "$HOOK_SHIM_DIR" || exit 2
+        printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$PY" > "$HOOK_SHIM_DIR/python" || exit 2
+        chmod +x "$HOOK_SHIM_DIR/python" || exit 2
+        HOOK_PY=$HOOK_SHIM_DIR/python
+        HOOK_PATH_PREFIX=$(cd "$HOOK_SHIM_DIR" && pwd):
+    fi
+    WEB_AGENT_INSTALLED=$HOME/.gemini/config/agents/$WEB_AGENT.md
+    if [ ! -f "$WEB_AGENT_SOURCE" ] || [ ! -f "$WEB_AGENT_INSTALLED" ] \
+       || ! cmp -s "$WEB_AGENT_SOURCE" "$WEB_AGENT_INSTALLED"; then
+        echo "AGY_UNAVAILABLE: install the exact checked-in $WEB_AGENT_SOURCE at $WEB_AGENT_INSTALLED" >&2
+        exit 2
+    fi
+    if [ ! -f "$WEB_HOOK_CONFIG" ] || [ ! -f "$WEB_HOOK_GUARD" ] \
+       || [ ! -f "$WEB_HOOK_GLOBAL_CONFIG" ] || [ ! -f "$WEB_HOOK_INSTALLED" ] \
+       || ! cmp -s "$WEB_HOOK_GUARD" "$WEB_HOOK_INSTALLED"; then
+        echo "AGY_UNAVAILABLE: install the checked-in web cache-read hook in $WEB_HOOK_GLOBAL_CONFIG and $WEB_HOOK_INSTALLED" >&2
+        exit 2
+    fi
+    # Check the exact hook wiring and exercise both decisions before granting
+    # non-interactive tool permission. This catches stale wiring, interpreter
+    # failures and a guard that no longer fails closed.
+    if ! PATH="${HOOK_PATH_PREFIX}${PATH}" "$PY" - "$WEB_HOOK_CONFIG" "$WEB_HOOK_GLOBAL_CONFIG" "$WEB_HOOK_GUARD" "$HOOK_PY" <<'PY_WEB_GUARD'
+import json, os, pathlib, subprocess, sys, tempfile
+source_config_path, global_config_path, guard_path = map(pathlib.Path, sys.argv[1:4])
+hook_python = sys.argv[4]
+try:
+    source_config = json.loads(source_config_path.read_text(encoding="utf-8"))
+    global_config = json.loads(global_config_path.read_text(encoding="utf-8"))
+    hook = source_config["agy-fetch-cache-only"]
+    assert global_config["agy-fetch-cache-only"] == hook
+    item, = hook["PreToolUse"]
+    handler, = item["hooks"]
+    assert hook.get("enabled", True) is True
+    assert item["matcher"] == "view_file|read_url_content"
+    assert handler["type"] == "command"
+    assert handler["command"] == "python ~/.gemini/config/hooks/agy_fetch_view_guard.py"
+    assert int(handler["timeout"]) > 0
+    with tempfile.TemporaryDirectory(prefix="agy-web-guard-") as tmp:
+        artifact = pathlib.Path(tmp) / "conversation"
+        cache = artifact / ".system_generated" / "steps" / "1" / "content.md"
+        cache.parent.mkdir(parents=True)
+        cache.write_text("fetched", encoding="utf-8")
+        outside = pathlib.Path(tmp) / "workspace.txt"
+        outside.write_text("private", encoding="utf-8")
+        web_env = os.environ.copy()
+        web_env["HARNESS_AGY_WEB"] = "1"
+        web_env["HARNESS_AGY_URL_HOSTS"] = "docs.example.com"
+        direct_env = os.environ.copy()
+        direct_env.pop("HARNESS_AGY_WEB", None)
+        def decision(payload, env):
+            result = subprocess.run([hook_python, str(guard_path)], input=json.dumps(payload),
+                                    text=True, capture_output=True, env=env, timeout=5, check=True)
+            return json.loads(result.stdout)["decision"]
+        view = lambda target: {"toolCall": {"name": "view_file", "args": {"AbsolutePath": str(target)}},
+                               "artifactDirectoryPath": str(artifact)}
+        fetch = lambda url: {"toolCall": {"name": "read_url_content", "args": {"Url": url}}}
+        assert decision(view(cache), web_env) == "allow"
+        assert decision(view(outside), web_env) == "deny"
+        assert decision(fetch("https://docs.example.com/page"), web_env) == "allow"
+        assert decision(fetch("https://other.example/page"), web_env) == "deny"
+        assert decision(fetch("http://127.0.0.1/x"), web_env) == "deny"
+        assert decision(view(outside), direct_env) == "allow"
+except Exception as error:
+    print(f"web guard preflight failed: {type(error).__name__}: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY_WEB_GUARD
+    then
+        echo "AGY_UNAVAILABLE: web cache-read hook wiring or fail-closed probe failed" >&2
+        exit 2
+    fi
+    # `agy --agent` otherwise falls back silently to the default agent. Prove
+    # both the installed definition and discovery before using
+    # --dangerously-skip-permissions: with this named agent the only exposed
+    # content tool is read_url_content.
+    AGENT_LIST=$(agy agent 2>/dev/null) || {
+        echo "AGY_UNAVAILABLE: cannot inspect installed agy agents" >&2
+        exit 2
+    }
+    if ! printf '%s\n' "$AGENT_LIST" | grep -Fxq "$WEB_AGENT"; then
+        echo "AGY_UNAVAILABLE: required web-only agent '$WEB_AGENT' is not discoverable; refusing agy's default-agent fallback" >&2
+        exit 2
+    fi
 fi
 
 mkdir -p "$LOG_DIR" || exit 2
@@ -248,10 +402,18 @@ fi
 # The CLI runs as a background child so its PID is recorded and a signal
 # to the launcher can be forwarded; `wait` keeps the call synchronous.
 run_agy() {
+    local -a agy_args run_env
+    run_env=(env "PATH=${HOOK_PATH_PREFIX}${PATH}")
+    agy_args=(--log-file "$AGY_LOG" --effort "$EFFORT" --output-format json
+        --print-timeout "${TIMEOUT}s")
+    [ -z "$MODEL" ] || agy_args+=(--model "$MODEL")
+    if [ "$WORKER_ROLE" = web ]; then
+        run_env+=(HARNESS_AGY_WEB=1 "HARNESS_AGY_URL_HOSTS=$WEB_URL_HOSTS")
+        agy_args+=(--agent "$WEB_AGENT" --dangerously-skip-permissions --disable-slash-commands)
+    fi
     timing_enter cli
     set -m   # own process group, so a signal reaches agy and its children
-    "${RUNNER[@]}" agy --log-file "$AGY_LOG" --effort "$EFFORT" --output-format json \
-        --print-timeout "${TIMEOUT}s" -p "$(cat "$PROMPT_FILE")" > "$RUN_JSON" 2> "$RUN_ERR" < /dev/null &
+    "${run_env[@]}" "${RUNNER[@]}" agy "${agy_args[@]}" -p "$(cat "$PROMPT_FILE")" > "$RUN_JSON" 2> "$RUN_ERR" < /dev/null &
     CHILD_PID=$!
     set +m
     CHILD_STIME=$(pid_stime "$CHILD_PID")
@@ -320,6 +482,14 @@ RESPONSE_LINES=$(printf '%s' "$PARSED" | cut -f4)
 DENIED=$(printf '%s' "$PARSED" | cut -f5)
 AGY_ERROR=$(printf '%s' "$PARSED" | cut -f6)
 [ -z "$AGY_STATUS" ] && AGY_STATUS=invalid
+WEB_RECEIPT_OK=1
+if [ "$WORKER_ROLE" = web ]; then
+    if grep -qiE '^[[:space:]]*([*_`>#-][[:space:]]*)*FETCH_INCOMPLETE([[:space:]]|:)' "$RESPONSE_FILE" 2>/dev/null \
+       || ! grep -qE '^[[:space:]]*EVIDENCE[[:space:]]*:' "$RESPONSE_FILE" 2>/dev/null \
+       || ! grep -qE '^[[:space:]]*SOURCES[[:space:]]*:' "$RESPONSE_FILE" 2>/dev/null; then
+        WEB_RECEIPT_OK=0
+    fi
+fi
 
 # ---- postflight ----
 workspace_after "$TREE_BEFORE" "$TREE_AFTER" "$CHANGED_FILE" "${WORKSPACE_EXCLUDES[@]}"
@@ -361,9 +531,15 @@ fi
 # output proven written — a SUCCESS with nothing to show is the
 # documented auto-denied/empty failure shape, never DONE.
 if [ "$AGY_EXIT" -eq 0 ] && [ "$AGY_STATUS" = SUCCESS ] && [ -z "$DENIED" ] && [ -z "$MISSING" ] \
+   && { [ "$WORKER_ROLE" != web ] || [ "$DIRTY_EDITS" -eq 0 ]; } \
+   && { [ "$WORKER_ROLE" != web ] || [ "$WEB_RECEIPT_OK" -eq 1 ]; } \
    && { [ -s "$RESPONSE_FILE" ] || [ -n "$PRODUCED" ]; }; then
     STATUS=DONE
 elif [ "$AGY_STATUS" = invalid ]; then
+    STATUS=AGY_UNAVAILABLE
+elif [ "$WORKER_ROLE" = web ] && { [ -n "$DENIED" ] || [ ! -s "$RESPONSE_FILE" ]; }; then
+    STATUS=AGY_UNAVAILABLE
+elif [ "$WORKER_ROLE" = web ] && [ "$WEB_RECEIPT_OK" -ne 1 ]; then
     STATUS=AGY_UNAVAILABLE
 elif printf '%s' "$AGY_ERROR" | grep -qiE 'quota|rate limit|not logged|unauthenticated|auth'; then
     # Plan quota / login problems are the documented fallback trigger
@@ -401,7 +577,7 @@ esac
 
 # ---- report ----
 report() {
-echo "STATUS: $STATUS (agy_exit=$AGY_EXIT, agy_status=$AGY_STATUS, attempts=$ATTEMPTS, effort=$EFFORT, turns=$TURNS)"
+echo "STATUS: $STATUS (agy_exit=$AGY_EXIT, agy_status=$AGY_STATUS, attempts=$ATTEMPTS, role=$WORKER_ROLE, model=${MODEL:-default}, effort=$EFFORT, turns=$TURNS)"
 echo "RUN_ID: $RUN_ID (state: $(state_file "$RUN_ID"), report: $REPORT_FILE)"
 if [ -n "$STALE_CLEANED" ]; then
     echo "STALE_RUN_CLEANED: earlier run(s) $STALE_CLEANED had died without a final state — marked aborted"
@@ -420,6 +596,11 @@ if [ -n "$AGY_ERROR" ]; then
 fi
 if [ "${HARNESS_ALLOW_AGY_COMMAND:-}" = "1" ]; then
     echo "AGY_COMMAND_APPROVED: HARNESS_ALLOW_AGY_COMMAND=1 was present for this run"
+fi
+if [ "$WORKER_ROLE" = web ]; then
+    echo "WEB_AGENT: $WEB_AGENT (read_url_content + guarded cache view; installed definition and discovery verified before launch)"
+    echo "WEB_FILE_GUARD: $WEB_HOOK_GUARD (current conversation generated content.md only)"
+    echo "WEB_RECEIPT: $([ "$WEB_RECEIPT_OK" -eq 1 ] && echo complete || echo incomplete) (requires EVIDENCE and SOURCES; FETCH_INCOMPLETE falls back)"
 fi
 if [ -n "${HARNESS_AGY_SETTINGS:-}" ]; then
     echo "SETTINGS_OVERRIDE: grant gate read $AGY_SETTINGS instead of the real agy global settings (test/diagnostic use only)"

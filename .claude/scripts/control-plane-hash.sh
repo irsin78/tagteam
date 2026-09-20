@@ -18,7 +18,8 @@ def scan_error(error):
 def inventory():
     paths = {}
     for directory in (".claude/hooks", ".claude/scripts", ".claude/rules", ".claude/agents",
-                      ".claude/skills", ".claude/commands", ".codex/hooks"):
+                      ".claude/skills", ".claude/commands", ".codex/hooks",
+                      ".agents/agents", ".agents/hooks"):
         base = Path(directory)
         if not base.is_dir() or base.is_symlink():
             continue
@@ -33,6 +34,7 @@ def inventory():
         ".claude/settings.json", ".claude/settings.local.json", ".claude/sandbox-sensitive.json",
         ".claude/model-bindings.json", ".claude/model-bindings.local.json",
         ".claude/.stop-gate", ".claude/.preflight-status", ".mcp.json",
+        ".agents/hooks.json",
         ".codex/hooks.json", ".codex/config.toml", ".codex/AGENTS.md", ".codex/AGENTS.override.md",
         "CLAUDE.md", "AGENTS.md", "AGENTS.override.md", "check-windows-aliases.ps1", "check-posix.sh",
     ):
@@ -40,6 +42,8 @@ def inventory():
             paths[name] = Path(name)
     if sys.argv[1]:
         for name in (".claude/settings.json", ".claude/CLAUDE.md", ".gemini/antigravity-cli/settings.json",
+                     ".gemini/config/agents/agy-fetcher.md",
+                     ".gemini/config/hooks.json", ".gemini/config/hooks/agy_fetch_view_guard.py",
                      ".codex/config.toml", ".codex/AGENTS.md", ".codex/AGENTS.override.md"):
             path = Path(sys.argv[1]) / name
             if path.is_file():

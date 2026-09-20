@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -63,6 +64,10 @@ class InstallChecks(unittest.TestCase):
         for shell, name, command, script in runners:
             with tempfile.TemporaryDirectory(prefix='harness install-') as temp:
                 folder = Path(temp).resolve()
+                shim = folder / 'bin'
+                shim.mkdir()
+                (shim / 'python').symlink_to(sys.executable)
+                case_env = dict(env, PATH=shim.as_posix() + os.pathsep + env.get('PATH', ''))
                 hooks = folder / '.codex/hooks.json'
                 hooks.parent.mkdir()
                 executable = folder / name
@@ -76,7 +81,7 @@ class InstallChecks(unittest.TestCase):
                         args = command + [executable.as_posix()]
                         if shell == 'POSIX':
                             args.append(folder.as_posix())
-                        result = subprocess.run(args, cwd=folder, env=env, capture_output=True,
+                        result = subprocess.run(args, cwd=folder, env=case_env, capture_output=True,
                                                 text=True, encoding='utf-8', timeout=20)
                         self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
                         if exit_code:

@@ -22,10 +22,12 @@ CP_PATTERN = (
     r'(?:^|/)docs/orchestration/(?:delegation-matrix|retry-policy)\.md$|'
     r'(?:^|/)(?:\.claude/(?:hooks|scripts|rules|agents|skills|commands)(?:/|$)|'
     r'\.codex/hooks(?:/|$)|'
+    r'\.agents/(?:agents(?:/|$)|hooks(?:\.json$|/|$))|'
     r'\.claude/(?:settings(?:\.local)?\.json|sandbox-sensitive\.json|'
     r'model-bindings(?:\.local)?\.json|\.stop-gate|\.preflight-status)$|'
     r'\.codex/(?:config\.toml|hooks\.json|AGENTS(?:\.override)?\.md)$|'
     r'\.gemini/antigravity-cli/settings\.json$|'
+    r'\.gemini/config/(?:agents/agy-fetcher\.md|hooks(?:\.json|/agy_fetch_view_guard\.py))$|'
     r'(?:\.mcp\.json|CLAUDE\.md|AGENTS(?:\.override)?\.md|'
     r'check-windows-aliases\.ps1|check-posix\.sh)$)')
 
@@ -53,9 +55,23 @@ def template_path(path, cwd):
         path = os.path.join(cwd, path)
     try:
         real = os.path.realpath(path)
+        root = os.path.realpath(PROJECT_ROOT)
+        relative = os.path.relpath(real, root)
+        parts = relative.split(os.sep)
+        if not parts or parts[0] in ('', '.', '..'):
+            return False
         for name in TEMPLATE_DIRS:
             folder = os.path.join(PROJECT_ROOT, name)
-            if os.path.isdir(folder) and real.startswith(os.path.realpath(folder) + os.sep):
+            spelled_folder = os.path.join(root, parts[0])
+            if not (os.path.isdir(folder) and os.path.isdir(spelled_folder)
+                    and os.path.samefile(spelled_folder, folder)):
+                continue
+            # Rebuild through the canonical folder spelling, then resolve the
+            # suffix again so a symlink/junction inside template cannot escape.
+            canonical = os.path.realpath(os.path.join(folder, *parts[1:]))
+            folder_real = os.path.realpath(folder)
+            if os.path.commonpath((canonical, folder_real)) == folder_real \
+                    and canonical != folder_real:
                 return True
     except (OSError, ValueError):
         pass

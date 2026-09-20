@@ -15,7 +15,7 @@ class WorkspaceSnapshot(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.git('init', '-q')
         self.git('config', 'core.autocrlf', 'false')
         (self.root / 'tracked.bin').write_bytes(b'original\0data')
@@ -100,7 +100,7 @@ class NonGitSnapshot(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='harness-nongit-')
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         (self.root / '.claude').mkdir()
 
     def call(self, *args, cwd=None):
