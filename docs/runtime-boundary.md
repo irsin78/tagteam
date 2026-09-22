@@ -150,51 +150,6 @@ to the input character limit and flagged with INPUT_TRUNCATED.
 
 ## Shared launcher parts and optional tools
 
-In the agy external-URL lane the LAUNCHER fetches. `web_fetch.py` validates
-each URL named in the prompt, retrieves it, extracts the text, and passes that
-text in the prompt to `agy-summarizer`, an agent that declares no tools. The
-model never selects a host, so URL policy is enforced by launcher code before
-any request rather than by a hook reacting to a model's choice.
-
-Accepted URLs are http(s), ASCII, free of backslashes, userinfo and
-percent-encoded authority, on a dotted name whose last label is alphabetic, and
-resolving only to public addresses. Every hop is validated before it is
-requested, which requires not using urllib's default opener: that one follows
-redirects itself, which would make the manual loop dead code and let a single
-302 from a validated page return a loopback or LAN response labelled with the
-original URL. The dedicated opener follows nothing and speaks only HTTP(S); the
-default one also installs FTP and file handlers.
-
-**Residual risk:** a name that resolves to a private address between validation
-and connection (DNS rebinding) is not covered. Bodies are capped at 5 MB with
-the limit applied to DECOMPRESSION itself, because a cap on compressed bytes
-bounds nothing: a few hundred KB of gzip expands to hundreds of MB. Text beyond
-the prompt budget is trimmed; every truncation is stated in the report and in
-the worker's prompt. A URL refused while fetching exits 4 as policy and does not
-fall back, because re-fetching it through another lane would evade the refusal.
-
-The global `agy-web-no-tools` hook denies every tool call in this lane
-unconditionally. It parses nothing, so it has no failure mode from parser
-disagreement or an unrecognized tool name, but it cannot cover a case where the
-hook does not run at all. The primary control is the agent's empty tool list;
-the launcher proceeds only after byte equality and discovery checks and passes
-no permission-skip flag.
-
-`EVIDENCE:` quotations are checked against the text the launcher fetched. That
-catches invented support; it does not establish that the summary read the
-source correctly.
-
-The entire global `~/.gemini/config/hooks.json` is in the control-plane hash, so
-changing an unrelated global hook during a run also blocks that run. Installation
-must MERGE our key into that file: copying it over unregisters other tools' hooks.
-
-Defect in agy 1.2.7's own `read_url_content` (confirmed 2026-09-20): it trims a
-gzip-encoded body at the `Content-Length` value, which describes the COMPRESSED
-bytes, silently losing the compression ratio's worth of the page (84-85% on
-measured pages). Servers that omit `Content-Length` deliver in full. The harness
-cannot control agy's request headers, so there is no workaround; this is the
-practical reason the launcher fetches instead.
-
 The local read path does not take a workspace snapshot. A report's
 `CHANGED: not measured` is not an observation of no change. When change
 evidence is needed, confirm it separately in the adopting project.

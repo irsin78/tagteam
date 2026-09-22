@@ -4,8 +4,9 @@ description: >
   Git workspace only (worktree isolation). For non-Git projects, the parent
   uses claude-run.sh with the equivalent role/binding instead.
   Claude-side tier-C implementation and writing worker (bindings
-  C/claude). Use for: implementation when codex is unavailable
-  (CODEX_UNAVAILABLE), the antigravity fallback (AGY_UNAVAILABLE), tasks
+  C/claude). Use at this tier only when it meets the task's capability/risk
+  floor and the host's selected fallback. It supports implementation when
+  codex or agy is unavailable, tasks
   that must run inside this session rather than as their own process, and
   verification-gate tests. It runs in a worktree branched from HEAD, so it
   starts at HEAD — the parent supplies any intended uncommitted inputs. It implements and writes from decisions

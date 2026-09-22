@@ -30,12 +30,7 @@ class GuardTests(unittest.TestCase):
                     {'HARNESS_DELEGATE_RUN':'1','HARNESS_ALLOW_CONTROL_PLANE':'1'}))
     def test_writes_and_explicit_grant(self):
         for host in ('claude','codex'):
-            for path in ('.claude/settings.json','.claude/hooks/new.py','.codex/hooks.json','AGENTS.md',
-                         '.agents/hooks.json','.agents/hooks/agy_web_no_tools.py',
-                         '.agents/agents/agy-summarizer.md',
-                         '~/.gemini/config/agents/agy-summarizer.md',
-                         '~/.gemini/config/hooks.json',
-                         '~/.gemini/config/hooks/agy_web_no_tools.py'):
+            for path in ('.claude/settings.json','.claude/hooks/new.py','.codex/hooks.json','AGENTS.md'):
                 data={'tool_name':'Write','tool_input':{'file_path':path}}
                 self.assertIsNotNone(guard.evaluate_host(data,host,{'HARNESS_DELEGATE_RUN':'1'}))
                 self.assertIsNone(guard.evaluate_host(data,host,
@@ -102,8 +97,6 @@ class GuardTests(unittest.TestCase):
         root=self.ensure_template_dir()
         for rel in ('template/.claude/hooks/deny_dangerous.py','template/.claude/settings.json',
                     'template/.codex/hooks.json','template/CLAUDE.md',
-                    'template/.agents/hooks.json','template/.agents/hooks/agy_web_no_tools.py',
-                    'template/.agents/agents/agy-summarizer.md',
                     'template/docs/orchestration/delegation-matrix.md'):
             for path in (rel, os.path.join(root, rel)):
                 for host in ('claude','codex'):

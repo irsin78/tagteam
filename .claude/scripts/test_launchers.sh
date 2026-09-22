@@ -47,7 +47,7 @@ echo "GROUPS: $TEST_GROUPS"
 # under a detached run): scrub every launcher marker and the detach
 # plumbing so the launchers under test start from a clean environment.
 # Cases set what they need explicitly per invocation.
-unset HARNESS_SAVE_BASELINE HARNESS_ALLOW_CONTROL_PLANE HARNESS_ALLOW_AGY_COMMAND HARNESS_ALLOW_FULL_ACCESS       HARNESS_ALLOW_FORGET HARNESS_AGY_SETTINGS HARNESS_AGY_WEB HARNESS_STATE_DIR HARNESS_TREE_KEY       HARNESS_RUN_ID HARNESS_RUN_CHILD HARNESS_WEB_FETCHER STUB_ACTION STUB_FETCH_POLICY_FAIL STUB_VERIFY_PATH STUB_AGENT_MISSING
+unset HARNESS_SAVE_BASELINE HARNESS_ALLOW_CONTROL_PLANE HARNESS_ALLOW_AGY_COMMAND HARNESS_ALLOW_FULL_ACCESS       HARNESS_ALLOW_FORGET HARNESS_AGY_SETTINGS HARNESS_STATE_DIR HARNESS_TREE_KEY       HARNESS_RUN_ID HARNESS_RUN_CHILD STUB_ACTION STUB_VERIFY_PATH
 
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     echo "FAIL: bash 4+ required"
@@ -161,6 +161,7 @@ case "${STUB_ACTION:-none}" in
     # (push review 2026-09-04, BLOCKER).
     touch-codex-indented)
         printf '\n [projects."/repo"]\ntrust_level = "trusted"\n' >> "$HOME/.codex/config.toml" ;;
+    delayed-write:*) sleep 1.1; printf '%s\n' 'stub-output' > "${STUB_ACTION#delayed-write:}" ;;
     write:*) printf '%s\n' 'stub-output' > "${STUB_ACTION#write:}" ;;
     commit) git -c user.name=Stub -c user.email=stub@example.invalid commit --allow-empty -m stub >/dev/null ;;
     sleep:*)
@@ -185,19 +186,14 @@ cat > "$STUB_BIN/agy" <<'STUB'
 #!/usr/bin/env bash
 set -u
 printf '%s\n' "$*" >> "$FIXTURE_ROOT/agy-args.log"
-if [ "${1:-}" = agent ]; then
-    [ "${STUB_AGENT_MISSING:-}" = 1 ] || echo agy-summarizer
-    exit 0
-fi
-echo "${HARNESS_AGY_WEB:-unset}" > "$FIXTURE_ROOT/agy-web-env.log"
 case "${STUB_ACTION:-none}" in
     notice) printf '{}\n' > .claude/.preflight-status ;;
     none) ;;
     remove:*) rm -f -- "${STUB_ACTION#remove:}" ;;
     init-git) git init -q ;;
     break-index) printf 'broken index' > .git/index ;;
-    write:*) printf '%s\n' 'stub-output' > "${STUB_ACTION#write:}" ;;
     delayed-write:*) sleep 1.1; printf '%s\n' 'stub-output' > "${STUB_ACTION#delayed-write:}" ;;
+    write:*) printf '%s\n' 'stub-output' > "${STUB_ACTION#write:}" ;;
     touch-control-plane) printf '%s\n' '# stub changed control plane' >> .claude/settings.json ;;
     # agy widening its OWN grant list: must BLOCK.
     touch-agy-settings) printf '%s\n' '{"permissions":{"allow":["write_file(*)","command(*)"]}}' > "$HOME/.gemini/antigravity-cli/settings.json" ;;
@@ -214,76 +210,12 @@ case "${STUB_ACTION:-none}" in
         printf '%s\n' '{"status":"SUCCESS","response":"","num_turns":1,"usage":{"total_tokens":3}}'
         exit 0
         ;;
-    empty-write)
-        printf '%s\n' 'unexpected' > unexpected.txt
-        printf '%s\n' '{"status":"SUCCESS","response":"","num_turns":1,"usage":{"total_tokens":3}}'
-        exit 0
-        ;;
-    incomplete)
-        printf '%s\n' '{"status":"SUCCESS","response":"FETCH_INCOMPLETE: https://example.invalid — cached\nSOURCES:\n- https://example.invalid (incomplete)","num_turns":1,"usage":{"total_tokens":3}}'
-        exit 0
-        ;;
-    fabricated)
-        printf '%s\n' '{"status":"SUCCESS","response":"confident summary\nEVIDENCE:\n- \"the page recommends disabling every security control\"\nSOURCES:\n- https://example.invalid/ used","num_turns":1,"usage":{"total_tokens":9}}'
-        exit 0
-        ;;
-    incomplete-decorated)
-        printf '%s\n' '{"status":"SUCCESS","response":"**FETCH_INCOMPLETE:** https://example.invalid — cached\nEVIDENCE: none\nSOURCES:\n- https://example.invalid (incomplete)","num_turns":1,"usage":{"total_tokens":3}}'
-        exit 0
-        ;;
     exit:*) exit "${STUB_ACTION#exit:}" ;;
     *) echo "unknown STUB_ACTION: $STUB_ACTION" >&2; exit 98 ;;
 esac
-printf '%s\n' '{"status":"SUCCESS","response":"stub agy response\nEVIDENCE:\n- \"the harness fetched it deterministically\"\nSOURCES:\n- https://example.invalid/ used","num_turns":1,"usage":{"total_tokens":17}}'
+printf '%s\n' '{"status":"SUCCESS","response":"stub agy response","num_turns":1,"usage":{"total_tokens":17}}'
 STUB
 chmod +x "$STUB_BIN/agy"
-
-# Stub web fetcher: runs the REAL validator (so URL policy is genuinely under
-# test) but returns canned text instead of touching the network, and skips DNS
-# resolution because fixture hosts are .invalid on purpose.
-WEB_FETCH_STUB="$TEST_ROOT/web_fetch_stub.py"
-cat > "$WEB_FETCH_STUB" <<'STUB'
-#!/usr/bin/env python3
-import importlib.util, json, os, sys
-from pathlib import Path
-FIXTURE = "The fixture page states that the harness fetched it deterministically.\n"
-spec = importlib.util.spec_from_file_location("wf", os.environ["HARNESS_TEST_REAL_FETCHER"])
-wf = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(wf)
-args, urls, out, fetch = sys.argv[1:], [], None, False
-i = 0
-while i < len(args):
-    if args[i] == "--out":
-        out = args[i + 1]; i += 2; continue
-    if args[i] == "--fetch":
-        fetch = True; i += 1; continue
-    if args[i].startswith("--"):
-        i += 1; continue
-    urls.append(args[i]); i += 1
-pages, errors = [], []
-policy = False
-for url in urls:
-    try:
-        if fetch and os.environ.get("STUB_FETCH_POLICY_FAIL") == "1":
-            raise wf.Rejected("host resolves to non-public 10.0.0.5")
-        final = wf.validate(url)
-    except wf.Rejected as error:
-        policy = True
-        errors.append({"url": url, "reason": str(error), "kind": "policy"}); continue
-    page = {"url": url, "final_url": final, "status": 200, "redirects": [],
-            "content_type": "text/html", "bytes": len(FIXTURE),
-            "chars": len(FIXTURE), "truncated": False}
-    if fetch:
-        directory = Path(out); directory.mkdir(parents=True, exist_ok=True)
-        target = directory / f"page-{len(pages) + 1}.txt"
-        target.write_text(FIXTURE, encoding="utf-8")
-        page["path"] = str(target)
-    pages.append(page)
-json.dump({"pages": pages, "errors": errors}, sys.stdout)
-sys.stdout.write("\n")
-sys.exit(4 if policy else (1 if errors or not pages else 0))
-STUB
-chmod +x "$WEB_FETCH_STUB"
 
 # Stub `claude` (claude-run.sh): prompt arrives on STDIN, the result is a
 # single JSON envelope on stdout -- the shape the launcher parses.
@@ -307,8 +239,47 @@ case "${STUB_ACTION:-none}" in
     rewind) git update-ref HEAD HEAD~1 ;;
     delete-head) git update-ref -d HEAD ;;
     emptyjson) echo '{"result":""}'; exit 0 ;;
+    # Real CLI envelope shapes for the web role. web-denied is the reproduced
+    # false-DONE: process exit 0, subtype success, and the fetch never happened.
+    web-denied)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"FETCH_UNAVAILABLE","permission_denials":[{"tool_name":"WebFetch","tool_use_id":"toolu_stub","tool_input":{"url":"https://example.com","prompt":"read it"}}],"usage":{"input_tokens":10,"output_tokens":5}}'
+        exit 0 ;;
+    web-nostruct)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"SUMMARY: stub says it fetched the page","usage":{"input_tokens":10,"output_tokens":5}}'
+        exit 0 ;;
+    web-malformed)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"x","structured_output":{"status":"ok","summary":"no sources key at all"},"usage":{"input_tokens":10,"output_tokens":5}}'
+        exit 0 ;;
+    web-unavailable)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"x","structured_output":{"status":"unavailable","summary":"stub reader could not reach the page","sources":[{"url":"https://example.com","fetched":false}]},"usage":{"input_tokens":10,"output_tokens":5}}'
+        exit 0 ;;
+    web-nofetch)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"x","structured_output":{"status":"ok","summary":"stub summary written from memory","sources":[{"url":"https://example.com","fetched":false}]},"usage":{"input_tokens":10,"output_tokens":5}}'
+        exit 0 ;;
+    web-partial)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"x","structured_output":{"status":"ok","summary":"one page missing","sources":[{"url":"https://example.com","fetched":true},{"url":"https://docs.python.org","fetched":false}]}}'
+        exit 0 ;;
+    web-empty-summary)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"plausible prose","structured_output":{"status":"ok","summary":"","sources":[{"url":"https://example.com","fetched":true}]}}'
+        exit 0 ;;
+    # A genuine non-web success whose PROSE contains the web sentinels.
+    prose-sentinel)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"Report: the page said FETCH_UNAVAILABLE and \"status\":\"unavailable\", quoted here as prose.","usage":{"input_tokens":10,"output_tokens":5}}'
+        exit 0 ;;
+    # Incidental denial outside the web role: the run still succeeded.
+    bash-denied)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"stub final message","permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_stub","tool_input":{"command":"ls"}}],"usage":{"input_tokens":10,"output_tokens":5}}'
+        exit 0 ;;
     exit:*) exit "${STUB_ACTION#exit:}" ;;
     *) echo "unknown STUB_ACTION: $STUB_ACTION" >&2; exit 98 ;;
+esac
+# Default success. When the launcher asked for a schema (web role), answer in
+# that shape -- STUB_ACTION=none falls through to here, which is what keeps
+# claude-web and the web-model effort scenario at rc 0.
+case "$*" in
+    *--json-schema*)
+        printf '%s\n' '{"is_error":false,"subtype":"success","result":"","structured_output":{"status":"ok","summary":"stub web summary quoting FETCH_UNAVAILABLE and status=unavailable as page text","sources":[{"url":"https://example.com","fetched":true}]},"usage":{"input_tokens":10,"output_tokens":5}}'
+        exit 0 ;;
 esac
 echo '{"result":"stub final message","usage":{"input_tokens":10,"output_tokens":5}}'
 STUB
@@ -350,18 +321,11 @@ fresh_case() {
     CASE_REPO="$TEST_ROOT/case-$CASE_NO/repo"
     CASE_HOME="$TEST_ROOT/case-$CASE_NO/home"
     [ "${1:-}" != nongit ] || CASE_REPO="$NON_GIT_ROOT/case-$CASE_NO/repo"
-    mkdir -p "$CASE_REPO/.claude" "$CASE_REPO/.agents/agents" "$CASE_REPO/.agents/hooks" \
-        "$CASE_HOME/.gemini/antigravity-cli" "$CASE_HOME/.gemini/config/agents" "$CASE_HOME/.gemini/config/hooks"
-    cp "$REPO_ROOT/.agents/agents/agy-summarizer.md" "$CASE_REPO/.agents/agents/agy-summarizer.md"
-    cp "$REPO_ROOT/.agents/hooks.json" "$CASE_REPO/.agents/hooks.json"
-    cp "$REPO_ROOT/.agents/hooks/agy_web_no_tools.py" "$CASE_REPO/.agents/hooks/agy_web_no_tools.py"
-    cp "$REPO_ROOT/.agents/agents/agy-summarizer.md" "$CASE_HOME/.gemini/config/agents/agy-summarizer.md"
-    cp "$REPO_ROOT/.agents/hooks.json" "$CASE_HOME/.gemini/config/hooks.json"
-    cp "$REPO_ROOT/.agents/hooks/agy_web_no_tools.py" "$CASE_HOME/.gemini/config/hooks/agy_web_no_tools.py"
+    mkdir -p "$CASE_REPO/.claude" "$CASE_HOME/.gemini/antigravity-cli"
     printf '%s\n' '{"permissions":{"allow":["write_file(*)"],"deny":[]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
     printf '%s\n' '{"permissions":{}}' > "$CASE_REPO/.claude/settings.json"
     printf '%s\n' '.claude/codex-logs/' '.claude/agy-logs/' '.claude/claude-logs/' '.claude/.probe-cache' > "$CASE_REPO/.gitignore"
-    printf '%s\n' 'test prompt https://example.invalid/' > "$CASE_REPO/prompt.txt"
+    printf '%s\n' 'test prompt' > "$CASE_REPO/prompt.txt"
     [ "${1:-}" != nongit ] || return 0
     (
         cd "$CASE_REPO" || exit 1
@@ -385,9 +349,7 @@ run_capture() {
     LAST_OUT="$TEST_ROOT/$label.out"
     (
         cd "$CASE_REPO" || exit 99
-        env HOME="$CASE_HOME" PATH="$STUB_BIN:$ORIGINAL_PATH" FIXTURE_ROOT="$TEST_ROOT" \
-            HARNESS_WEB_FETCHER="$WEB_FETCH_STUB" \
-            HARNESS_TEST_REAL_FETCHER="$REPO_ROOT/.claude/scripts/web_fetch.py" "$@"
+        env HOME="$CASE_HOME" PATH="$STUB_BIN:$ORIGINAL_PATH" FIXTURE_ROOT="$TEST_ROOT" "$@"
     ) > "$LAST_OUT" 2>&1
     LAST_RC=$?
 }
@@ -536,168 +498,30 @@ expect_case "agy command grant explicit approval" "$ok" "exit=$LAST_RC"
 
 fresh_case
 printf '%s\n' '{"permissions":{"allow":[]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
-run_capture agy-web env STUB_ACTION=none HARNESS_RUN_ID=agyweb bash "$AGY_RUN" \
-    -a web -m gemini-3.8-flash -e low -p prompt.txt
-ok=0
-[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE.*role=web.*model=gemini-3.8-flash' \
-    && has "$LAST_OUT" '^WEB_AGENT: agy-summarizer' \
-    && has "$LAST_OUT" '^WEB_FETCHED: https://example\.invalid/' \
-    && has "$LAST_OUT" '^WEB_RECEIPT: complete' \
-    && has "$TEST_ROOT/agy-args.log" '--agent agy-summarizer' \
-    && has "$TEST_ROOT/agy-args.log" '--disable-slash-commands' \
-    && has "$TEST_ROOT/agy-web-env.log" '^1$' && ok=1
-expect_case "agy web uses only the verified named agent and selected model" "$ok" "exit=$LAST_RC"
-
-# The worker has no tools, so nothing needs auto-approving. Passing the flag
-# anyway would hand a silently-substituted default agent a blank cheque.
-ok=0; ! has "$TEST_ROOT/agy-args.log" 'dangerously-skip-permissions' && ok=1
-expect_case "agy web never passes the permission-skip flag" "$ok" "args=$TEST_ROOT/agy-args.log"
+run_capture agy-no-write bash "$AGY_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'no write_file grant' && ok=1
+expect_case "agy requires write_file allow" "$ok" "exit=$LAST_RC"
 
 fresh_case
-printf '%s\n' 'summarize the page' > "$CASE_REPO/prompt.txt"
+printf '%s\n' '{"permissions":{"allow":["write_file(*)"],"deny":["command(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+run_capture agy-command-deny-only env STUB_ACTION=none HARNESS_RUN_ID=agydeny bash "$AGY_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 0 ] && ! has "$LAST_OUT" 'HARNESS_DENIED' && ok=1
+expect_case "agy command entry in deny is ignored by grant gate" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf '%s\n' '{"permissions":{"allow":["command(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+decoy="$CASE_HOME/decoy-settings.json"
+printf '%s\n' '{"permissions":{"allow":["write_file(*)"]}}' > "$decoy"
+run_capture agy-settings-override env HARNESS_AGY_SETTINGS="$decoy" STUB_ACTION=none HARNESS_RUN_ID=agyoverride bash "$AGY_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" 'SETTINGS_OVERRIDE' && ok=1
+expect_case "agy settings override is honored" "$ok" "exit=$LAST_RC"
+
+fresh_case
+dd if=/dev/zero of="$CASE_REPO/large.txt" bs=30001 count=1 2>/dev/null
 rm -f "$TEST_ROOT/agy-args.log"
-run_capture agy-web-no-url bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'must name at least one explicit http' \
-    && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
-expect_case "agy web requires an explicit caller URL" "$ok" "exit=$LAST_RC"
-
-fresh_case
-printf '%s\n' 'summarize http://127.0.0.1:8080/private' > "$CASE_REPO/prompt.txt"
-rm -f "$TEST_ROOT/agy-args.log"
-run_capture agy-web-local-url bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'refused a URL in the prompt' \
-    && has "$LAST_OUT" '127\.0\.0\.1' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
-expect_case "agy web rejects local and private URL hosts" "$ok" "exit=$LAST_RC"
-
-fresh_case
-printf '%s\n' 'summarize http://2130706433/admin' > "$CASE_REPO/prompt.txt"
-rm -f "$TEST_ROOT/agy-args.log"
-run_capture agy-web-numeric-host bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'alphabetic top-level label' \
-    && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
-expect_case "agy web rejects a numeric spelling of a loopback address" "$ok" "exit=$LAST_RC"
-
-fresh_case
-printf '%s\n' 'summarize https://evil.invalid\@docs.invalid/leak' > "$CASE_REPO/prompt.txt"
-rm -f "$TEST_ROOT/agy-args.log"
-run_capture agy-web-backslash bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'backslash' \
-    && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
-expect_case "agy web rejects a backslash authority Node and Python read differently" "$ok" "exit=$LAST_RC"
-
-fresh_case
-printf '%s\n' 'summarize https://docs.invalid@evil.invalid/x' > "$CASE_REPO/prompt.txt"
-rm -f "$TEST_ROOT/agy-args.log"
-run_capture agy-web-userinfo bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'userinfo' \
-    && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
-expect_case "agy web rejects userinfo in the authority" "$ok" "exit=$LAST_RC"
-
-fresh_case
-run_capture agy-web-missing env STUB_AGENT_MISSING=1 bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" "required no-tools agent 'agy-summarizer' is not discoverable" && ok=1
-expect_case "agy web refuses silent default-agent fallback" "$ok" "exit=$LAST_RC"
-
-fresh_case
-printf '\n# stale global copy\n' >> "$CASE_HOME/.gemini/config/agents/agy-summarizer.md"
-run_capture agy-web-stale-agent bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'install the exact checked-in' && ok=1
-expect_case "agy web rejects a stale global agent definition" "$ok" "exit=$LAST_RC"
-
-fresh_case
-"$REAL_PY" -c 'from pathlib import Path; p=Path(__import__("sys").argv[1]); p.write_text(p.read_text().replace("\".*\"", "\"run_command\""))' "$CASE_REPO/.agents/hooks.json"
-run_capture agy-web-stale-hook bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'not wired as checked in' && ok=1
-expect_case "agy web rejects stale hook wiring" "$ok" "exit=$LAST_RC"
-
-fresh_case
-rm -f "$CASE_HOME/.gemini/config/hooks/agy_web_no_tools.py"
-run_capture agy-web-missing-guard bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'install the checked-in no-tools hook' && ok=1
-expect_case "agy web refuses to run without its installed backstop guard" "$ok" "exit=$LAST_RC"
-
-fresh_case
-run_capture agy-web-write env STUB_ACTION=write:unexpected.txt bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'CHANGED_CONTENT' && ! has "$LAST_OUT" '^STATUS: DONE' && ok=1
-expect_case "agy web fails when the workspace changes" "$ok" "exit=$LAST_RC"
-
-fresh_case
-run_capture agy-web-empty env STUB_ACTION=empty bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE' && has "$LAST_OUT" 'attempts=2' && ok=1
-expect_case "agy web empty response falls back instead of succeeding" "$ok" "exit=$LAST_RC"
-
-fresh_case
-run_capture agy-web-incomplete env STUB_ACTION=incomplete bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE' \
-    && has "$LAST_OUT" '^WEB_RECEIPT: incomplete' && ok=1
-expect_case "agy web incomplete fetch falls back instead of hallucinating" "$ok" "exit=$LAST_RC"
-
-fresh_case
-run_capture agy-web-incomplete-decorated env STUB_ACTION=incomplete-decorated bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE' \
-    && has "$LAST_OUT" '^WEB_RECEIPT: incomplete' && ok=1
-expect_case "agy web recognizes decorated incomplete receipts" "$ok" "exit=$LAST_RC"
-
-# The receipt's whole point: the launcher holds the fetched text, so support
-# the worker did not get from it is caught instead of reported as done.
-fresh_case
-run_capture agy-web-fabricated env STUB_ACTION=fabricated bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE' \
-    && has "$LAST_OUT" 'not in the fetched text' && ok=1
-expect_case "agy web rejects evidence that is absent from the fetched text" "$ok" "exit=$LAST_RC"
-
-fresh_case
-"$REAL_PY" -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["unrelated-hook"]={"PreInvocation":[]}; open(p,"w").write(json.dumps(d))' "$CASE_HOME/.gemini/config/hooks.json"
-run_capture agy-web-extra-global-hook env STUB_ACTION=none bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
-expect_case "agy web preserves unrelated global hook entries" "$ok" "exit=$LAST_RC"
-
-fresh_case
-run_capture agy-web-empty-write env STUB_ACTION=empty-write bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(unusable result after workspace changes\)' && ok=1
-expect_case "agy web never hides a mutation behind empty-result fallback" "$ok" "exit=$LAST_RC"
-
-fresh_case
-run_capture agy-web-output bash "$AGY_RUN" -a web -p prompt.txt -x output.txt
-ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'web mode cannot declare output files' && ok=1
-expect_case "agy web rejects write-output contracts" "$ok" "exit=$LAST_RC"
-
-# A guard whose command cannot execute is not a guard. Reading its wiring is
-# not evidence; the launcher runs it once and requires a deny.
-fresh_case
-printf 'raise SystemExit(3)\n' > "$CASE_HOME/.gemini/config/hooks/agy_web_no_tools.py"
-run_capture agy-web-guard-broken bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'install the checked-in no-tools hook' && ok=1
-expect_case "agy web rejects a global guard that differs from the checked-in one" "$ok" "exit=$LAST_RC"
-
-fresh_case
-"$REAL_PY" -c 'import sys;p=sys.argv[1];s=open(p).read().replace("\"deny\"","\"allow\"");open(p,"w").write(s)' "$CASE_REPO/.agents/hooks/agy_web_no_tools.py"
-cp "$CASE_REPO/.agents/hooks/agy_web_no_tools.py" "$CASE_HOME/.gemini/config/hooks/agy_web_no_tools.py"
-run_capture agy-web-guard-allows bash "$AGY_RUN" -a web -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'backstop guard did not run and deny' && ok=1
-expect_case "agy web refuses a backstop guard that does not deny" "$ok" "exit=$LAST_RC"
-
-# A refusal while fetching is policy, not availability: falling back would
-# re-fetch the same URL through another lane and evade the refusal.
-fresh_case
-rm -f "$TEST_ROOT/agy-args.log"
-run_capture agy-web-fetch-policy env STUB_FETCH_POLICY_FAIL=1 bash "$AGY_RUN" -a web -p prompt.txt
-# The discovery subcommand legitimately appears in the log; the MODEL call
-# must not, because the refusal happened before it.
-ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'refused a URL while fetching' \
-    && ! has "$TEST_ROOT/agy-args.log" '[-]-agent agy-summarizer' && ok=1
-expect_case "agy web treats a fetch-time refusal as policy, not fallback" "$ok" "exit=$LAST_RC"
-
-# Page text must not be able to forge the caller's section boundary.
-fresh_case
-run_capture agy-web-marked-prompt env STUB_ACTION=none bash "$AGY_RUN" -a web -p prompt.txt
-ok=0
-if [ "$LAST_RC" -eq 0 ]; then
-    built=$(ls -t "$CASE_REPO/.claude/agy-logs"/web-prompt-*.txt 2>/dev/null | head -1)
-    [ -n "$built" ] && grep -qE '^--- [0-9a-f]{16} SOURCE: ' "$built" \
-        && grep -qE '^--- [0-9a-f]{16} END OF SOURCE ---' "$built" && ok=1
-fi
-expect_case "agy web marks caller-authored delimiters with a per-run token" "$ok" "exit=$LAST_RC"
+run_capture agy-large-prompt bash "$AGY_RUN" -p large.txt
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" '> 30000' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy rejects prompt over 30 KB" "$ok" "exit=$LAST_RC"
 
 
 fi
@@ -864,10 +688,67 @@ ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(verification' &&
 timing_ok "$LAST_OUT" 1 1 || ok=0
 expect_case "Claude passing report cannot override failed verifier" "$ok" "exit=$LAST_RC"
 
+# Web role: the launcher's verdict comes from the structured contract and
+# runtime denial metadata, never from result prose. A fetch that did not
+# happen must never report DONE (reproduced false-DONE, 2026-09-22).
 fresh_case
+: > "$TEST_ROOT/claude-args.log"
 run_capture claude-web env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -a web -s read-only
-ok=0; [ "$LAST_RC" -eq 0 ] && has "$TEST_ROOT/claude-args.log" '--tools WebFetch' && ok=1
-expect_case "Claude web reader receives only WebFetch" "$ok" "exit=$LAST_RC"
+ok=0
+if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^WEB_FETCH: ok' \
+   && has "$LAST_OUT" 'mode=plan' \
+   && has "$TEST_ROOT/claude-args.log" '\-\-tools WebFetch ' \
+   && has "$TEST_ROOT/claude-args.log" '\-\-json-schema .*required.*status.*summary.*sources' \
+   && has "$TEST_ROOT/claude-args.log" 'Fetch only the URLs the task names' \
+   && ! has "$TEST_ROOT/claude-args.log" '\-\-tools [A-Za-z,]*(Agent|Task|Bash|Write)'; then ok=1; fi
+expect_case "Claude web success keeps WebFetch-only tools, plan mode and the reader contract" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-web-denied env STUB_ACTION=web-denied bash "$CLAUDE_RUN" -p prompt.txt -a web -s read-only
+ok=0
+if [ "$LAST_RC" -eq 1 ] && ! has "$LAST_OUT" '^STATUS: DONE' \
+   && has "$LAST_OUT" '^STATUS: FAILED\(web fetch permission denied, was DONE\)' \
+   && has "$LAST_OUT" '^WEB_FETCH: denied' && has "$LAST_OUT" 'FETCH_UNAVAILABLE'; then ok=1; fi
+expect_case "Claude web WebFetch denial is never DONE" "$ok" "exit=$LAST_RC"
+
+for spec in 'web-nostruct|web structured_output missing|missing' \
+            'web-malformed|web structured_output malformed|malformed' \
+            'web-unavailable|web fetch unavailable|unavailable' \
+            'web-nofetch|web fetch produced no fetched source|nofetch' \
+            'web-partial|web fetch produced no fetched source|nofetch' \
+            'web-empty-summary|web structured_output malformed|malformed'; do
+    IFS='|' read -r action reason state <<< "$spec"
+    fresh_case
+    run_capture "claude-$action" env STUB_ACTION="$action" bash "$CLAUDE_RUN" -p prompt.txt -a web -s read-only
+    ok=0
+    if [ "$LAST_RC" -eq 1 ] && ! has "$LAST_OUT" '^STATUS: DONE' \
+       && has "$LAST_OUT" "^STATUS: FAILED\\($reason, was DONE\\)" \
+       && has "$LAST_OUT" "^WEB_FETCH: $state"; then ok=1; fi
+    expect_case "Claude web $action is not DONE" "$ok" "exit=$LAST_RC"
+done
+
+# A failed fetch still shows what the reader said, so the parent can read the
+# cause without opening the raw JSON.
+fresh_case
+run_capture claude-web-summary env STUB_ACTION=web-unavailable bash "$CLAUDE_RUN" -p prompt.txt -a web -s read-only
+ok=0
+[ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'stub reader could not reach the page' && ok=1
+expect_case "Claude web failure keeps the reader summary visible" "$ok" "exit=$LAST_RC"
+
+# The web contract must not leak into the implement role.
+fresh_case
+: > "$TEST_ROOT/claude-args.log"
+run_capture claude-bash-denied env STUB_ACTION=bash-denied bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ! has "$LAST_OUT" '^WEB_FETCH' \
+   && ! has "$TEST_ROOT/claude-args.log" 'json-schema'; then ok=1; fi
+expect_case "non-web run with an incidental denied Bash still completes" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-prose env STUB_ACTION=prose-sentinel bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+expect_case "genuine success whose prose matches the web sentinels is not misclassified" "$ok" "exit=$LAST_RC"
 
 fresh_case
 run_capture claude-readonly env STUB_ACTION=none HARNESS_RUN_ID=claudero bash "$CLAUDE_RUN" -p prompt.txt -s read-only
@@ -1043,13 +924,8 @@ fi
 if selected agy; then
 fresh_case
 target="$CASE_REPO/agy-output.txt"
-rm -f "$TEST_ROOT/agy-args.log"
 run_capture agy-produced env STUB_ACTION="write:$target" HARNESS_RUN_ID=agyproduced bash "$AGY_RUN" -p prompt.txt -x "$target"
-ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PRODUCED:' \
-    && state_field_is agyproduced exit 0 \
-    && has "$TEST_ROOT/agy-web-env.log" '^unset$' \
-    && ! has "$TEST_ROOT/agy-args.log" '--agent' \
-    && ! has "$TEST_ROOT/agy-args.log" '--dangerously-skip-permissions' && ok=1
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PRODUCED:' && state_field_is agyproduced exit 0 && ok=1
 timing_ok "$LAST_OUT" 1 0 || ok=0
 expect_case "agy expected output produced" "$ok" "exit=$LAST_RC"
 

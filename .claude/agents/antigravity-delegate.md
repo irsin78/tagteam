@@ -53,8 +53,8 @@ text into shell arguments; never include untrusted external content.
      empty output`; do not read agy's internal transcript files.
 2. ONE effort bump (`-e high`) only when the diagnosis shows reasoning
    quality was the blocker — never because a run was slow or empty. If
-   it still fails, return `AGY_UNAVAILABLE` for the claude-implementer
-   fallback. Images never go to agy (codex launcher `-i` row).
+   it still fails, return `AGY_UNAVAILABLE` for the host's implementation
+   fallback under the delegation matrix. Images never go to agy (codex launcher `-i` row).
 3. SPLIT a task whose prompt exceeds ~30 KB into parts BEFORE running.
    For long runs start detached (`-b`) and poll `--wait <RUN_ID> -t 570`
    (exit 6 = still running); `HARNESS_BUSY: STALE_RUN <id>` (exit 5) means an
