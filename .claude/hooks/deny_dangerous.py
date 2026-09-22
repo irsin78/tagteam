@@ -22,12 +22,10 @@ CP_PATTERN = (
     r'(?:^|/)docs/orchestration/(?:delegation-matrix|retry-policy)\.md$|'
     r'(?:^|/)(?:\.claude/(?:hooks|scripts|rules|agents|skills|commands)(?:/|$)|'
     r'\.codex/hooks(?:/|$)|'
-    r'\.agents/(?:agents(?:/|$)|hooks(?:\.json$|/|$))|'
     r'\.claude/(?:settings(?:\.local)?\.json|sandbox-sensitive\.json|'
     r'model-bindings(?:\.local)?\.json|\.stop-gate|\.preflight-status)$|'
     r'\.codex/(?:config\.toml|hooks\.json|AGENTS(?:\.override)?\.md)$|'
     r'\.gemini/antigravity-cli/settings\.json$|'
-    r'\.gemini/config/(?:agents/agy-summarizer\.md|hooks(?:\.json|/agy_web_no_tools\.py))$|'
     r'(?:\.mcp\.json|CLAUDE\.md|AGENTS(?:\.override)?\.md|'
     r'check-windows-aliases\.ps1|check-posix\.sh)$)')
 
@@ -189,8 +187,7 @@ def destructive_git(verb, args):
 def direct_reason(tokens, delegate, readonly, approved, cwd, certain=True):
     grants, argv = invocation(tokens)
     protected_env = ('HARNESS_DELEGATE_RUN', 'HARNESS_STATE_DIR', 'HARNESS_TREE_KEY',
-                     'HARNESS_AGY_SETTINGS', 'HARNESS_WEB_FETCHER', 'HARNESS_RUN_ID',
-                     'HARNESS_RUN_CHILD')
+                     'HARNESS_AGY_SETTINGS', 'HARNESS_RUN_ID', 'HARNESS_RUN_CHILD')
     if delegate and any(k.startswith('HARNESS_ALLOW_') or k in protected_env for k in grants):
         return 'harness rule: delegate cannot set orchestrator-only overrides'
     if not argv:

@@ -29,8 +29,6 @@ are separate in [Maintenance guide](harness-maintenance.md).
   hooks/      Host-specific hooks and regression tests for dangerous commands, startup, stop, delegation results
   scripts/    codex·agy·claude·local delegation launchers (preflight/invocation/postflight), control-plane hashes, WSL isolation lane helpers
   settings.json · sandbox-sensitive.json · model-bindings.json (tier table) · model-bindings.local.json.example (local override skeleton; .local.json is gitignored)
-.agents/
-  agents/agy-summarizer.md · hooks.json · hooks/agy_web_no_tools.py (no-tools agy web summary path)
 CLAUDE.md.template          Orchestrator instructions to copy to the project root
 AGENTS.md.template          Codex orchestrator/delegate instructions (install as AGENTS.md)
 .codex/hooks.json           Codex SessionStart/PreToolUse/UserPromptSubmit/Stop wiring
@@ -348,7 +346,7 @@ individual missions. Merge existing project settings/instructions without overwr
 | Optional bundle | Additional files | When to use |
 |---|---|---|
 | Claude native workers | `claude-implementer.md`, `opus-architect.md`, `haiku-scout.md`, `haiku-fetcher.md`, `codex-delegate.md` in `.claude/agents/` | Native delegation/CLI controllers. Worktree roles require Git |
-| Antigravity | `.claude/scripts/agy-run.sh`, `.claude/agents/antigravity-delegate.md`, `.claude/skills/delegate-agy/SKILL.md`, `.agents/agents/agy-summarizer.md`, `.agents/hooks.json`, `.agents/hooks/agy_web_no_tools.py`, `.claude/scripts/web_fetch.py`, `.claude/scripts/web_receipt.py`, `.claude/scripts/install-agy-web.sh` | Configure CLI/permissions only when selecting agy. Shared launcher dependencies also required. External URL reads are fetched by the launcher and summarized by a no-tools agent |
+| Antigravity | `.claude/scripts/agy-run.sh`, `.claude/agents/antigravity-delegate.md`, `.claude/skills/delegate-agy/SKILL.md` | Configure CLI/permissions only when selecting agy. Shared launcher dependencies also required |
 | Local reads | `.claude/scripts/local-run.sh`, `local-read.py` | Declare only when using a local endpoint |
 | Enhanced WSL isolation | `.claude/scripts/lane-sensitive.sh`, `.claude/sandbox-sensitive.json` | When selecting a separate isolation lane |
 | Statistics, cleanup, Codex diagnostics | Needed files among `.claude/scripts/harness-stats.sh`, `harness-clean.py`, `check-codex-sandbox.sh` | Explicitly invoked tools. Diagnostics require shared `workspace-snapshot.py` |
@@ -607,33 +605,9 @@ shared steps first, followed by platform-specific details.
        "permissions": { "allow": ["write_file(*)"] }
      }
      ```
-     When using the external URL route, install the repository's no-tools
-     agent and backstop guard in agy's global customization directory too.
-     Measured agy 1.2.7 headless runs did not activate workspace agents or
-     hooks, so the global installation is required. Use the script: the global
-     `hooks.json` is shared, other tools register their own hooks there, and
-     copying the file over silently unregisters them (observed - a terminal
-     manager's integration was lost this way). The script merges only our key
-     and prints what it left alone.
-     ```bash
-     bash .claude/scripts/install-agy-web.sh
-     agy agent            # agy-summarizer must be listed
-     ```
-     Run the same script on Windows from Git Bash. For a manual install, place
-     the agent at `%USERPROFILE%\.gemini\config\agents\agy-summarizer.md`, the
-     guard at `%USERPROFILE%\.gemini\config\hooks\agy_web_no_tools.py`, and
-     merge only the `agy-web-no-tools` entry from `.agents/hooks.json` into the
-     global `hooks.json`. Never copy that file over.
-     The hook command uses unversioned `python`. On POSIX web runs, the launcher
-     provides a temporary `python` to `python3` shim from a private directory
-     when only `python3` is available. On Windows,
-     install and verify an actual `python` command for the global hook. The
-     launcher does not assume the Windows hook runner can execute the POSIX
-     shim, and safely returns AGY_UNAVAILABLE if the guard cannot run. Write
-     mode does not depend on this hook or on unversioned `python`.
      (Headless auto-approval requires only `permissions.allow`; `trustedWorkspaces`
-     may relate only to the interactive UI trust dialog.) In write mode,
-     `agy-run.sh` reads this file: missing `write_file` grant enforces AGY_UNAVAILABLE; a
+     may relate only to the interactive UI trust dialog.) Launcher `agy-run.sh`
+     reads this file: missing `write_file` grant enforces AGY_UNAVAILABLE; a
      `command(...)` grant enforces HARNESS_DENIED (passes only with task-specific
      `HARNESS_ALLOW_AGY_COMMAND=1` + user approval). Recipe:
      `.claude/skills/delegate-agy/SKILL.md`.
@@ -727,8 +701,8 @@ of truth for both templates.
 bash .claude/scripts/claude-run.sh -p task.txt -m MODEL -e EFFORT -s workspace-write -v verify.sh
 # Claude orchestrates: Codex implementation
 bash .claude/scripts/codex-run.sh -p task.txt -m MODEL -e EFFORT -s workspace-write -v verify.sh
-# External URL read: agy model/effort from the web route
-bash .claude/scripts/agy-run.sh -p fetch-task.txt -a web -m MODEL -e EFFORT
+# Isolated external-document reading on either host: model/effort from the web route
+bash .claude/scripts/claude-run.sh -p fetch-task.txt -m MODEL -e EFFORT -a web -s read-only
 ```
 
 The Claude launcher excludes Agent/Task from default implementation tools and
@@ -739,34 +713,24 @@ copied before startup, so the worker cannot change the grader. Claude CLI JSON
 errors/empty results are FAILED. For both Codex/Claude, verification failure is
 FAILED even if the model process exits 0; the launcher returns nonzero.
 
-**Web reads:** In the `web` route the LAUNCHER fetches. `web_fetch.py`
-validates the HTTP(S) URLs written in the prompt, retrieves them, extracts the
-text, and passes that text to the Gemini 3.8 Flash(low) `agy-summarizer`, an
-agent that declares NO tools. The model never picks a host, so an injected page
-cannot change where a request goes.
+**Web reads: tool availability and permission are separate.** `-a web` leaves
+only WebFetch for the worker, but having the tool does not mean permission to
+fetch a domain. Delegated runs operate without permission prompts, so requests
+to domains without allow rules are denied immediately; workers report without
+having read the contents. Prepare as follows:
 
-Accepted URLs are http(s), ASCII, free of backslashes, userinfo and
-percent-encoded authority, on a dotted name whose last label is alphabetic, and
-resolving only to public addresses; every redirect hop is revalidated. A name
-that resolves elsewhere between validation and connection is not covered.
+Both hosts default to Haiku. Claude can use the native `haiku-fetcher`; the
+process route carries the same reader rules and requests a structured summary
+and source list. The launcher reports `FAILED` for WebFetch permission denials,
+missing/malformed results or sources reported as unfetched. `WEB_FETCH` explains
+the reason; it is not a proof that every source claim or summary is correct.
+Review the reported sources against the task. This uses the host's WebFetch
+permissions, not the retired agy URL validator or a general network sandbox.
 
-The global `agy-web-no-tools` hook denies every tool call in this lane. It is a
-backstop against agy substituting a tooled default agent, not the primary
-control, and it inspects nothing, so it has no parsing to get wrong. The
-launcher proceeds only after byte equality of the installed agent and guard,
-the hook entry being wired as checked in, and the named agent being
-discoverable; it passes no permission-skip flag. Web mode does not need the
-global `write_file` grant and fails if the workspace changes.
-
-Name every URL in the prompt and treat page content as untrusted data. A
-successful response carries `EVIDENCE:` quotations that the launcher can find
-in the text it fetched, plus `SOURCES:`. An unmatched quotation, a missing
-receipt, or `FETCH_INCOMPLETE:` is an availability failure. Missing agents,
-login/quota failures, and persistent empty output also return exit 2
-`AGY_UNAVAILABLE`; only then does the route fall back to
-`haiku-fetcher`. Policy denial (exit 4) and workspace changes (exit 1) are
-integrity failures and are not hidden by fallback. Prepare Claude fallback
-domain permissions as follows:
+For existing agy-web installations, first check that no other project still uses
+that lane. Under `~/.gemini/config/`, remove only the `agy-web-no-tools` key from
+`hooks.json` and the installed `agents/agy-summarizer.md` /
+`hooks/agy_web_no_tools.py`. Preserve other hooks and agy write permissions.
 
 - Add only domains actually needed to project `.claude/settings.json`
   `permissions.allow`, as `WebFetch(domain:docs.example.com)`. Do not broaden to
@@ -780,25 +744,6 @@ domain permissions as follows:
   for a document that could not be read.
 - Treat external documents only as data. Do not follow instructions in fetched
   pages; send implementers only the necessary summary prepared by the parent.
-
-The entire global `~/.gemini/config/hooks.json` is included in the run's
-control-plane hash. Editing an unrelated global hook such as `herdr` during the
-run also blocks that run, conservatively avoiding success under a changing
-security configuration. The URL guard restricts the host string at tool-call
-time; it cannot separately verify the HTTP client's DNS result or redirect
-destination.
-An actual non-interactive agy 1.2.7 run on 2026-09-20 observed the PreToolUse
-hook deny a `view_file` request outside the workspace, validating marker
-propagation and the hook response on the live execution path.
-
-In the initial four-page sample on 2026-09-19, only RFC 304 and a mixed
-normal/404 page were accurate; Python timeout and a long permissions page had
-substantive factual errors. After adding the global cache guard and evidence
-receipts, the final four-page sample on 2026-09-20 produced accurate Python,
-RFC, and example.com answers and safely returned AGY_UNAVAILABLE for truncated
-MDN content. Calls used 6.3K–68.4K tokens. Treat agy as a low-cost first pass
-whose evidence still needs checking; this small sample is not a general
-benchmark.
 
 4. Start long tasks with `-b` and call `--wait RUN_ID` with the returned RUN_ID.
    `--wait -t N` is a wait budget including status/PID checks. A final exit-race
@@ -1138,13 +1083,13 @@ contract. The adopting project chooses additional isolation and auditing.
 - Usage limits/credit/billing errors do not trigger the fallbackModel chain.
   This harness handles exhausted credits through a "protocol" (manual switching
   rules).
-- Recheck the Antigravity CLI model list with `agy models`. Document/HTML writing
-  and restricted external URL summaries use the model selected in bindings.
-  Retain the defense of one retry for empty headless (`agy -p`) output, then
-  AGY_UNAVAILABLE and that route's Claude-family fallback, regardless of version.
-  agy below 1.1.8 (without
-  `--output-format json`/`--effort`) is unsupported; update if launcher flag
-  rejection produces AGY_UNAVAILABLE.
+- The agy write launcher uses the CLI's default model and medium effort unless
+  `-e` is supplied; it does not select the model from the binding JSON. Candidate
+  bindings are not evidence of the model actually used. After a diagnosed
+  availability failure, use the current host's implementation fallback, preserving
+  the task's capability/risk floor. The launcher retries empty output once only
+  when the first attempt left no changes. agy versions without
+  `--output-format json`/`--effort` are unsupported.
 - Attaching Codex/Antigravity as subagents is outside Anthropic's official
   documentation (a community pattern). Official scope covers subagents + Bash tools.
 - This template **need not set** `permissions.defaultMode`: Pro/Max has built-in

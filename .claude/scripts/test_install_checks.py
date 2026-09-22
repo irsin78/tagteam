@@ -64,9 +64,12 @@ class InstallChecks(unittest.TestCase):
         for shell, name, command, script in runners:
             with tempfile.TemporaryDirectory(prefix='harness install-') as temp:
                 folder = Path(temp).resolve()
-                shim = folder / 'bin'
-                shim.mkdir()
-                (shim / 'python').symlink_to(sys.executable)
+                # Windows uses the actual executable directory without symlink privileges.
+                shim = Path(sys.executable).parent
+                if os.name != 'nt':
+                    shim = folder / 'bin'
+                    shim.mkdir()
+                    (shim / "python").symlink_to(sys.executable)
                 case_env = dict(env, PATH=shim.as_posix() + os.pathsep + env.get('PATH', ''))
                 hooks = folder / '.codex/hooks.json'
                 hooks.parent.mkdir()

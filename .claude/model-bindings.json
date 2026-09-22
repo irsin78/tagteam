@@ -2,7 +2,7 @@
   "schema_version": 1,
   "description": "Role -> tier -> binding. The rules (rules/) speak only of tiers and roles; the concrete model and effort are set here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole). harness-route.py selects a route from host_routes, the role, the bindings and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-09-20",
+  "updated": "2026-09-22",
   "catalog_checked": "2026-09-06",
   "tiers": {
     "A": {
@@ -347,8 +347,7 @@
       },
       "google": {
         "role": [
-          "write",
-          "explore_fetch"
+          "write"
         ],
         "tier": "C",
         "vendor": "google",
@@ -463,8 +462,7 @@
       },
       "google": {
         "role": [
-          "write",
-          "explore_fetch"
+          "write"
         ],
         "tier": "D",
         "vendor": "google",
@@ -479,7 +477,7 @@
         "updated": "2026-09-06",
         "catalog_checked": "2026-09-06",
         "status": "active",
-        "note": "Candidate for HTML/CSS, static prototypes and web-page summaries. The web lane no longer uses agy to fetch: agy 1.2.7 read_url_content trims a gzip body at the compressed Content-Length and lost 84-85% of every measured docs.python.org page (2026-09-20), while pages served without Content-Length came through whole. The launcher fetches and this slot only summarizes. After that change a page that previously failed finished in 10-13s using 7.7K-8.2K tokens with all evidence quotations matched; the same page previously cost 22.2K tokens, 23s and fell back. Small samples, directional only.",
+        "note": "Candidate for HTML/CSS and static prototypes. Follow specialties and the current measurements in this slot.",
         "intelligence_index": 42,
         "output_speed_tps": 265
       },
@@ -783,12 +781,11 @@
         "sandbox": "read-only"
       },
       "web": {
-        "vendor": "google",
-        "launcher": ".claude/scripts/agy-run.sh",
-        "binding": "D/google",
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "D/claude",
         "sandbox": "read-only",
-        "agy_role": "web",
-        "fallback": "haiku-fetcher"
+        "claude_role": "web"
       },
       "write": {
         "vendor": "openai",
@@ -836,12 +833,11 @@
         "sandbox": "read-only"
       },
       "web": {
-        "vendor": "google",
-        "launcher": ".claude/scripts/agy-run.sh",
-        "binding": "D/google",
+        "vendor": "claude",
+        "launcher": ".claude/scripts/claude-run.sh",
+        "binding": "D/claude",
         "sandbox": "read-only",
-        "agy_role": "web",
-        "fallback": "haiku-fetcher"
+        "claude_role": "web"
       },
       "write": {
         "vendor": "claude",

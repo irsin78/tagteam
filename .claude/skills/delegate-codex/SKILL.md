@@ -138,7 +138,8 @@ harness-route.py; use its model/effort, not an assumed maximum model.
 
 - 0 = DONE, clean. 1 = FAILED or SCOPE_WARNING — read the report.
 - 2 = CODEX_UNAVAILABLE (binary/prompt-file problem) → codex fallback
-  applies (claude-implementer, bindings C/claude; see delegation-matrix).
+  applies at the required capability/risk floor (delegation matrix). Required
+  independent review cannot use an implementation fallback.
 - The optional sandbox diagnostic is separate; ordinary launchers no longer emit
   exit 3 for a startup model probe. Classify actual execution failures before retry.
 - 4 = HARNESS_DENIED: policy refusal (invalid sandbox/effort/verify/

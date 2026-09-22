@@ -90,9 +90,12 @@ admit_run
         (self.root / ".claude/rules").mkdir(parents=True)
         self.personal = self.root / "personal"
         (self.personal / ".codex").mkdir(parents=True)
-        shim = self.root / "bin"
-        shim.mkdir()
-        (shim / "python").symlink_to(sys.executable)
+        # Windows uses the actual executable directory without symlink privileges.
+        shim = Path(sys.executable).parent
+        if os.name != 'nt':
+            shim = self.root / "bin"
+            shim.mkdir()
+            (shim / "python").symlink_to(sys.executable)
         self.env = dict(os.environ, HOME=self.personal.as_posix(),
                         PATH=shim.as_posix() + os.pathsep + os.environ.get("PATH", ""))
 

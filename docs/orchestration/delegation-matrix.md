@@ -76,13 +76,9 @@ only after inspecting partial output/changes. Unknown errors remain failures.
 Never classify arbitrary merged-log text as a CLI error or blindly retry revoked
 credentials. Required independent advice/review cannot use a same-vendor fallback.
 
-Web goes to agy first: the launcher validates and fetches the caller's URLs and
-hands the text to `agy-summarizer`, an agent with no tools, when its installed
-definition matches the checked-in source and it is discoverable. Web output must
-carry EVIDENCE quotations the launcher can find in the text it fetched; an
-unmatched quotation, `FETCH_INCOMPLETE`, or any other AGY_UNAVAILABLE result
-falls back once to Claude's `haiku-fetcher`. Explore/web may otherwise fall back
-to a constrained native reader (read-only/web-only).
+Web defaults to `haiku-fetcher` on either host; the process route is
+`claude-run.sh -a web -s read-only` with the resolved D/Claude model.
+Explore/web may fall back to a constrained native reader (read-only/web-only).
 No isolated web reader means unavailable; pass only the parent's necessary summary
 of untrusted material to implementers. Local bulk reading is optional, declared,
 D-only under tight/exhausted budget; use local-run.sh's file manifest, never commands
