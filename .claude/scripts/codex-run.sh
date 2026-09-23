@@ -285,36 +285,13 @@ if ! command -v codex >/dev/null 2>&1; then
     echo "CODEX_UNAVAILABLE: codex binary not found" >&2
     exit 2
 fi
-# Hook trust preflight: the canary below reads the
-# delegate's own output stream, which the delegate can also write, and it
-# only reports AFTER every command has run. Trust registration lives in
-# ~/.codex/config.toml, outside the workspace, so checking it here is both
-# unforgeable by the delegate and early enough to matter. Fail CLOSED: a
-# run whose guards are inert is refused rather than reported afterwards.
-CODEX_HOOKS_FILE=".codex/hooks.json"
-if [ -f "$CODEX_HOOKS_FILE" ] && [ "${HARNESS_ALLOW_UNTRUSTED_HOOKS:-}" != "1" ]; then
-    CODEX_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
-    HOOKS_KEY=$(cd "$(dirname "$CODEX_HOOKS_FILE")" && pwd)/hooks.json
-    # codex writes native paths (`D:\repo\...`); this script sees the MSYS
-    # form (`/d/repo/...`), so case, separators and the drive prefix are all
-    # normalized before comparing -- the same normalization as check-posix.sh.
-    HOOKS_KEY=$(printf '%s' "$HOOKS_KEY" | tr 'A-Z' 'a-z' | tr '\\' '/' |
-                sed 's|^/\([a-z]\)/|\1:/|')
-    UNTRUSTED=
-    for ev in pre_tool_use stop; do
-        # Fixed-string match anchored on the TOML table header: the key is a
-        # PATH, so an unescaped regex could match a different entry or a
-        # comment that merely mentions it.
-        if [ ! -f "$CODEX_CONFIG" ] || ! tr 'A-Z' 'a-z' < "$CODEX_CONFIG" | tr '\\' '/' |
-                grep -qF "[hooks.state.'$HOOKS_KEY:$ev:"; then
-            UNTRUSTED="$UNTRUSTED $ev"
-        fi
-    done
-    if [ -n "$UNTRUSTED" ]; then
-        echo "HARNESS_DENIED: .codex/hooks.json is present but NOT trusted for:$UNTRUSTED — those guards would be silently inert for this run. Trust them once with /hooks in an interactive codex session at $PWD, or set HARNESS_ALLOW_UNTRUSTED_HOOKS=1 for a deliberately unguarded run." >&2
-        exit 4
-    fi
+# Query effective trust before admission. Table headers alone do not establish
+# current command hashes, enabled state, or whether the hooks feature is active.
+if [ -f .codex/hooks.json ] && [ "${HARNESS_ALLOW_UNTRUSTED_HOOKS:-}" != "1" ]; then
+    "$RS_PY" "$SCRIPT_DIR/harness-session.py" check-codex-hooks || exit 4
 fi
+
+launcher_timeout || exit 4
 
 mkdir -p "$LOG_DIR" || exit 2
 # Timestamp + pid: unique even for two launchers started in the same second.
@@ -428,7 +405,6 @@ CODEX_GIT_ARGS=()
 EXTRA_ARGS=("${CODEX_GIT_ARGS[@]}")
 if [ -n "$IMAGE" ]; then EXTRA_ARGS+=(-i "$IMAGE"); fi
 if [ -n "$SCHEMA" ]; then EXTRA_ARGS+=(--output-schema "$SCHEMA"); fi
-launcher_timeout
 
 # The CLI runs as a background child in its OWN process group (set -m) so
 # its PID is recorded and a signal to the launcher can be forwarded to the
@@ -577,9 +553,6 @@ report() {
     fi
     if [ "$CODEX_EXIT" -eq 124 ]; then
         echo "TIMEOUT: codex reached the ${TIMEOUT}s execution limit — inspect onboarding reads, API/tool waits and task progress before choosing a retry"
-    fi
-    if [ "$TIMEOUT_WRAPPER" = none ]; then
-        echo "TIMEOUT_WRAPPER: none (GNU coreutils timeout not first on PATH) — the Bash tool's 600 s cap is the only limit for this run"
     fi
     if [ -n "$RESUME_ID" ]; then
         echo "RESUME: $RESUME_ID (all overrides re-applied)"

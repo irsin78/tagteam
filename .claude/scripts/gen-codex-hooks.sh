@@ -76,72 +76,35 @@ fi
 OUT_DIR=$(dirname "$OUT")
 [ -d "$OUT_DIR" ] || mkdir -p "$OUT_DIR" || exit 2
 
-# Windows paths: the hook command runs through pwsh, where a command that
-# STARTS with a quoted string is a parse error (measured 2026-09-04). Emit
-# forward slashes and no leading quote; a path with spaces gets the call
-# operator so pwsh still executes it.
-to_native() {
-    printf '%s' "$1" | sed -e 's|^/\([a-zA-Z]\)/|\1:/|' -e 's|\\|/|g'
-}
+# Serialize JSON separately from shell quoting. POSIX and PowerShell use
+# different quoting rules; never infer safety only from the presence of spaces.
+"$PY" - "$PY" "$ROOT" "$OUT" <<'PY'
+import json
+import shlex
+import sys
+from pathlib import Path
 
-PY_NATIVE=$(to_native "$PY")
-ROOT_NATIVE=$(to_native "$ROOT")
+python, root, output = (value.replace('\\', '/') for value in sys.argv[1:])
+def windows_quote(value):
+    return "'" + value.replace("'", "''") + "'"
 
-# Quoting is only needed when a path contains a space, and it is exactly
-# what breaks pwsh (a command starting with a quoted string is a parse
-# error there, so it needs the call operator `&`, which in turn is invalid
-# in a POSIX shell). Unquoted whenever possible keeps ONE string valid on
-# both; when a space forces quotes, `commandWindows` carries the pwsh form.
-NEEDS_QUOTES=0
-case "$PY_NATIVE$ROOT_NATIVE" in
-    *\ *) NEEDS_QUOTES=1 ;;
-esac
-
-emit_command() {   # $1 = hook file, $2 = "posix" | "windows"
-    if [ "$NEEDS_QUOTES" -eq 0 ]; then
-        printf '%s %s/.claude/hooks/%s --host codex' "$PY_NATIVE" "$ROOT_NATIVE" "$1"
-    elif [ "$2" = "windows" ]; then
-        printf '& \\"%s\\" \\"%s/.claude/hooks/%s\\" --host codex' \
-            "$PY_NATIVE" "$ROOT_NATIVE" "$1"
-    else
-        printf '\\"%s\\" \\"%s/.claude/hooks/%s\\" --host codex' \
-            "$PY_NATIVE" "$ROOT_NATIVE" "$1"
-    fi
-}
-
-emit_windows_line() {   # $1 = hook file, $2 = optional fixed flag
-    [ "$NEEDS_QUOTES" -eq 1 ] || return 0
-    printf '            "commandWindows": "%s%s",\n' "$(emit_command "$1" windows)" "${2:+ $2}"
-}
-
-{
-    printf '{\n  "hooks": {\n'
-    printf '    "SessionStart": [\n      {\n        "hooks": [\n          {\n'
-    printf '            "type": "command",\n'
-    printf '            "command": "%s",\n' "$(emit_command session_preflight.py posix)"
-    emit_windows_line session_preflight.py
-    printf '            "timeout": 30,\n            "statusMessage": "harness preflight"\n'
-    printf '          }\n        ]\n      }\n    ],\n'
-    printf '    "PreToolUse": [\n      {\n        "matcher": "Bash|PowerShell|exec_command|shell_command|apply_patch|Write|Edit|MultiEdit|NotebookEdit",\n'
-    printf '        "hooks": [\n          {\n            "type": "command",\n'
-    printf '            "command": "%s",\n' "$(emit_command deny_dangerous.py posix)"
-    emit_windows_line deny_dangerous.py
-    printf '            "timeout": 30,\n            "statusMessage": "harness guard"\n'
-    printf '          }\n        ]\n      }\n    ],\n'
-    printf '    "UserPromptSubmit": [\n      {\n        "hooks": [\n          {\n'
-    printf '            "type": "command",\n'
-    printf '            "command": "%s --new-prompt",\n' "$(emit_command stop_gate.py posix)"
-    emit_windows_line stop_gate.py --new-prompt
-    printf '            "timeout": 10,\n            "statusMessage": "harness mission scope"\n'
-    printf '          }\n        ]\n      }\n    ],\n'
-    printf '    "Stop": [\n      {\n        "hooks": [\n          {\n'
-    printf '            "type": "command",\n'
-    printf '            "command": "%s",\n' "$(emit_command stop_gate.py posix)"
-    emit_windows_line stop_gate.py
-    printf '            "timeout": 180,\n            "statusMessage": "harness stop gate"\n'
-    printf '          }\n        ]\n      }\n    ]\n'
-    printf '  }\n}\n'
-} > "$OUT" || exit 2
+hooks = {}
+for event, script, timeout, message, flags in (
+    ('SessionStart', 'session_preflight.py', 30, 'harness preflight', []),
+    ('PreToolUse', 'deny_dangerous.py', 30, 'harness guard', []),
+    ('UserPromptSubmit', 'stop_gate.py', 10, 'harness mission scope', ['--new-prompt']),
+    ('Stop', 'stop_gate.py', 180, 'harness stop gate', []),
+):
+    argv = [python, root + '/.claude/hooks/' + script, '--host', 'codex', *flags]
+    entry = {'hooks': [{'type': 'command', 'command': shlex.join(argv),
+                       'commandWindows': '& ' + ' '.join(windows_quote(arg) for arg in argv),
+                       'timeout': timeout, 'statusMessage': message}]}
+    if event == 'PreToolUse':
+        entry['matcher'] = 'Bash|PowerShell|exec_command|shell_command|apply_patch|Write|Edit|MultiEdit|NotebookEdit'
+    hooks[event] = [entry]
+Path(output).write_text(json.dumps({'hooks': hooks}, indent=2) + '\n', encoding='utf-8')
+PY
+[ "$?" -eq 0 ] || exit 2
 
 echo "gen-codex-hooks: wrote $OUT"
-echo "gen-codex-hooks: trust it once with /hooks in an interactive codex session at $ROOT_NATIVE"
+echo "gen-codex-hooks: trust it once with /hooks in an interactive codex session at $ROOT"

@@ -37,10 +37,12 @@ save_git_baseline() {
 }
 
 launcher_timeout() {
-    RUNNER=(); TIMEOUT_WRAPPER=none
+    RUNNER=()
     if timeout --version 2>/dev/null | grep -qi coreutils; then
         RUNNER=(timeout -k 10 "$TIMEOUT")
-        TIMEOUT_WRAPPER="gnu timeout ${TIMEOUT}s"
+    else
+        echo "HARNESS_DENIED: GNU coreutils timeout is required for bounded foreground and detached runs; put it first on PATH" >&2
+        return 4
     fi
 }
 

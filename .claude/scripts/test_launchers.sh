@@ -228,6 +228,8 @@ cat > "$FIXTURE_ROOT/claude-stdin.log"
 case "${STUB_ACTION:-none}" in
     notice) printf '{}\n' > .claude/.preflight-status ;;
     none) ;;
+    tamper-verify-source) printf 'exit 0\n' > verify.sh ;;
+    tamper-verify-copy) printf 'exit 0\n' > .claude/claude-logs/verify-verifycopy.sh ;;
     remove:*) rm -f -- "${STUB_ACTION#remove:}" ;;
     init-git) git init -q ;;
     break-index) printf 'broken index' > .git/index ;;
@@ -616,7 +618,7 @@ mkdir -p "$CASE_REPO/.codex"
 printf '%s\n' '{"hooks":{}}' > "$CASE_REPO/.codex/hooks.json"
 run_capture untrusted-hooks env STUB_ACTION=none HARNESS_RUN_ID=untrusted bash "$CODEX_RUN" -p prompt.txt
 ok=0
-if [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: .codex/hooks.json is present but NOT trusted'; then ok=1; fi
+if [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: Codex hook trust is not confirmed'; then ok=1; fi
 expect_case "untrusted codex hooks refuse the run" "$ok" "exit=$LAST_RC"
 
 fresh_case
@@ -687,6 +689,32 @@ run_capture claude-verify-fail env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt
 ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(verification' && has "$LAST_OUT" '^VERIFY: exit 7' && ok=1
 timing_ok "$LAST_OUT" 1 1 || ok=0
 expect_case "Claude passing report cannot override failed verifier" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf 'read -r ignored\nexit 23\n' > "$CASE_REPO/verify.sh"
+run_capture claude-verify-stdin env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -v verify.sh
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'claude_exit=0' && has "$LAST_OUT" '^VERIFY: exit 23' && ok=1
+expect_case "Claude verifier stdin cannot consume its own remaining source" "$ok" "exit=$LAST_RC"
+
+for action in none tamper-verify-source tamper-verify-copy; do
+    fresh_case
+    printf 'exit 23\n' > "$CASE_REPO/verify.sh"
+    run_capture "claude-verify-$action" env STUB_ACTION="$action" HARNESS_RUN_ID=verifycopy bash "$CLAUDE_RUN" -p prompt.txt -v verify.sh
+    ok=0
+    if [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(verification' && has "$LAST_OUT" 'claude_exit=0'; then
+        if [ "$action" = tamper-verify-source ]; then
+            has "$LAST_OUT" 'VERIFY_INTEGRITY_FAILED' && ok=1
+        else
+            has "$LAST_OUT" '^VERIFY: exit 23' && ok=1
+        fi
+    fi
+    expect_case "Claude captured verifier survives $action" "$ok" "exit=$LAST_RC"
+done
+fresh_case
+printf 'printf ORIGINAL_VERIFIER\nexit 0\n' > "$CASE_REPO/verify.sh"
+run_capture claude-verify-pass env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -v verify.sh
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'ORIGINAL_VERIFIER' && ok=1
+expect_case "Claude intact passing verifier succeeds" "$ok" "exit=$LAST_RC"
 
 # Web role: the launcher's verdict comes from the structured contract and
 # runtime denial metadata, never from result prose. A fetch that did not
@@ -1045,6 +1073,53 @@ expect_case "Codex success cannot override a failed task verifier" "$ok" "exit=$
 fi
 
 if selected lifecycle; then
+# The parent is gone, but the native Claude child still owns this write run.
+for observation in live dead reused; do
+    fresh_case
+    cat > "$CASE_REPO/identity.sh" <<'IDENTITY'
+TOOL=claude
+SANDBOX=workspace-write
+. "$1"
+RUN_ID=old
+LAUNCHER_PID=111111
+CHILD_PID=222222
+LAUNCHER_STIME=10:00:00
+CHILD_STIME=10:00:00
+STARTED_EPOCH=1
+state_write running "" "worker still alive"
+pid_alive() { [ "$1" = 222222 ] && [ "$OBSERVATION" != dead ]; }
+pid_stime() { if [ "$OBSERVATION" = reused ]; then echo 11:00:00; else echo 10:00:00; fi; }
+pid_comm() { echo claude; }
+classify_record "$(state_file old)"
+echo "CLASSIFIED=$RS_STATE"
+RUN_ID=new
+stale_run_check
+echo WRITER_ADMITTED
+IDENTITY
+    run_capture native-claude-identity env OBSERVATION="$observation" bash identity.sh "$RUN_STATE"
+    ok=0
+    if [ "$observation" = live ]; then
+        [ "$LAST_RC" -eq 5 ] && has "$LAST_OUT" 'CLASSIFIED=running' && has "$LAST_OUT" 'HARNESS_BUSY' && ok=1
+    else
+        [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" 'CLASSIFIED=aborted' && has "$LAST_OUT" 'WRITER_ADMITTED' && ok=1
+    fi
+    expect_case "native Claude child identity: $observation" "$ok" "exit=$LAST_RC"
+done
+# An absent/non-GNU timeout must refuse before foreground or detached launch.
+mkdir -p "$TEST_ROOT/no-timeout"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TEST_ROOT/no-timeout/timeout"
+chmod +x "$TEST_ROOT/no-timeout/timeout"
+for launcher in "$CODEX_RUN" "$CLAUDE_RUN"; do
+    for mode in foreground detached; do
+        fresh_case
+        args=(); [ "$mode" != detached ] || args=(-b)
+        run_capture no-timeout env PATH="$TEST_ROOT/no-timeout:$STUB_BIN:$ORIGINAL_PATH" bash "$launcher" -p prompt.txt "${args[@]}"
+        ok=0
+        [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'GNU coreutils timeout is required' && ! has "$LAST_OUT" '^DETACHED:' && ok=1
+        expect_case "$(basename "$launcher") refuses $mode without GNU timeout" "$ok" "exit=$LAST_RC"
+    done
+done
+
 # Busy guard: live, cross-tool, read-only exemptions, dead cleanup.
 fresh_case
 start_live_shell

@@ -250,7 +250,7 @@ pid_is_ours() {
             [ "$now_st" = "$rec_st" ] || return 1      # same form: must be equal
         fi                                             # different forms: undecidable, keep
     fi
-    [[ "$(pid_comm "$pid")" =~ ^(bash|sh|dash|zsh|timeout|codex|agy|node|python[0-9.]*)$ ]]
+    [[ "$(pid_comm "$pid")" =~ ^(bash|sh|dash|zsh|timeout|codex|claude|agy|node|python[0-9.]*)$ ]]
 }
 pid_winpid() { ps -p "$1" 2>/dev/null | awk 'NR==2 && $4 ~ /^[0-9]+$/ {print $4}'; }
 

@@ -1,96 +1,78 @@
 #!/usr/bin/env bash
-# Launch a sensitive-work Claude session in the WSL2 isolation lane with a
-# network deny-all sandbox that is PROVEN before the interactive session
-# starts. For untrusted-content work where an open egress path would turn
-# the default out-of-workspace read allowance into an exfil route
-# (docs/harness-manual.md, isolated-lane two-layer defence evidence).
-#
-# The guarantee is the preflight probe, not the config alone: a headless
-# run must show network AND out-of-workspace write actually blocked, or
-# this refuses to launch (fail-closed). That also covers the case where
-# the sandbox silently fails to initialize (observed: root user, missing
-# socat) and would otherwise run UNSANDBOXED.
+# Optional WSL lane. Probe two specific restrictions through Claude's actual
+# Bash tool results. This is a smoke check, not proof of universal isolation.
 set -u
-
 HARDENED=".claude/sandbox-sensitive.json"
-
-if [ ! -f "$HARDENED" ]; then
-    echo "lane-sensitive: hardened settings $HARDENED not found — run from the repo root of the lane clone." >&2
-    exit 2
-fi
-
+[ -f "$HARDENED" ] || { echo "lane-sensitive: hardened settings missing" >&2; exit 2; }
 CLAUDE=$(command -v claude || true)
 [ -n "$CLAUDE" ] || CLAUDE="$HOME/.local/bin/claude"
-if [ ! -x "$CLAUDE" ]; then
-    echo "lane-sensitive: claude binary not found (looked on PATH and $HOME/.local/bin/claude)." >&2
-    exit 2
-fi
-
-# The network probe needs curl INSIDE the lane: without it the curl call
-# fails for the wrong reason and would print NET_BLOCKED — a false pass.
-# Checked here and again by exit code inside the probe (127 = missing).
-if ! command -v curl >/dev/null 2>&1; then
-    echo "lane-sensitive: REFUSING — curl is not installed in the lane, so the network probe cannot distinguish 'blocked' from 'no client' (apt install curl)." >&2
-    exit 2
-fi
-# The write canary lives under $HOME; an empty/missing HOME would make the
-# probe fail for the wrong reason and read as a block.
-if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then
-    echo "lane-sensitive: REFUSING — HOME is unset or not a directory; the out-of-workspace write probe needs it." >&2
-    exit 2
-fi
-
-echo "lane-sensitive: preflight — proving network deny-all + out-of-workspace write block..." >&2
-PROBE=$(printf '%s\n' \
-    "Run these two bash commands one at a time and report exactly one line each as N: <result>, and nothing else — do not repeat or quote the commands themselves in your answer. Neutral capability probes. Never use any bypass parameter." \
-    "1. curl -sS --max-time 8 https://api.github.com -o /dev/null; rc=\$?; if [ \$rc -eq 0 ]; then echo NET_OPEN; elif [ \$rc -eq 127 ]; then echo CURL_MISSING; else echo NET_BLOCKED; fi" \
-    "2. echo x > $HOME/lane-sensitive-preflight.$$ && echo WRITE_OUT_OPEN || echo WRITE_OUT_BLOCKED" \
-    | timeout 180 "$CLAUDE" -p --model haiku --allowedTools Bash --settings "$HARDENED" 2>&1)
+[ -x "$CLAUDE" ] || { echo "lane-sensitive: claude binary not found" >&2; exit 2; }
+PY=$(command -v python3 || command -v python || true)
+[ -n "$PY" ] && command -v curl >/dev/null 2>&1 && timeout --version 2>/dev/null | grep -qi coreutils || {
+    echo "lane-sensitive: REFUSING — working Python, curl and GNU timeout are required" >&2; exit 2;
+}
+[ -n "${HOME:-}" ] && [ -d "$HOME" ] || { echo "lane-sensitive: REFUSING — HOME unavailable" >&2; exit 2; }
+# Establish that this path is writable outside the sandbox before interpreting
+# a denied write. Keep one unique canary and remove only that file.
+CANARY=$(mktemp "$HOME/lane-sensitive-preflight.XXXXXX") || exit 2
+PROBE=$(mktemp "${TMPDIR:-/tmp}/lane-sensitive-output.XXXXXX") || { rm -f -- "$CANARY"; exit 2; }
+PROBE_ERR="$PROBE.stderr"
+trap 'rm -f -- "$CANARY" "$PROBE" "$PROBE_ERR"' EXIT
+rm -f -- "$CANARY" || exit 2
+printf -v WRITE_COMMAND 'printf x > %q' "$CANARY"
+NET_COMMAND='curl -sS --max-time 8 -D - https://api.github.com -o /dev/null'
+echo "lane-sensitive: checking one proxy denial and one outside write denial..." >&2
+printf '%s\n' \
+    'Run exactly these two Bash commands once each, without changing them or bypassing the sandbox. Do not run other tools. Report when done.' \
+    "1. $NET_COMMAND" "2. $WRITE_COMMAND" \
+    | timeout -k 10 180 "$CLAUDE" -p --model haiku --tools Bash --allowedTools Bash \
+        --settings "$HARDENED" --output-format stream-json --verbose > "$PROBE" 2> "$PROBE_ERR"
 PROBE_EXIT=$?
-# Ground truth for the write probe, independent of what the model SAYS
-# (delegate-output-trust: a report is a claim): if the canary file exists
-# on the host, the out-of-workspace write went through.
-WRITE_LEAKED=0
-[ -e "$HOME/lane-sensitive-preflight.$$" ] && WRITE_LEAKED=1
-rm -f "$HOME/lane-sensitive-preflight.$$" 2>/dev/null
-if [ "$WRITE_LEAKED" -eq 1 ]; then
-    echo "lane-sensitive: REFUSING — the out-of-workspace canary file was actually created (sandbox write isolation is NOT in effect)." >&2
+if [ "$PROBE_EXIT" -ne 0 ]; then
+    echo "lane-sensitive: REFUSING — probe process failed (exit $PROBE_EXIT):" >&2
+    tail -6 "$PROBE_ERR" >&2
     exit 1
 fi
-
-if [ $PROBE_EXIT -ne 0 ]; then
-    echo "lane-sensitive: REFUSING — preflight probe failed to run (exit $PROBE_EXIT):" >&2
-    printf '%s\n' "$PROBE" | tail -5 >&2
+if [ -e "$CANARY" ]; then
+    echo "lane-sensitive: REFUSING — outside write succeeded" >&2
     exit 1
 fi
-if printf '%s' "$PROBE" | grep -q "SANDBOX_DISABLED\|Sandbox disabled\|WITHOUT sandboxing"; then
-    echo "lane-sensitive: REFUSING — sandbox is not active (would run unsandboxed):" >&2
-    printf '%s\n' "$PROBE" | grep -i "sandbox" | head -3 >&2
-    exit 1
-fi
-# Tier 2 safety guard: the pass condition is the positive token on its own
-# result line AND the absence of the negative token anywhere. Presence of
-# the positive token alone can come from a model that merely echoes the
-# prompt, so both halves are required.
-if printf '%s\n' "$PROBE" | grep -q "CURL_MISSING"; then
-    echo "lane-sensitive: REFUSING — curl is missing inside the sandboxed shell; the network probe is inconclusive:" >&2
-    printf '%s\n' "$PROBE" | tail -6 >&2
-    exit 1
-fi
-# Result-line match tolerates `1.`/`1)` and markdown bold around the
-# token (fail-closed either way — a miss refuses, never passes).
-if ! printf '%s\n' "$PROBE" | grep -qE '^[[:space:]*]*1[:.)][[:space:]*]*NET_BLOCKED[[:space:]*]*$' \
-   || printf '%s\n' "$PROBE" | grep -q "NET_OPEN"; then
-    echo "lane-sensitive: REFUSING — network was NOT proven blocked (need a '1: NET_BLOCKED' line and no NET_OPEN):" >&2
-    printf '%s\n' "$PROBE" | tail -6 >&2
-    exit 1
-fi
-if ! printf '%s\n' "$PROBE" | grep -qE '^[[:space:]*]*2[:.)][[:space:]*]*WRITE_OUT_BLOCKED[[:space:]*]*$' \
-   || printf '%s\n' "$PROBE" | grep -q "WRITE_OUT_OPEN"; then
-    echo "lane-sensitive: REFUSING — out-of-workspace write was NOT proven blocked (need a '2: WRITE_OUT_BLOCKED' line and no WRITE_OUT_OPEN):" >&2
-    printf '%s\n' "$PROBE" | tail -6 >&2
-    exit 1
-fi
-
-echo "lane-sensitive: preflight OK (network deny-all + write isolation confirmed). Launching..." >&2
+# Inspect runtime tool results, not the assistant's final claim. Unknown output,
+# DNS/TLS/timeouts, skipped commands and generic 403 responses are inconclusive.
+"$PY" - "$PROBE" "$NET_COMMAND" "$WRITE_COMMAND" <<'PY'
+import json, re, sys
+calls, results, completed = {}, {}, False
+try:
+    for line in open(sys.argv[1], encoding='utf-8'):
+        event = json.loads(line)
+        if event.get('type') == 'result':
+            completed = event.get('subtype') == 'success' and not event.get('is_error')
+        role = event.get('type')
+        for block in event.get('message', {}).get('content', []) if role in ('assistant', 'user') else []:
+            if role == 'assistant' and block.get('type') == 'tool_use':
+                args = block.get('input', {})
+                command = args.get('command')
+                if block.get('name') != 'Bash' or command not in sys.argv[2:] or args.get('dangerouslyDisableSandbox'):
+                    raise ValueError('unexpected or unsandboxed command')
+                calls[block['id']] = command
+            if role == 'user' and block.get('type') == 'tool_result':
+                command = calls[block['tool_use_id']]
+                if command in results: raise ValueError('duplicate probe result')
+                content = block.get('content', '')
+                results[command] = content if isinstance(content, str) else '\n'.join(b['text'] for b in content if b.get('type') == 'text')
+    if not completed or len(calls) != 2 or len(results) != 2:
+        raise ValueError('missing successful run or actual tool results')
+    network, write = (results[command] for command in sys.argv[2:])
+    # Anthropic sandbox-runtime's HTTP allowlist refusal, not just curl != 0.
+    if not re.search(r'(?im)^HTTP/1\.[01] 403 Forbidden\s*$', network) or not re.search(r'(?im)^X-Proxy-Error: blocked-by-allowlist\s*$', network):
+        raise ValueError('network result lacks a sandbox allowlist denial')
+    if not re.search(r'Permission denied|Read-only file system', write):
+        raise ValueError('write result lacks an OS denial')
+except (OSError, ValueError, KeyError, TypeError) as exc:
+    print('lane-sensitive: REFUSING — inconclusive probe: ' + str(exc), file=sys.stderr)
+    sys.exit(1)
+PY
+[ "$?" -eq 0 ] || exit 1
+echo "lane-sensitive: two restriction probes passed; this does not prove all egress paths are closed. Launching..." >&2
+rm -f -- "$PROBE" "$PROBE_ERR"
 exec "$CLAUDE" --settings "$HARDENED" "$@"

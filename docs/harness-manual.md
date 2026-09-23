@@ -835,10 +835,13 @@ the marker and are treated like main Claude sessions).
      so retrusting after definition changes remains separate. `test_host_routes.py`,
      run by both installation checks, also detects missing Claude configuration
      wiring for `UserPromptSubmit -> stop_gate.py --new-prompt`.
-   - **Before execution**, `codex-run.sh` checks trust for both enforcement guards
-     (PreToolUse/Stop) and **denies** untrusted runs with `HARNESS_DENIED` (exit 4),
-     preventing delegation with dead guards. If intentionally running without
-     guards, specify `HARNESS_ALLOW_UNTRUSTED_HOOKS=1`.
+   - **Before execution**, `codex-run.sh` asks the installed Codex app-server's
+     `hooks/list` API whether every configured project handler is enabled and
+     trusted for its current definition. Modified/untrusted/disabled/missing
+     handlers, a disabled hooks feature, unsupported APIs and inconclusive queries
+     are refused with exit 4. This checks effective configuration, not whether
+     each hook will run successfully. A deliberately unguarded run still requires
+     explicit authorization for `HARNESS_ALLOW_UNTRUSTED_HOOKS=1`.
    - After execution, observe only full status lines matching
      `hook: <Event> Completed|Blocked|Failed` (LF/CRLF). Any `Failed` produces
      `HOOKS_FAILED:`; events with no status line produce `HOOKS_UNKNOWN:` (hook
@@ -946,9 +949,9 @@ changing ACLs/sandbox settings or repeatedly cleaning temporary files.
 
 SessionStart points to `docs/platform-notes-macos.md` for reading before work.
 Launchers require bash 4 or later: run `brew install bash` and configure PATH,
-otherwise they return `*_UNAVAILABLE`. GNU coreutils `timeout` is optional
-(`brew install coreutils`, gnubin PATH); without it, launchers run without a
-wrapper. Hooks require unversioned `python`; `check-posix.sh` detects these three
+otherwise they return `*_UNAVAILABLE`. Codex and Claude launchers require GNU
+coreutils `timeout` first on PATH (`brew install coreutils`, gnubin PATH),
+including detached runs. Hooks require unversioned `python`; `check-posix.sh` detects these three
 items. The support table classifies macOS as partially verified.
 
 ### Linux (partial verification by environment and item)
@@ -1177,20 +1180,19 @@ analysis; ordinary work runs on the Windows host.
   `GITHUB_TOKEN`/`GH_TOKEN`/`NPM_TOKEN`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` env).
   The official sandboxing documentation states that default read policy allows
   `~/.aws/credentials`/`~/.ssh/` reads, so these are included by default for this
-  lane's purpose. **Before every entry, a headless preflight empirically proves
-  network and outside-write blocking**. If blocking is unconfirmed or sandbox
-  initialization fails (for example, unsandboxed fallback because socat is absent),
-  it refuses with exit 1 without opening an interactive session (fail-closed).
-  A settings file alone is insufficient: preflight proves the boundary each time
-  because opening `allowedDomains` in default entry creates an exfiltration path
-  through "outside reads allowed + open networking" (the nuance in the two-layer
-  defense demonstration). Passing requires exact result lines
-  (`1: NET_BLOCKED`, `2: WRITE_OUT_BLOCKED`) **and** absence of contrary tokens
-  (`NET_OPEN`/`WRITE_OUT_OPEN`), so repeating the prompt cannot pass. Missing curl
-  is separated as preflight denial/`CURL_MISSING`, not misclassified NET_BLOCKED.
-  Verification: normal route empirically passed (2026-09-01; remeasured with
-  strengthened conditions + credentials/denyRead keys on 2026-09-02: LANE_OK);
-  mutation (hiding socat) confirmed helper denial with exit 1 (Tier 2 safety guard).
+  lane's purpose. Before entry, a headless smoke check reads actual Bash
+  tool-use/result pairs in Claude's stream JSON. The exact curl command must
+  return the sandbox proxy's HTTP 403 and `X-Proxy-Error: blocked-by-allowlist`;
+  the exact canary write must report an OS denial and leave no file. The parent
+  first confirms the canary location is writable outside the sandbox. DNS,
+  timeout, TLS and generic HTTP errors, skipped tools and model-only claims are
+  inconclusive and refuse entry. Unknown runtime output also refuses entry.
+  These two probes do **not** prove every egress path is closed. The response
+  marker follows [Anthropic's proxy implementation](https://github.com/anthropics/sandbox-runtime/blob/main/src/sandbox/http-proxy.ts).
+  Historical 2026-09-01/02 results used the old probe and do not validate this
+  parser. On 2026-09-23, fixtures and a real WSL2 Ubuntu / Claude Code 2.1.252
+  run passed both probes. The existing lane's network/write settings matched the
+  template. This does not validate all read/credential rules or every egress path.
 - **Lane maintenance**: A lane unused for a while only needs pre-work sync. For
   rebuilding on another machine, see the sandboxing section for four setup
   requirements (regular user, socat, python-is-python3, safe.directory). Install
@@ -1273,10 +1275,10 @@ go through permission prompts/classification.
   inside the workspace-write sandbox. Hooks do not block it because it automates
   approvals rather than escaping the sandbox. `--yolo` (full-bypass alias) is
   blocked literally.
-- **timeout wrapper**: The launcher wraps only when `timeout --version` shows
-  coreutils. If Windows' own `timeout.exe` (`/t N` syntax) precedes it in PATH,
-  wrapping kills codex execution itself; in that case, report
-  `TIMEOUT_WRAPPER: none`, leaving only the Bash tool's 600-second ceiling.
+- **timeout wrapper**: Codex and Claude require GNU coreutils `timeout` before
+  run admission, including detached runs. If Windows `timeout.exe` comes first
+  on PATH, startup is refused with exit 4; fix PATH. No host-tool time ceiling
+  is assumed to cover detached work. AGY uses its own deadline mechanism.
 - stderr from configured-but-unreachable MCP servers (loopback connection refused)
   is harmless noise.
 
