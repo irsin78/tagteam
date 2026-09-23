@@ -740,6 +740,13 @@ run_capture claude-verify-escapes env STUB_ACTION=none bash "$CLAUDE_RUN" -p pro
 ok=0; [ "$ESCAPE_DIRECT_RC" -eq 31 ] && has "$LAST_OUT" '^VERIFY: exit 31$' && ok=1
 expect_case "Claude verifier text keeps backslashes, quotes and Korean" "$ok" "direct=$ESCAPE_DIRECT_RC exit=$LAST_RC"
 
+# Bash refuses `exit 0<NUL>` as a binary file; $(cat) would drop the NUL.
+fresh_case
+printf 'exit 0\000\n' > "$CASE_REPO/verify.sh"
+run_capture claude-verify-nul env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -v verify.sh
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(verification' && has "$LAST_OUT" 'VERIFY_EXECUTION_FAILED' && ok=1
+expect_case "Claude verifier with a NUL byte fails" "$ok" "exit=$LAST_RC"
+
 # Web role: the launcher's verdict comes from the structured contract and
 # runtime denial metadata, never from result prose. A fetch that did not
 # happen must never report DONE (reproduced false-DONE, 2026-09-22).

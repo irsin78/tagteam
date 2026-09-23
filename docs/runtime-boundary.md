@@ -164,7 +164,7 @@ copy (TMPDIR is inside the Codex sandbox's write scope). Changing/removing the
 original fails integrity; execution consumes the captured bytes. The UTF-8 verifier
 text reaches Bash on stdin, not argv (Windows re-parses argv and turns `\\` into `\`), and
 runs from the project root with its own stdin at EOF; use root-relative paths, not
-`BASH_SOURCE`. Invocation errors fail verification. This is not same-user OS
+`BASH_SOURCE`. Invocation errors and NUL bytes fail verification. This is not same-user OS
 isolation, nor does it freeze files/dependencies the verifier reads.
 
 The local read path does not take a workspace snapshot. A report's

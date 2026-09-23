@@ -58,6 +58,11 @@ except OSError:
 if not intact:
     print("VERIFY_INTEGRITY_FAILED: verifier source changed during the run")
     sys.exit(4)
+# $(cat) drops NUL bytes, so `exit 0<NUL>` would run although Bash refuses
+# that file as binary; refuse it here instead.
+if b"\0" in data:
+    print("VERIFY_EXECUTION_FAILED: verifier contains a NUL byte")
+    sys.exit(4)
 try:
     data.decode("utf-8")
     code = subprocess.run([sys.argv[2], "-c", "eval \"$(cat)\"", sys.argv[1]],
