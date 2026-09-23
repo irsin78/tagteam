@@ -708,8 +708,9 @@ bash .claude/scripts/claude-run.sh -p fetch-task.txt -m MODEL -e EFFORT -a web -
 The Claude launcher excludes Agent/Task from default implementation tools and
 explicitly supplies delegate instructions. `-a web` provides only WebFetch.
 Run read-only reviews with `-s read-only` (plan mode). `-v` is a verification
-script path, not a shell command string. The launcher runs verification code
-copied before startup, so the worker cannot change the grader. Claude CLI JSON
+script path, not a shell command string. The launcher keeps the verifier bytes
+read before startup in its own memory and fails verification if the original
+changed, so the worker cannot change the grader. Claude CLI JSON
 errors/empty results are FAILED. For both Codex/Claude, verification failure is
 FAILED even if the model process exits 0; the launcher returns nonzero.
 

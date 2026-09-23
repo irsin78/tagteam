@@ -174,7 +174,10 @@ case "${STUB_ACTION:-none}" in
     hooks:both) echo "hook: PreToolUse Completed"; echo "hook: Stop Completed" ;;
     hooks:pre) echo "hook: PreToolUse Completed" ;;
     hooks:fixture) cat "$FIXTURE_ROOT/hook-output.log" ;;
-    tamper-verify) printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$STUB_VERIFY_PATH" ;;
+    tamper-verify) printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$STUB_VERIFY_PATH" ;;
+    # Any launcher copy of the verifier in TMPDIR is inside Codex's write scope.
+    tamper-verify-tmp)
+        grep -lx 'exit 23' "$TMPDIR"/* 2>/dev/null | while IFS= read -r copy; do printf 'exit 0\n' > "$copy"; done ;;
     *) echo "unknown STUB_ACTION: $STUB_ACTION" >&2; exit 98 ;;
 esac
 echo "tokens used"
@@ -357,6 +360,21 @@ run_capture() {
 }
 
 has() { grep -Eq -- "$2" "$1"; }
+
+# r2 N2: Windows argv delivery turned `\\` into `\`, so this verifier passed
+# through the launcher while failing when run directly. Intact text exits 31.
+write_escape_verifier() {
+    printf '%s\n' '{"home": "C:\Users\dev"}' > "$CASE_REPO/result.json"
+    cat > "$CASE_REPO/verify.sh" <<'EOF'
+grep -q 'C:\\Users' result.json || exit 41
+[ "a\"b" = 'a"b' ] || exit 42
+[ 'a\b' = "a\\b" ] || exit 43
+[ "$(printf '%s' '한글' | wc -c)" -eq 6 ] || exit 44
+exit 31
+EOF
+    ESCAPE_DIRECT_RC=0
+    (cd "$CASE_REPO" && bash verify.sh </dev/null >/dev/null 2>&1) || ESCAPE_DIRECT_RC=$?
+}
 
 # Check observed report phases, including readback and failed-verifier runs.
 timing_ok() {
@@ -716,6 +734,12 @@ run_capture claude-verify-pass env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt
 ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'ORIGINAL_VERIFIER' && ok=1
 expect_case "Claude intact passing verifier succeeds" "$ok" "exit=$LAST_RC"
 
+fresh_case
+write_escape_verifier
+run_capture claude-verify-escapes env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -v verify.sh
+ok=0; [ "$ESCAPE_DIRECT_RC" -eq 31 ] && has "$LAST_OUT" '^VERIFY: exit 31$' && ok=1
+expect_case "Claude verifier text keeps backslashes, quotes and Korean" "$ok" "direct=$ESCAPE_DIRECT_RC exit=$LAST_RC"
+
 # Web role: the launcher's verdict comes from the structured contract and
 # runtime denial metadata, never from result prose. A fetch that did not
 # happen must never report DONE (reproduced false-DONE, 2026-09-22).
@@ -1054,13 +1078,36 @@ run_capture codex-commit env STUB_ACTION=commit HARNESS_RUN_ID=codexcommit bash 
 ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'SCOPE_WARNING: unauthorized commit' && has "$LAST_OUT" 'FAILED\(unauthorized-commit\)' && ok=1
 expect_case "unauthorized commit fails" "$ok" "exit=$LAST_RC"
 
+# r2 N1: a delegate that rewrites the original or any TMPDIR copy of an
+# `exit 23` verifier must still end in failed verification.
+for action in none tamper-verify tamper-verify-tmp; do
+    fresh_case
+    case_tmp="$TEST_ROOT/codex-verify-tmp-$action"; rm -rf "$case_tmp"; mkdir -p "$case_tmp"
+    printf 'exit 23\n' > "$CASE_REPO/verify.sh"
+    run_capture "codex-verify-$action" env STUB_ACTION="$action" STUB_VERIFY_PATH="$CASE_REPO/verify.sh" TMPDIR="$case_tmp" \
+        HARNESS_RUN_ID=codexverify bash "$CODEX_RUN" -p prompt.txt -v verify.sh
+    ok=0
+    if [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(verification' && has "$LAST_OUT" 'codex_exit=0'; then
+        if [ "$action" = tamper-verify ]; then
+            has "$LAST_OUT" 'VERIFY_INTEGRITY_FAILED' && ok=1
+        else
+            has "$LAST_OUT" '^VERIFY: exit 23' && ok=1
+        fi
+    fi
+    expect_case "Codex captured verifier survives $action" "$ok" "exit=$LAST_RC"
+done
+
 fresh_case
-verify="$CASE_REPO/verify.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'echo ORIGINAL_VERIFY_MARKER' 'exit 0' > "$verify"
-chmod +x "$verify"
-run_capture codex-verify env STUB_ACTION=tamper-verify STUB_VERIFY_PATH="$verify" HARNESS_RUN_ID=codexverify bash "$CODEX_RUN" -p prompt.txt -v "$verify"
-ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^VERIFY: exit 0$' && has "$LAST_OUT" 'ORIGINAL_VERIFY_MARKER' && ok=1
-expect_case "verify executes pre-run snapshot" "$ok" "exit=$LAST_RC"
+printf 'printf ORIGINAL_VERIFIER\nexit 0\n' > "$CASE_REPO/verify.sh"
+run_capture codex-verify-pass env STUB_ACTION=none HARNESS_RUN_ID=codexverifypass bash "$CODEX_RUN" -p prompt.txt -v verify.sh
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'ORIGINAL_VERIFIER' && ok=1
+expect_case "Codex intact passing verifier succeeds" "$ok" "exit=$LAST_RC"
+
+fresh_case
+write_escape_verifier
+run_capture codex-verify-escapes env STUB_ACTION=none HARNESS_RUN_ID=codexescapes bash "$CODEX_RUN" -p prompt.txt -v verify.sh
+ok=0; [ "$ESCAPE_DIRECT_RC" -eq 31 ] && has "$LAST_OUT" '^VERIFY: exit 31$' && ok=1
+expect_case "Codex verifier text keeps backslashes, quotes and Korean" "$ok" "direct=$ESCAPE_DIRECT_RC exit=$LAST_RC"
 
 fresh_case
 printf 'exit 7\n' > "$CASE_REPO/verify.sh"

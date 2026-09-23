@@ -335,7 +335,6 @@ VERIFY_LOG=$(mktemp "${TMPDIR:-/tmp}/codex-verify.XXXXXX") || exit 2
 CHANGED_FILE=$(mktemp "${TMPDIR:-/tmp}/codex-changed.XXXXXX") || exit 2
 TREE_BEFORE=$(mktemp "${TMPDIR:-/tmp}/codex-tree-before.XXXXXX") || exit 2
 TREE_AFTER=$(mktemp "${TMPDIR:-/tmp}/codex-tree-after.XXXXXX") || exit 2
-VERIFY_SNAP=$(mktemp "${TMPDIR:-/tmp}/codex-verifysnap.XXXXXX") || exit 2
 CP_BEFORE=$(mktemp "${TMPDIR:-/tmp}/codex-cp-before.XXXXXX") || exit 2
 CP_AFTER=$(mktemp "${TMPDIR:-/tmp}/codex-cp-after.XXXXXX") || exit 2
 # Persisted (not a tmpfile): when the report truncates it, the full final
@@ -346,7 +345,7 @@ LAST_MSG="$LOG_DIR/lastmsg-$TIMESTAMP.txt"
 # only after the report is written; anything else (signal, script error)
 # ends as `aborted` so --wait never hangs on a record nobody will finish.
 FINAL_STATE_WRITTEN=0
-cleanup() { rm -f "$VERIFY_LOG" "$CHANGED_FILE" "$TREE_BEFORE" "$TREE_AFTER" "$VERIFY_SNAP" "$CP_BEFORE" "$CP_AFTER" ; }
+cleanup() { rm -f "$VERIFY_LOG" "$CHANGED_FILE" "$TREE_BEFORE" "$TREE_AFTER" "$CP_BEFORE" "$CP_AFTER" ; }
 on_exit() {
     if [ "$FINAL_STATE_WRITTEN" -eq 0 ] && [ -f "$(state_file "$RUN_ID")" ]; then
         state_write aborted 1 "launcher exited before postflight"
@@ -368,13 +367,11 @@ on_signal() {
 trap on_exit EXIT
 trap on_signal HUP INT TERM
 
-# Snapshot the verify script BEFORE codex runs: the verify path may sit
-# inside the workspace (or TMPDIR) that codex can write to, and the script
-# is executed host-side afterwards — executing the pre-run copy keeps a
-# delegate from editing its own grading gate mid-run.
-if [ -n "$VERIFY_CMD" ]; then
-    cp "$VERIFY_CMD" "$VERIFY_SNAP" || exit 2
-fi
+# Capture the verifier BEFORE codex runs: the verify path may sit inside the
+# workspace or TMPDIR that codex can write to, so the bytes stay in this
+# shell and the original must still match them when it runs.
+VERIFY_BYTES=
+[ -z "$VERIFY_CMD" ] || verify_capture "$VERIFY_CMD"
 
 HEAD=
 # Control-plane snapshot: the files that enforce this
@@ -474,7 +471,7 @@ fi
 
 if [ -n "$VERIFY_CMD" ]; then
     timing_enter verify
-    bash -- "$VERIFY_SNAP" > "$VERIFY_LOG" 2>&1
+    verify_run "$VERIFY_CMD" > "$VERIFY_LOG" 2>&1
     VERIFY_EXIT=$?
     timing_enter postflight
 fi

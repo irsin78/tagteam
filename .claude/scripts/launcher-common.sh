@@ -36,6 +36,39 @@ save_git_baseline() {
     }
 }
 
+# -v verifier: its bytes are captured before the worker starts and stay in this
+# shell's memory, never in a worker-writable file (TMPDIR is inside the Codex
+# sandbox's write scope). The run requires the original to be unchanged.
+verify_capture() {
+    VERIFY_BYTES=$("$RS_PY" -c 'import base64,sys; from pathlib import Path; print(base64.b64encode(Path(sys.argv[1]).read_bytes()).decode())' "$1") || exit 2
+}
+
+# The script text reaches Bash on stdin, not argv: on Windows an argv payload
+# is re-parsed by the MSYS runtime and `\\` arrives as `\`. The wrapper drains
+# stdin before eval, so a verifier's `read` sees EOF, not its own source.
+verify_run() {
+    printf '%s' "$VERIFY_BYTES" | "$RS_PY" -c '
+import base64, subprocess, sys
+from pathlib import Path
+data = base64.b64decode(sys.stdin.read(), validate=True)
+try:
+    intact = Path(sys.argv[1]).read_bytes() == data
+except OSError:
+    intact = False
+if not intact:
+    print("VERIFY_INTEGRITY_FAILED: verifier source changed during the run")
+    sys.exit(4)
+try:
+    data.decode("utf-8")
+    code = subprocess.run([sys.argv[2], "-c", "eval \"$(cat)\"", sys.argv[1]],
+                          input=data.removeprefix(b"\xef\xbb\xbf")).returncode
+except (OSError, UnicodeError) as exc:
+    print("VERIFY_EXECUTION_FAILED: " + str(exc))
+    sys.exit(4)
+sys.exit(code)
+' "$1" "$(command -v bash)"
+}
+
 launcher_timeout() {
     RUNNER=()
     if timeout --version 2>/dev/null | grep -qi coreutils; then

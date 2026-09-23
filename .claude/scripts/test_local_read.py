@@ -85,6 +85,22 @@ class LocalTests(unittest.TestCase):
                     (self.root/'inputs.json').write_text(json.dumps([{'path': name}]))
                     self.assertEqual(self.run_reader().returncode, 4)
         self.assertEqual(Handler.requests, [])
+    def test_windows_name_aliases_cannot_bypass_exclusions(self):
+        # r2 N3: Windows opens these spellings as the excluded file itself.
+        (self.root/'.env').write_text('credential', encoding='utf-8')
+        (self.root/'private').mkdir()
+        (self.root/'private/note.txt').write_text('must not be sent', encoding='utf-8')
+        (self.root/'secret.txt').write_text('must not be sent', encoding='utf-8')
+        (self.root/'.claude/settings.json').write_text(json.dumps({'permissions': {'deny': [
+            'Read(private/**)', 'Read(**/secret.txt)']}}))
+        for name in ('private./note.txt', '.env ', '.env::$DATA', 'secret.txt::$DATA', 'secret.txt.',
+                     'PRIVATE/Note.txt', '.ENV'):
+            with self.subTest(name=name):
+                (self.root/'inputs.json').write_text(json.dumps([{'path': name}]))
+                self.assertEqual(self.run_reader().returncode, 4)
+        self.assertEqual(Handler.requests, [])
+        (self.root/'inputs.json').write_text(json.dumps([{'path': 'source.txt', 'start': 2, 'end': 2}]))
+        self.assertEqual(self.run_reader().returncode, 0)
     def test_nonregular_input_is_rejected(self):
         if not hasattr(os, 'mkfifo'):
             self.skipTest('FIFO creation unavailable on Windows')
