@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import shlex
 import subprocess
 import sys
@@ -16,11 +17,90 @@ ROOT = HERE.parent.parent
 spec = importlib.util.spec_from_file_location('harness_route', HERE / 'harness-route.py')
 routes = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(routes)
+session_spec = importlib.util.spec_from_file_location('harness_session', HERE / 'harness-session.py')
+session = importlib.util.module_from_spec(session_spec)
+session_spec.loader.exec_module(session)
 
 
 class HostRoutes(unittest.TestCase):
     def setUp(self):
         self.data = routes.load_bindings(ROOT)
+
+    def test_codex_hook_trust_uses_effective_engine_state(self):
+        # Native hooks/list response shape; no model, credentials or trust writes.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / '.codex/hooks.json'
+            source.parent.mkdir()
+            source.write_text(json.dumps({'hooks': {event: [{'hooks': [{'type': 'command', 'command': 'echo ok'}]}]
+                                                    for event in ('PreToolUse', 'Stop', 'UserPromptSubmit')}}))
+            config = root / 'config.toml'
+            config.write_text('# trust state must remain untouched\n')
+            stub = root / 'engine.py'
+            stub.write_text('''import json, sys
+from pathlib import Path
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get('method') == 'initialize':
+        response = {'id': request['id'], 'result': {}}
+    elif request.get('method') == 'hooks/list':
+        response = json.loads(Path(sys.argv[1]).read_text())
+    else:
+        continue
+    print(json.dumps(response), flush=True)
+''')
+            hooks = [{'key': str(source) + ':' + event + ':0:0', 'sourcePath': str(source),
+                      'enabled': True, 'trustStatus': 'trusted'}
+                     for event in ('pre_tool_use', 'stop', 'user_prompt_submit')]
+            native = subprocess.Popen
+            response_file = root / 'response.json'
+            def spawn(*args, **kwargs):
+                return native([sys.executable, str(stub), str(response_file)], **kwargs)
+            cases = ('trusted', 'warning', 'disabled', 'modified', 'untrusted', 'missing', 'feature-off', 'unsupported', 'malformed', 'load-error')
+            for case in cases:
+                with self.subTest(case=case):
+                    listed = json.loads(json.dumps(hooks))
+                    if case == 'disabled': listed[-1]['enabled'] = False
+                    if case in ('modified', 'untrusted'): listed[-1]['trustStatus'] = case
+                    if case == 'missing': listed.pop()
+                    if case == 'feature-off': listed.clear()
+                    response = {'id': 2, 'result': {'data': [{'hooks': listed, 'warnings': [], 'errors': []}]}}
+                    if case == 'warning': response['result']['data'][0]['warnings'] = ['unrelated user hook warning']
+                    if case == 'load-error': response['result']['data'][0]['errors'] = ['cannot read hooks source']
+                    if case == 'unsupported': response = {'id': 2, 'error': {'code': -32601}}
+                    if case == 'malformed': response = {'id': 2, 'result': {}}
+                    response_file.write_text(json.dumps(response))
+                    with patch.object(session.shutil, 'which', return_value='codex'), patch.object(session.subprocess, 'Popen', side_effect=spawn):
+                        if case in ('trusted', 'warning'):
+                            self.assertEqual(session.check_codex_hooks(root), 3)
+                        else:
+                            with self.assertRaises((ValueError, KeyError)):
+                                session.check_codex_hooks(root)
+            self.assertEqual(config.read_text(), '# trust state must remain untouched\n')
+
+    def test_generated_hooks_execute_in_paths_with_shell_metacharacters(self):
+        bash = routes.find_bash()
+        if not bash: self.skipTest('Bash required')
+        with tempfile.TemporaryDirectory() as temp:
+            for name in ('plain', 'has space', 'project&demo', "quote'and$dollar`tick"):
+                with self.subTest(name=name):
+                    root = Path(temp) / name
+                    hook_dir = root / '.claude/hooks'
+                    hook_dir.mkdir(parents=True)
+                    shutil.copyfile(ROOT / '.claude/hooks/session_preflight.py', hook_dir / 'session_preflight.py')
+                    output = root / 'hooks.json'
+                    result = subprocess.run([bash, str(HERE / 'gen-codex-hooks.sh'), '--python', sys.executable,
+                                             '--out', 'hooks.json'], cwd=root, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    hook = json.loads(output.read_text())['hooks']['SessionStart'][0]['hooks'][0]
+                    commands = [[bash, '-c', hook['command']]]
+                    if os.name == 'nt':
+                        commands.append([shutil.which('pwsh'), '-NoProfile', '-NonInteractive', '-Command', hook['commandWindows']])
+                    for command in commands:
+                        result = subprocess.run(command, cwd=root, input=json.dumps({'cwd': str(root)}),
+                                                capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn('HARNESS PLATFORM:', result.stdout)
 
     def test_claude_only_install_skips_codex_generator_checks(self):
         with tempfile.TemporaryDirectory() as temp, patch(__name__ + '.ROOT', Path(temp)):

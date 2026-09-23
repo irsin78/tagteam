@@ -185,8 +185,7 @@ case "$TIMEOUT" in ""|*[!0-9]*|0*) echo "HARNESS_DENIED: -t must be a positive i
 [ "$TIMEOUT" -le 570 ] || { echo "HARNESS_DENIED: -t must be <= 570 (the Bash tool caps a call at 600 s)" >&2; exit 4; }
 if [ "$VERIFY_GIVEN" -eq 1 ]; then
     # -v takes a PATH, never a command string (same rule as codex-run.sh):
-    # the launcher snapshots the script BEFORE the run and executes the
-    # snapshot, so a delegate cannot edit its own grading gate mid-run.
+    # keep the starting bytes in parent memory, never in a writable log file.
     case "$VERIFY_CMD" in
         ""|*[\;\|\&]*) echo "HARNESS_DENIED: -v takes a verify SCRIPT PATH, not a command string" >&2; exit 4 ;;
     esac
@@ -198,6 +197,8 @@ command -v claude >/dev/null 2>&1 || {
     echo "CLAUDE_UNAVAILABLE: claude is not on PATH (delegation falls back per delegation-matrix.md)" >&2
     exit 2
 }
+
+launcher_timeout || exit 4
 
 mkdir -p "$LOG_DIR" 2>/dev/null || {
     echo "CLAUDE_UNAVAILABLE: cannot create log dir $LOG_DIR" >&2
@@ -271,7 +272,7 @@ control_before
 WORKSPACE_EXCLUDES=(
     --exclude "$RUN_LOG" --exclude "$RUN_JSON" --exclude "$LAST_MSG"
     --exclude "$LOG_DIR/baseline-$TIMESTAMP.diff"
-    --exclude "$SETTINGS_LOCAL_SNAP" --exclude "$LOG_DIR/verify-$TIMESTAMP.sh"
+    --exclude "$SETTINGS_LOCAL_SNAP"
     --exclude "$LOG_DIR/verify-$TIMESTAMP.log" --exclude "$LOG_DIR/launcher-$RUN_ID.out"
 )
 PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
@@ -281,11 +282,10 @@ if [ "$WORKSPACE_MODE" = git ]; then
     HEAD=$(git rev-parse --verify HEAD 2>/dev/null || true)
     save_git_baseline
 fi
-# Snapshot the verify script so the delegate cannot edit its own gate.
-VERIFY_SNAP=
+# This shell value is not exported or stored in the worker-writable log tree.
+VERIFY_BYTES=
 if [ "$VERIFY_GIVEN" -eq 1 ]; then
-    VERIFY_SNAP="$LOG_DIR/verify-$TIMESTAMP.sh"
-    cp "$VERIFY_CMD" "$VERIFY_SNAP" || { echo "CLAUDE_UNAVAILABLE: cannot snapshot verify script" >&2; exit 2; }
+    VERIFY_BYTES=$("$RS_PY" -c 'import base64,sys; from pathlib import Path; print(base64.b64encode(Path(sys.argv[1]).read_bytes()).decode())' "$VERIFY_CMD") || exit 2
 fi
 
 # ---- call ----
@@ -298,7 +298,6 @@ case "$SANDBOX" in
     read-only) PERMISSION_MODE=plan ;;
     *)         PERMISSION_MODE=acceptEdits ;;
 esac
-launcher_timeout
 # HARNESS_DELEGATE_RUN marks this claude process as a DELEGATE for the hooks
 # it runs. `claude -p` is its own MAIN session, so its PreToolUse payloads
 # carry no agent_id and the subagent-scoped rules (commit/push, control-plane
@@ -442,10 +441,30 @@ control_after
 # These are before/after changes, even when the path was already dirty.
 
 VERIFY_EXIT=
-if [ -n "$VERIFY_SNAP" ]; then
+if [ "$VERIFY_GIVEN" -eq 1 ]; then
     VERIFY_LOG="$LOG_DIR/verify-$TIMESTAMP.log"
     timing_enter verify
-    bash "$VERIFY_SNAP" > "$VERIFY_LOG" 2>&1
+    printf '%s' "$VERIFY_BYTES" | "$RS_PY" -c '
+import base64, subprocess, sys
+from pathlib import Path
+data = base64.b64decode(sys.stdin.read(), validate=True)
+try:
+    intact = Path(sys.argv[1]).read_bytes() == data
+except OSError:
+    intact = False
+if not intact:
+    print("VERIFY_INTEGRITY_FAILED: verifier source changed during the run")
+    sys.exit(4)
+# Keep script text separate from stdin: a verifier using read must not consume
+# the remainder of its own source. No shell interpolates this argv payload.
+try:
+    code = subprocess.run([sys.argv[2], "-c", data.decode("utf-8-sig"), sys.argv[1]],
+                          stdin=subprocess.DEVNULL).returncode
+except (OSError, UnicodeError) as exc:
+    print("VERIFY_EXECUTION_FAILED: " + str(exc))
+    sys.exit(4)
+sys.exit(code)
+' "$VERIFY_CMD" "$(command -v bash)" > "$VERIFY_LOG" 2>&1
     VERIFY_EXIT=$?
     timing_enter postflight
 fi
@@ -516,9 +535,6 @@ report() {
     if [ "$CLAUDE_EXIT" -eq 124 ]; then
         echo "TIMEOUT: claude reached the ${TIMEOUT}s execution limit — inspect onboarding reads, API/tool waits and task progress before choosing a retry"
     fi
-    if [ "$TIMEOUT_WRAPPER" = none ]; then
-        echo "TIMEOUT_WRAPPER: none (GNU coreutils timeout not first on PATH) — the Bash tool's 600 s cap is the only limit for this run"
-    fi
     echo "$WORKSPACE_DESCRIPTION"
     echo "CHANGED: $CHANGED"
     if [ "$WORKER_ROLE" = web ]; then
@@ -549,7 +565,7 @@ report() {
     echo "TOKENS: $TOKENS"
     timing_report
     echo "API_REPORTED_MS: $API_REPORTED_MS (Claude-reported API duration; overlaps cli_ms)"
-    if [ -n "$VERIFY_SNAP" ]; then
+    if [ "$VERIFY_GIVEN" -eq 1 ]; then
         echo "VERIFY: exit $VERIFY_EXIT"
         tail -n 5 "$VERIFY_LOG"
     else

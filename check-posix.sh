@@ -102,11 +102,11 @@ else
     warn "git was not found on PATH -- delegation preflight/postflight, the control-plane hash and the SubagentStop evidence hook cannot verify anything."
 fi
 
-# ---- 5. GNU coreutils timeout (launcher wrapper; absence is not fatal)
+# ---- 5. GNU coreutils timeout (required by Codex/Claude launchers)
 if timeout --version 2>/dev/null | grep -qi coreutils; then
     echo "OK: GNU coreutils timeout is first on PATH ($(command -v timeout))."
 else
-    echo "INFO: GNU coreutils 'timeout' is not first on PATH -- the launchers run without the wrapper (TIMEOUT_WRAPPER: none), so only the Bash tool's 600 s cap cuts a hung run."
+    warn "GNU coreutils 'timeout' is not first on PATH -- Codex/Claude launchers refuse foreground and detached runs (exit 4)."
     note "Fix (macOS): brew install coreutils, then add \$(brew --prefix)/opt/coreutils/libexec/gnubin to PATH."
 fi
 

@@ -74,6 +74,17 @@ class LocalTests(unittest.TestCase):
         except OSError: self.skipTest('symlink creation not permitted on this Windows account')
         (self.root/'inputs.json').write_text(json.dumps([{'path':'linked'}]))
         self.assertEqual(self.run_reader().returncode,4);self.assertEqual(Handler.requests,[])
+    def test_parent_alias_cannot_bypass_read_policy(self):
+        (self.root/'private').mkdir(); (self.root/'public').mkdir()
+        (self.root/'private/note.txt').write_text('must not be sent', encoding='utf-8')
+        policies = ['private/**', './private/**', (self.root/'private').as_posix()+'/**']
+        for policy in policies:
+            (self.root/'.claude/settings.json').write_text(json.dumps({'permissions': {'deny': [f'Read({policy})']}}))
+            for name in ('private/note.txt', 'public/../private/note.txt'):
+                with self.subTest(policy=policy, name=name):
+                    (self.root/'inputs.json').write_text(json.dumps([{'path': name}]))
+                    self.assertEqual(self.run_reader().returncode, 4)
+        self.assertEqual(Handler.requests, [])
     def test_nonregular_input_is_rejected(self):
         if not hasattr(os, 'mkfifo'):
             self.skipTest('FIFO creation unavailable on Windows')

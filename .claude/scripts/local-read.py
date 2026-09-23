@@ -30,6 +30,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def project_path(root, value):
     if not isinstance(value, str) or not value or Path(value).is_absolute():
         raise InputError('input must be a project-relative path')
+    if '..' in Path(value).parts:
+        raise InputError('parent traversal in input paths is unsupported')
     candidate = root / value
     try:
         candidate.resolve().relative_to(root)

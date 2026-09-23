@@ -128,7 +128,7 @@ to 1 and an omitted end means to the end of the file. Large files are passed up
 to the input character limit and flagged with INPUT_TRUNCATED.
 
 - There is no arbitrary-command input (`-c`). It runs no commands or programs.
-- Paths outside the project, symbolic links and junctions, the .git and .env
+- Paths containing `..` components or outside the project, symbolic links and junctions, the .git and .env
   families, and the Read-excluded paths of the project settings.json are
   excluded from the input.
 - The same file-access check applies to the input declaration and the question
@@ -149,6 +149,19 @@ to the input character limit and flagged with INPUT_TRUNCATED.
   the parent.
 
 ## Shared launcher parts and optional tools
+
+Codex hook admission uses the installed engine's effective `hooks/list` trust
+and enabled state for all configured project handlers; missing or unknown evidence
+refuses the run. Codex/Claude require GNU timeout before foreground or detached
+admission. A native Claude child still holds the active-writer slot if its parent
+exits, subject to the existing PID/start-time identity check.
+
+Claude's `-v` verifier bytes stay in parent memory. Changing/removing the original
+fails integrity; execution consumes the captured bytes, not a writable snapshot.
+The UTF-8 verifier runs from the project root through Bash `-c` with stdin closed;
+use root-relative paths, not `BASH_SOURCE`. Invocation/argument-size errors fail
+verification. This is not same-user OS isolation, nor
+does it freeze files/dependencies the verifier reads.
 
 The local read path does not take a workspace snapshot. A report's
 `CHANGED: not measured` is not an observation of no change. When change
