@@ -131,6 +131,9 @@ to the input character limit and flagged with INPUT_TRUNCATED.
 - Paths containing `..` components or outside the project, symbolic links and junctions, the .git and .env
   families, and the Read-excluded paths of the project settings.json are
   excluded from the input.
+- Policy checks use the name the file system resolves. A spelling that opens a
+  different name (Windows trailing dots/spaces, short names, `:` streams) is
+  refused; only letter case may differ.
 - The same file-access check applies to the input declaration and the question
   file.
 - The read policy restricts explicit file selection; it is not an OS sandbox.
@@ -156,12 +159,13 @@ refuses the run. Codex/Claude require GNU timeout before foreground or detached
 admission. A native Claude child still holds the active-writer slot if its parent
 exits, subject to the existing PID/start-time identity check.
 
-Claude's `-v` verifier bytes stay in parent memory. Changing/removing the original
-fails integrity; execution consumes the captured bytes, not a writable snapshot.
-The UTF-8 verifier runs from the project root through Bash `-c` with stdin closed;
-use root-relative paths, not `BASH_SOURCE`. Invocation/argument-size errors fail
-verification. This is not same-user OS isolation, nor
-does it freeze files/dependencies the verifier reads.
+Codex/Claude `-v` verifier bytes stay in launcher memory, never in a worker-writable
+copy (TMPDIR is inside the Codex sandbox's write scope). Changing/removing the
+original fails integrity; execution consumes the captured bytes. The UTF-8 verifier
+text reaches Bash on stdin, not argv (Windows re-parses argv and turns `\\` into `\`), and
+runs from the project root with its own stdin at EOF; use root-relative paths, not
+`BASH_SOURCE`. Invocation errors fail verification. This is not same-user OS
+isolation, nor does it freeze files/dependencies the verifier reads.
 
 The local read path does not take a workspace snapshot. A report's
 `CHANGED: not measured` is not an observation of no change. When change

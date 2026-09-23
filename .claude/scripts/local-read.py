@@ -32,9 +32,11 @@ def project_path(root, value):
         raise InputError('input must be a project-relative path')
     if '..' in Path(value).parts:
         raise InputError('parent traversal in input paths is unsupported')
+    if os.name == 'nt' and any(':' in part for part in Path(value).parts):
+        raise InputError('stream or drive syntax in input paths is unsupported')
     candidate = root / value
     try:
-        candidate.resolve().relative_to(root)
+        resolved = candidate.resolve().relative_to(root)
     except ValueError:
         raise InputError('input is outside the project') from None
     for part in (candidate, *candidate.parents):
@@ -43,9 +45,13 @@ def project_path(root, value):
         info = part.lstat()
         if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
             raise InputError('linked input paths are unsupported')
+    # Windows opens `private.`, `.env ` and short names as another file; policy
+    # checks must see the name the file system resolves, so aliases are refused.
+    if [p.casefold() for p in resolved.parts] != [p.casefold() for p in candidate.relative_to(root).parts]:
+        raise InputError('input path is not in canonical form')
     if not candidate.is_file():
         raise InputError('input must be a regular file')
-    return candidate
+    return root / resolved
 
 def read_patterns(root):
     path = root / '.claude/settings.json'

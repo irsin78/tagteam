@@ -23,8 +23,10 @@ harness-route.py; use its model/effort, not an assumed maximum model.
    `-v` takes a PATH (repo-relative or Windows-style absolute; MSYS
    `/tmp/...` paths are invisible to the launcher's existence check) —
    never a command string (HARNESS_DENIED otherwise). The launcher
-   snapshots the script BEFORE codex runs and executes the snapshot, so a
-   delegate cannot edit its own grading gate mid-run.
+   captures the script bytes in its own memory BEFORE codex runs, refuses
+   to run them if the original changed (`VERIFY_INTEGRITY_FAILED`, a
+   failed verification) and runs the captured bytes from the project root
+   with stdin at EOF. Use root-relative paths, not `BASH_SOURCE`.
 3. Call the launcher DIRECTLY with Bash, `timeout: 600000`:
 
        bash .claude/scripts/codex-run.sh -p <prompt-file> [-m MODEL] [-e EFFORT] [-s SANDBOX] [-v <verify-script>] [-i <image>] [-o <schema.json>] [-t <seconds>]
@@ -125,10 +127,7 @@ harness-route.py; use its model/effort, not an assumed maximum model.
   from merged output, not proof of hook execution or enforcement.
   `TIMEOUT` appears when the launcher killed codex at `-t`
   seconds (codex_exit=124). Inspect onboarding reads, API/tool waits and task
-  progress to diagnose the cause before retrying; `TIMEOUT_WRAPPER: none`
-  means GNU coreutils `timeout` was not first on PATH (Windows'
-  `timeout.exe` would have killed the run), so only the Bash tool's
-  600 s cap applied; `FULL_ACCESS_APPROVED`
+  progress to diagnose the cause before retrying; `FULL_ACCESS_APPROVED`
   appears when a danger-full-access run was env-approved; `SCHEMA`
   names the `-o` schema when one was used; `FINAL_MESSAGE` is capped at
   60 lines (full text persists at `.claude/codex-logs/lastmsg-<ts>.txt`);
@@ -144,9 +143,12 @@ harness-route.py; use its model/effort, not an assumed maximum model.
   exit 3 for a startup model probe. Classify actual execution failures before retry.
 - 4 = HARNESS_DENIED: policy refusal (invalid sandbox/effort/verify/
   log-dir/image/schema/timeout args, bad flag, `max` without `-b`, any
-  worker `ultra`, or a project `.codex/hooks.json` with no trust entry — the
-  mirrored guards would be inert, so the run is refused before codex
-  starts; `HARNESS_ALLOW_UNTRUSTED_HOOKS=1` is the explicit override). NOT a fallback trigger — fix the call and rerun.
+  worker `ultra`, GNU coreutils `timeout` not first on PATH, or project
+  hooks that Codex's `hooks/list` does not report as enabled and trusted
+  for their current definition — modified, untrusted, disabled, missing,
+  an unsupported API or an inconclusive query. The mirrored guards would be
+  inert, so the run is refused before codex starts;
+  `HARNESS_ALLOW_UNTRUSTED_HOOKS=1` is the explicit override). NOT a fallback trigger — fix the call and rerun.
 - 5 = HARNESS_BUSY: another run is still executing in this tree —
   `--wait` for it, never start beside it.
 - 6 = `--wait`/`--status` only: the run is still executing.

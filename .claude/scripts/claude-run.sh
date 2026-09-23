@@ -284,9 +284,7 @@ if [ "$WORKSPACE_MODE" = git ]; then
 fi
 # This shell value is not exported or stored in the worker-writable log tree.
 VERIFY_BYTES=
-if [ "$VERIFY_GIVEN" -eq 1 ]; then
-    VERIFY_BYTES=$("$RS_PY" -c 'import base64,sys; from pathlib import Path; print(base64.b64encode(Path(sys.argv[1]).read_bytes()).decode())' "$VERIFY_CMD") || exit 2
-fi
+[ "$VERIFY_GIVEN" -ne 1 ] || verify_capture "$VERIFY_CMD"
 
 # ---- call ----
 # The prompt reaches claude on STDIN, never as a shell argument, so task
@@ -444,27 +442,7 @@ VERIFY_EXIT=
 if [ "$VERIFY_GIVEN" -eq 1 ]; then
     VERIFY_LOG="$LOG_DIR/verify-$TIMESTAMP.log"
     timing_enter verify
-    printf '%s' "$VERIFY_BYTES" | "$RS_PY" -c '
-import base64, subprocess, sys
-from pathlib import Path
-data = base64.b64decode(sys.stdin.read(), validate=True)
-try:
-    intact = Path(sys.argv[1]).read_bytes() == data
-except OSError:
-    intact = False
-if not intact:
-    print("VERIFY_INTEGRITY_FAILED: verifier source changed during the run")
-    sys.exit(4)
-# Keep script text separate from stdin: a verifier using read must not consume
-# the remainder of its own source. No shell interpolates this argv payload.
-try:
-    code = subprocess.run([sys.argv[2], "-c", data.decode("utf-8-sig"), sys.argv[1]],
-                          stdin=subprocess.DEVNULL).returncode
-except (OSError, UnicodeError) as exc:
-    print("VERIFY_EXECUTION_FAILED: " + str(exc))
-    sys.exit(4)
-sys.exit(code)
-' "$VERIFY_CMD" "$(command -v bash)" > "$VERIFY_LOG" 2>&1
+    verify_run "$VERIFY_CMD" > "$VERIFY_LOG" 2>&1
     VERIFY_EXIT=$?
     timing_enter postflight
 fi
