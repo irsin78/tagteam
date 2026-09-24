@@ -62,10 +62,10 @@ macOS notes (observed 2026-09-24, Homebrew coreutils 9.12 on arm64):
   wider than the harness requires. `check-posix.sh` still suggests the `gnubin`
   entry; either way satisfies its check, which only asks that `timeout` on PATH
   is GNU coreutils.
-- PATH order does not matter for the launchers. A desktop app may put `/bin`
-  first even when a login shell does not (observed: the Claude desktop app
-  starts with the system paths and appends the shell's entries), so bare `bash`
-  can be 3.2. When started under bash 3, `codex-run.sh`, `claude-run.sh` and
+- PATH order does not matter for the launchers. A desktop app session may
+  order PATH differently from a login shell (observed: a Claude desktop app
+  session started before the Homebrew install had `/bin` first; after an app
+  restart it matched the shell), so bare `bash` can be 3.2. When started under bash 3, `codex-run.sh`, `claude-run.sh` and
   `agy-run.sh` replace their own process once with `/opt/homebrew/bin/bash` or
   `/usr/local/bin/bash` (`exec`, about 1 ms; the run itself happens once).
   Without either, they still report `*_UNAVAILABLE`. `check-posix.sh` reports
