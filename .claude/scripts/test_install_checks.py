@@ -56,7 +56,9 @@ class InstallChecks(unittest.TestCase):
                  ('new event not registered', extended, expected, 1, 'post_tool_use'),
                  ('new event registered', extended, expected + ['post_tool_use'], 0, None),
                  ('empty hooks', {'hooks': {}}, expected, 1, None),
-                 ('invalid JSON', '{', expected, 1, None)]
+                 ('invalid JSON', '{', expected, 1, None),
+                 # Codex quotes keys without backslashes as TOML basic strings.
+                 ('all registered, basic-string keys', installed, expected, 0, None, '"')]
         cases += [('missing ' + event, installed, [e for e in expected if e != event], 1, event)
                   for event in expected]
         env = dict(os.environ)
@@ -75,11 +77,12 @@ class InstallChecks(unittest.TestCase):
                 hooks.parent.mkdir()
                 executable = folder / name
                 executable.write_text(script, encoding='utf-8', newline='\n')
-                for label, definition, registrations, exit_code, missing in cases:
+                for label, definition, registrations, exit_code, missing, *quote in cases:
+                    quote = quote[0] if quote else "'"
                     with self.subTest(shell=shell, case=label):
                         hooks.write_text(definition if isinstance(definition, str) else json.dumps(definition), encoding='utf-8')
-                        config = ''.join("[hooks.state.'%s:%s:0:0']\ntrusted_hash = \"fixture-only\"\n"
-                                         % (hooks.as_posix(), event) for event in registrations)
+                        config = ''.join("[hooks.state.%s%s:%s:0:0%s]\ntrusted_hash = \"fixture-only\"\n"
+                                         % (quote, hooks.as_posix(), event, quote) for event in registrations)
                         (folder / 'fixture-config.toml').write_text(config, encoding='utf-8')
                         args = command + [executable.as_posix()]
                         if shell == 'POSIX':

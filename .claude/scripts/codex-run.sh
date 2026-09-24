@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# macOS ships bash 3.2 as /bin/bash and desktop apps may put /bin first on
+# PATH. Replace this process once (no second run) with a bash >= 4 from a
+# standard location; the marker stops a loop and the later check reports
+# *_UNAVAILABLE when none exists. Keep this block bash 3.2 compatible.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] && [ -z "${HARNESS_BASH_REEXEC:-}" ]; then
+    for harness_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        if [ -x "$harness_bash" ]; then
+            export HARNESS_BASH_REEXEC=1
+            exec "$harness_bash" "$0" "$@"
+        fi
+    done
+fi
+unset HARNESS_BASH_REEXEC harness_bash
 LAUNCH_CLOCK=${EPOCHREALTIME:-$SECONDS}
 # Deterministic launcher for Codex CLI delegations: policy checks →
 # preflight (baseline, control-plane snapshot) → call →

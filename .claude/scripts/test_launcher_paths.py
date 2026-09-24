@@ -8,6 +8,28 @@ import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent/'hooks'))
 from stop_gate import find_bash
 
+class BashReexecTests(unittest.TestCase):
+    """A bash 3.2 start is replaced once by a standard-location bash >= 4."""
+    def test_old_bash_reaches_launcher_logic_in_one_exec(self):
+        old = '/bin/bash'
+        new = next((c for c in ('/opt/homebrew/bin/bash', '/usr/local/bin/bash') if os.access(c, os.X_OK)), None)
+        if not os.access(old, os.X_OK) or not new:
+            self.skipTest('needs /bin/bash and a standard-location newer bash (macOS with Homebrew)')
+        version = subprocess.run([old, '-c', 'echo ${BASH_VERSINFO[0]}'], capture_output=True, text=True).stdout.strip()
+        if version != '3': self.skipTest('/bin/bash is already bash >= 4')
+        scripts = Path(__file__).resolve().parent
+        env = {k: v for k, v in os.environ.items() if k != 'HARNESS_BASH_REEXEC'}
+        for name in ('codex-run.sh', 'claude-run.sh', 'agy-run.sh'):
+            with self.subTest(launcher=name):
+                # An unknown RUN_ID is exit 7 only after run-state.sh passed its bash >= 4 check.
+                result = subprocess.run([old, str(scripts / name), '--status', '00000000T000000Z-1'],
+                                        capture_output=True, text=True, env=env, timeout=60)
+                self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
+                guarded = subprocess.run([old, str(scripts / name), '--status', '00000000T000000Z-1'],
+                                         capture_output=True, text=True, env=dict(env, HARNESS_BASH_REEXEC='1'), timeout=60)
+                self.assertEqual(guarded.returncode, 2, guarded.stdout + guarded.stderr)
+                self.assertIn('bash >= 4', guarded.stderr)
+
 class LogPathTests(unittest.TestCase):
     def test_sensitive_lane_requires_runtime_policy_denials(self):
         bash = find_bash()

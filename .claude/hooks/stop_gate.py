@@ -106,12 +106,22 @@ def evaluate_mission(cwd, data):
 # Hook subprocesses can run with a PATH that lacks Git Bash (observed
 # 2026-09-01: CLI-session Stop hook died with WinError 2 on `bash` while
 # python-only sibling hooks worked), so the interpreter is resolved
-# explicitly instead of trusting bare-name lookup.
-BASH_FALLBACKS = (
-    r"C:\Program Files\Git\bin\bash.exe",
-    r"C:\Program Files\Git\usr\bin\bash.exe",
-    r"C:\Program Files (x86)\Git\bin\bash.exe",
-)
+# explicitly instead of trusting bare-name lookup. macOS/Linux hook PATHs can
+# be just as short (launchd, desktop apps), so POSIX gets the standard system
+# and Homebrew locations; the gate fails closed when none exists.
+if os.name == "nt":
+    BASH_FALLBACKS = (
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    )
+else:
+    BASH_FALLBACKS = (
+        "/opt/homebrew/bin/bash",
+        "/usr/local/bin/bash",
+        "/bin/bash",
+        "/usr/bin/bash",
+    )
 
 
 def is_windowsapps_stub(path):
@@ -140,7 +150,7 @@ def is_non_posix_bash(path):
 
 
 def find_bash():
-    """Locate bash via PATH, then standard Git-for-Windows install paths.
+    """Locate bash via PATH, then standard install paths (BASH_FALLBACKS).
 
     A PATH hit under `...\\Microsoft\\WindowsApps\\` is the WSL launcher
     stub, not a POSIX shell for Windows paths: it strips the backslashes
@@ -199,8 +209,8 @@ def evaluate(cwd):
         # Fail CLOSED: a gate that cannot run its verifier must not allow a
         # silent pass — the reason tells the operator how to resolve it.
         return 2, ("stop-gate: no bash interpreter found (PATH and standard "
-                   "Git-for-Windows locations) -- install Git Bash or remove "
-                   ".claude/.stop-gate deliberately.\n")
+                   "install locations) -- install bash (Git Bash on Windows) "
+                   "or remove .claude/.stop-gate deliberately.\n")
 
     # Ignore stop_hook_active: verifier success is the progress signal, and
     # Claude Code's built-in eight-block cap is the runaway-loop guard.

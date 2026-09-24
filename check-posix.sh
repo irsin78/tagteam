@@ -60,10 +60,26 @@ if [ -z "$BASH_ON_PATH" ]; then
     note "Every launcher (codex-run.sh, agy-run.sh) and the Stop-hook gate run through bash."
 else
     BASH_MAJOR=$("$BASH_ON_PATH" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)
+    # Launchers replace a bash 3 start with the first of these (their prologue).
+    REEXEC_BASH=""
     if [ "${BASH_MAJOR:-0}" -lt 4 ]; then
+        for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            if [ -x "$candidate" ]; then
+                REEXEC_BASH=$candidate
+                break
+            fi
+        done
+    fi
+    REEXEC_MAJOR=0
+    [ -z "$REEXEC_BASH" ] || REEXEC_MAJOR=$("$REEXEC_BASH" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)
+    if [ "${BASH_MAJOR:-0}" -lt 4 ] && [ "${REEXEC_MAJOR:-0}" -ge 4 ]; then
+        echo "OK: bash on PATH is $("$BASH_ON_PATH" -c 'echo "$BASH_VERSION"' 2>/dev/null) at $BASH_ON_PATH; launchers re-exec into $REEXEC_BASH ($("$REEXEC_BASH" -c 'echo "$BASH_VERSION"'))."
+        BASH_ON_PATH=$REEXEC_BASH
+        BASH_MAJOR=$REEXEC_MAJOR
+    elif [ "${BASH_MAJOR:-0}" -lt 4 ]; then
         warn "bash on PATH is $("$BASH_ON_PATH" -c 'echo "$BASH_VERSION"' 2>/dev/null) at $BASH_ON_PATH -- the launchers need bash >= 4."
         note "agy-run.sh and run-state.sh refuse with *_UNAVAILABLE (exit 2) under bash 3, so every delegation falls back."
-        note "Fix (macOS): brew install bash, then put \$(brew --prefix)/bin ahead of /bin on PATH."
+        note "Fix (macOS): brew install bash (launchers re-exec into /opt/homebrew/bin/bash or /usr/local/bin/bash; PATH order does not matter)."
     else
         echo "OK: bash on PATH is $("$BASH_ON_PATH" -c 'echo "$BASH_VERSION"') ($BASH_ON_PATH)."
     fi
@@ -219,8 +235,12 @@ PY_EVENTS
         trust_missing=""
         for event in $trust_events; do
             # Fixed-string match: path metacharacters are not regex syntax.
+            # Codex writes a literal-string key ('...') where the path has
+            # backslashes and a basic-string key ("...") otherwise (macOS,
+            # codex-cli 0.156.1); accept either quoting.
             if ! tr 'A-Z' 'a-z' < "$CODEX_CONFIG" | tr '\\' '/' |
-                    grep -qF "[hooks.state.'$hooks_key:$event:"; then
+                    grep -qF -e "[hooks.state.'$hooks_key:$event:" \
+                        -e "[hooks.state.\"$hooks_key:$event:"; then
                 trust_missing="$trust_missing $event"
             fi
         done

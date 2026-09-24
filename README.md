@@ -78,6 +78,7 @@ files as `CLAUDE.md` and `AGENTS.md`, and fill in the project-specific items.
 Connecting the apps and tools you use follows the
 [installation manual](docs/harness-manual.md#installation).
 
+- [Dependencies](docs/dependencies.md) — what to install per platform and what breaks without it
 - [Copy targets](docs/harness-manual.md#copy-targets) · [Support status](docs/harness-manual.md#support-status)
 - [Design principles and responsibility boundary](docs/design-principles.md) — model selection rationale, efficiency, adoption success criteria
 - [Harness manual](docs/harness-manual.md) — layout, installation, hook behaviour, operation, checks

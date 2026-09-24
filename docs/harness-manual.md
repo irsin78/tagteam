@@ -339,6 +339,7 @@ individual missions. Merge existing project settings/instructions without overwr
 | `docs/harness-manual.md` | Required | Platform guidance, launcher procedures, and operations referenced by installed instructions and SessionStart |
 | `docs/missions/README.md` | Required | Guidance on work by objective, spec confirmation, continuous execution, and resume. Do not copy this repository's individual mission folders; create them in the target project |
 | `docs/runtime-boundary.md` | Required | Current hook responsibilities/detection limits, local-read input format, optional tools, update procedures |
+| `docs/dependencies.md` | Required | Per-platform prerequisites and their failure modes, linked from installation |
 | `docs/design-principles.md` | Required | Goals, responsibility boundaries, and cross-verification rationale referenced by installed entry instructions |
 | `docs/platform-notes-macos.md` | Using macOS | SessionStart hook points here in macOS sessions |
 | `docs/platform-notes-linux.md` | Using Linux/WSL2 | SessionStart hook points here in Linux sessions (evidence level per item) |
@@ -474,8 +475,10 @@ per-stage commits.
 
 The starting host is Claude Code or Codex. External implementation delegation
 requires the other app's CLI; Antigravity and local inference are optional.
-Hooks require Python; shell launchers require Bash. Follow the procedures below
-to prepare the routes you use.
+Hooks require Python; shell launchers require Bash. The per-platform list of
+what to install, and what fails without each item, is
+[Dependencies](dependencies.md). Follow the procedures below to prepare the
+routes you use.
 
 For platform verification status, see [Support status](#support-status).
 Operation is not promised on unverified platforms. The procedures below put
@@ -949,11 +952,13 @@ changing ACLs/sandbox settings or repeatedly cleaning temporary files.
 ### macOS
 
 SessionStart points to `docs/platform-notes-macos.md` for reading before work.
-Launchers require bash 4 or later: run `brew install bash` and configure PATH,
-otherwise they return `*_UNAVAILABLE`. Codex and Claude launchers require GNU
-coreutils `timeout` first on PATH (`brew install coreutils`, gnubin PATH),
-including detached runs. Hooks require unversioned `python`; `check-posix.sh` detects these three
-items. The support table classifies macOS as partially verified.
+Launchers require bash 4 or later and GNU coreutils `timeout`; hooks require
+unversioned `python`. Launchers started under bash 3.2 re-exec into a
+Homebrew bash, so PATH order does not matter for them. Install commands and why
+a `gnubin` entry is optional are in
+[Dependencies](dependencies.md#bash--4-and-gnu-timeout). `check-posix.sh`
+detects these three items. The support table classifies macOS as partially
+verified.
 
 ### Linux (partial verification by environment and item)
 
