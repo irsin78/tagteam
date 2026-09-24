@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
@@ -101,6 +102,101 @@ class LocalTests(unittest.TestCase):
         self.assertEqual(Handler.requests, [])
         (self.root/'inputs.json').write_text(json.dumps([{'path': 'source.txt', 'start': 2, 'end': 2}]))
         self.assertEqual(self.run_reader().returncode, 0)
+    def test_exact_spelling_blocks_case_aliases_before_volume_check(self):
+        (self.root/'private').mkdir()
+        (self.root/'private/note.txt').write_text('must not be sent', encoding='utf-8')
+        (self.root/'.env').write_text('credential', encoding='utf-8')
+        patterns=reader.read_patterns(self.root)
+        with patch.object(reader, 'case_insensitive_volume', return_value=False) as detector:
+            for name in ('PRIVATE/Note.txt', '.ENV'):
+                with self.subTest(name=name):
+                    with self.assertRaises(reader.InputError):
+                        reader.readable_path(self.root, name, patterns)
+        detector.assert_not_called()
+        self.assertEqual(Handler.requests, [])
+    def test_swap_that_does_not_fold_is_not_a_probe(self):
+        # U+0131 swaps to I, which casefolds to i: not the same name anywhere.
+        self.assertEqual(reader.swapped_case('\u0131x'), '\u0131X')
+        self.assertEqual(reader.swapped_case('\u0131'), '\u0131')
+    def test_one_negative_entry_cannot_outvote_proof_of_insensitivity(self):
+        if not reader.case_insensitive_volume(self.root):
+            self.skipTest('temporary volume is case-sensitive')
+        probe=self.root/'case-probe';probe.mkdir()
+        (probe/'Abc').write_text('x');(probe/'Def').write_text('x')
+        # Whatever the listing order, the first probe reads as a clean negative.
+        calls=[]
+        def swap(name):
+            calls.append(name)
+            return 'zz-missing' if len(calls)==1 else name[0].swapcase()+name[1:]
+        with patch.object(reader, 'swapped_case', side_effect=swap):
+            self.assertTrue(reader.case_insensitive_volume(probe))
+    def test_dangling_symlink_does_not_make_volume_look_sensitive(self):
+        if not reader.case_insensitive_volume(self.root):
+            self.skipTest('temporary volume is case-sensitive')
+        probe=self.root/'case-probe';probe.mkdir()
+        try: (probe/'Dangling').symlink_to(probe/'missing')
+        except OSError: self.skipTest('symlink creation not permitted')
+        self.assertEqual(os.listdir(probe), ['Dangling'])
+        self.assertTrue(reader.case_insensitive_volume(probe))
+    def test_policy_case_follows_volume(self):
+        if not reader.case_insensitive_volume(self.root):
+            self.skipTest('temporary volume is case-sensitive')
+        (self.root/'private').mkdir();(self.root/'private/note.txt').write_text('must not be sent')
+        (self.root/'.claude/settings.json').write_text(json.dumps({'permissions':{'deny':['Read(Private/**)']}}))
+        (self.root/'inputs.json').write_text(json.dumps([{'path':'private/note.txt'}]))
+        self.assertEqual(self.run_reader().returncode,4);self.assertEqual(Handler.requests,[])
+    def test_case_insensitive_policy_keeps_raw_question_mark_match(self):
+        if not reader.case_insensitive_volume(self.root):
+            self.skipTest('temporary volume is case-sensitive')
+        directory_name='größe'
+        try: (self.root/directory_name).mkdir()
+        except OSError: self.skipTest('filesystem refuses the Unicode directory name')
+        entries=[name for name in os.listdir(self.root)
+                 if unicodedata.normalize('NFC',name)==directory_name and (self.root/name).is_dir()]
+        if len(entries) != 1:
+            self.skipTest('filesystem refuses the Unicode directory name')
+        stored_name=entries[0]
+        (self.root/stored_name/'secret.txt').write_text('must not be sent', encoding='utf-8')
+        (self.root/'.claude/settings.json').write_text(json.dumps({'permissions': {
+            'deny': ['Read(gr??e/**)']}}))
+        input_path=(Path(stored_name)/'secret.txt').as_posix()
+        (self.root/'inputs.json').write_text(json.dumps([{'path': input_path}]))
+        self.assertEqual(self.run_reader().returncode,4);self.assertEqual(Handler.requests,[])
+    def test_core_exclusion_case_is_always_insensitive(self):
+        if reader.case_insensitive_volume(self.root):
+            self.skipTest('temporary volume is case-insensitive')
+        (self.root/'.ENV').write_text('credential')
+        (self.root/'inputs.json').write_text(json.dumps([{'path':'.ENV'}]))
+        self.assertEqual(self.run_reader().returncode,4);self.assertEqual(Handler.requests,[])
+    def assert_unicode_policy_blocked(self, directory_name, policy_name):
+        try: (self.root/directory_name).mkdir()
+        except OSError: self.skipTest('filesystem refuses to create the Unicode directory name')
+        expected=unicodedata.normalize('NFC',directory_name)
+        entries=[name for name in os.listdir(self.root)
+                 if unicodedata.normalize('NFC',name)==expected and (self.root/name).is_dir()]
+        self.assertEqual(len(entries),1)
+        stored_name=entries[0]
+        (self.root/stored_name/'note.txt').write_text('must not be sent',encoding='utf-8')
+        policy=f'Read({policy_name}/**)'
+        (self.root/'.claude/settings.json').write_text(json.dumps({'permissions':{'deny':[policy]}}))
+        input_path=(Path(stored_name)/'note.txt').as_posix()
+        (self.root/'inputs.json').write_text(json.dumps([{'path':input_path}]))
+        self.assertEqual(self.run_reader().returncode,4);self.assertEqual(Handler.requests,[])
+    def test_nfc_policy_blocks_nfd_directory(self):
+        nfc=unicodedata.normalize('NFC','비밀')
+        self.assert_unicode_policy_blocked(unicodedata.normalize('NFD',nfc),nfc)
+    def test_nfd_policy_blocks_nfc_directory(self):
+        nfc=unicodedata.normalize('NFC','비밀')
+        self.assert_unicode_policy_blocked(nfc,unicodedata.normalize('NFD',nfc))
+    def test_absolute_policy_resolves_symlinked_parent(self):
+        (self.root/'actual/private').mkdir(parents=True)
+        (self.root/'actual/private/note.txt').write_text('must not be sent')
+        try: (self.root/'alias').symlink_to(self.root/'actual',target_is_directory=True)
+        except OSError: self.skipTest('symlink creation not permitted')
+        policy=(self.root/'alias/private').as_posix()+'/**'
+        (self.root/'.claude/settings.json').write_text(json.dumps({'permissions':{'deny':[f'Read({policy})']}}))
+        (self.root/'inputs.json').write_text(json.dumps([{'path':'actual/private/note.txt'}]))
+        self.assertEqual(self.run_reader().returncode,4);self.assertEqual(Handler.requests,[])
     def test_nonregular_input_is_rejected(self):
         if not hasattr(os, 'mkfifo'):
             self.skipTest('FIFO creation unavailable on Windows')

@@ -27,6 +27,8 @@ PATH. Review and trust the generated definitions with `/hooks`. Regenerate and
 retrust after moving the project or changing the interpreter installation path.
 This generator updates Codex hooks only; Claude settings and other scripts
 that invoke `python` still require that command or their own configuration.
+Ways to provide it, and the PATH order a desktop app must see, are in
+[Dependencies](dependencies.md#python).
 
 ### 1. Filename normalization (NFC/NFD) — the biggest trap
 

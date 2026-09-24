@@ -9,6 +9,7 @@ import stat
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,31 +28,86 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
+def swapped_case(value):
+    for index, char in enumerate(value):
+        swapped = char.swapcase()
+        # Only a swap that folds to the same name probes the volume (not ı/I).
+        if swapped != char and len(swapped) == len(char) and swapped.casefold() == char.casefold():
+            return value[:index] + swapped + value[index + 1:]
+    return value
+
+def case_insensitive_volume(root):
+    try:
+        with os.scandir(root) as scanned:
+            entries = list(scanned)
+    except OSError:
+        return True
+    listed_names = {entry.name for entry in entries}
+    sensitive = False
+    for entry in entries:
+        swapped = swapped_case(entry.name)
+        if swapped == entry.name or swapped in listed_names:
+            continue
+        try:
+            info = os.lstat(entry.path)
+        except OSError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            continue
+        try:
+            (root / swapped).lstat()
+        except FileNotFoundError:
+            try:
+                info = os.lstat(entry.path)
+            except OSError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                continue
+            sensitive = True
+            continue
+        except OSError:
+            continue
+        return True
+    # Case-sensitive only when no entry proved otherwise and one proved it.
+    return not sensitive
+
+def exact_project_path(root, parts):
+    if not parts:
+        raise InputError('input path is not in canonical form')
+    current = root
+    for name in parts:
+        try:
+            with os.scandir(current) as entries:
+                if not any(entry.name == name for entry in entries):
+                    raise InputError('input path is not in canonical form')
+            current = current / name
+            info = current.lstat()
+        except InputError:
+            raise
+        except OSError:
+            raise InputError('input path is invalid or inaccessible') from None
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise InputError('linked input paths are unsupported')
+    return current, info
+
 def project_path(root, value):
     if not isinstance(value, str) or not value or Path(value).is_absolute():
         raise InputError('input must be a project-relative path')
-    if '..' in Path(value).parts:
+    parts = Path(value).parts
+    if '..' in parts:
         raise InputError('parent traversal in input paths is unsupported')
-    if os.name == 'nt' and any(':' in part for part in Path(value).parts):
+    if os.name == 'nt' and any(':' in part for part in parts):
         raise InputError('stream or drive syntax in input paths is unsupported')
-    candidate = root / value
+    candidate, info = exact_project_path(root, parts)
     try:
         resolved = candidate.resolve().relative_to(root)
-    except ValueError:
+    except (OSError, ValueError):
         raise InputError('input is outside the project') from None
-    for part in (candidate, *candidate.parents):
-        if part == root:
-            break
-        info = part.lstat()
-        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
-            raise InputError('linked input paths are unsupported')
-    # Windows opens `private.`, `.env ` and short names as another file; policy
-    # checks must see the name the file system resolves, so aliases are refused.
-    if [p.casefold() for p in resolved.parts] != [p.casefold() for p in candidate.relative_to(root).parts]:
+    if resolved.parts != parts:
         raise InputError('input path is not in canonical form')
-    if not candidate.is_file():
+    if not stat.S_ISREG(info.st_mode):
         raise InputError('input must be a regular file')
-    return root / resolved
+    return candidate
 
 def read_patterns(root):
     path = root / '.claude/settings.json'
@@ -65,28 +121,53 @@ def read_patterns(root):
     except (OSError, ValueError, AttributeError):
         raise InputError('cannot read project file-access policy') from None
 
+def resolved_pattern(pattern):
+    parts = pattern.split('/')
+    split = next((index for index, part in enumerate(parts) if any(char in part for char in '*?[')), len(parts))
+    prefix, suffix = '/'.join(parts[:split]), '/'.join(parts[split:])
+    if pattern.startswith('/') and not prefix:
+        prefix = '/'
+    try:
+        resolved = os.path.realpath(prefix).replace('\\', '/')
+    except (OSError, ValueError):
+        raise InputError('cannot resolve project file-access policy') from None
+    return resolved.rstrip('/') + '/' + suffix if suffix else resolved
+
 def readable_path(root, value, patterns):
     path = project_path(root, value)
     relative = path.relative_to(root).as_posix()
     # Core exclusions remain even if the project has no Read entries.
-    if any(p == '.git' or p == '.env' or p.startswith('.env.') for p in path.relative_to(root).parts):
+    components = [unicodedata.normalize('NFC', p).casefold()
+                  for p in path.relative_to(root).parts]
+    if any(p == '.git' or p == '.env' or p.startswith('.env.') for p in components):
         raise InputError('input is excluded from local reads')
     absolute = path.as_posix()
+    insensitive = case_insensitive_volume(root)
     for pattern in patterns:
         if pattern.startswith('~/'):
-            pattern = Path(pattern).expanduser().as_posix()
-            target = absolute
+            try:
+                pattern = Path(pattern).expanduser().as_posix()
+            except (OSError, RuntimeError):
+                raise InputError('cannot resolve project file-access policy') from None
+            candidates, target = [pattern, resolved_pattern(pattern)], absolute
         elif pattern.startswith('./'):
-            pattern, target = pattern[2:], relative
+            candidates, target = [pattern[2:]], relative
         elif Path(pattern).is_absolute():
-            target = absolute
+            candidates, target = [pattern, resolved_pattern(pattern)], absolute
         else:
-            target = relative
-        # Windows policy comparisons follow the normal case-insensitive volume.
-        target, pattern = (os.path.normcase(v).replace('\\', '/') for v in (target, pattern))
-        variants = [pattern, pattern[3:]] if pattern.startswith('**/') else [pattern]
-        if any(fnmatch.fnmatchcase(target, p) or p.endswith('/**') and target == p[:-3] for p in variants):
-            raise InputError('input is excluded by project Read policy')
+            candidates, target = [pattern], relative
+        target = unicodedata.normalize('NFC', target)
+        candidates = [unicodedata.normalize('NFC', p) for p in candidates]
+        forms = [(target, candidates)]
+        if insensitive:
+            forms.extend(((target.casefold(), [p.casefold() for p in candidates]),
+                          (target.lower(), [p.lower() for p in candidates])))
+        for form_target, form_candidates in forms:
+            variants = [p for candidate in form_candidates for p in
+                        ([candidate, candidate[3:]] if candidate.startswith('**/') else [candidate])]
+            if any(fnmatch.fnmatchcase(form_target, p) or
+                   p.endswith('/**') and form_target == p[:-3] for p in variants):
+                raise InputError('input is excluded by project Read policy')
     return path
 
 def bounded_text(path, limit):

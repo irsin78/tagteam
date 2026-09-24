@@ -1150,7 +1150,8 @@ RUN_ID=new
 stale_run_check
 echo WRITER_ADMITTED
 IDENTITY
-    run_capture native-claude-identity env OBSERVATION="$observation" bash identity.sh "$RUN_STATE"
+    # Sources run-state.sh directly (no launcher prologue): use this suite's bash >= 4.
+    run_capture native-claude-identity env OBSERVATION="$observation" "$BASH" identity.sh "$RUN_STATE"
     ok=0
     if [ "$observation" = live ]; then
         [ "$LAST_RC" -eq 5 ] && has "$LAST_OUT" 'CLASSIFIED=running' && has "$LAST_OUT" 'HARNESS_BUSY' && ok=1
