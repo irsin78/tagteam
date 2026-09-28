@@ -68,6 +68,9 @@ covers the conditional external plan review, not routine approval.
 Give workers the confirmed goal/spec, file scope/current inputs, constraints,
 verification and output contract; let them decide reversible details. Use the
 selected launcher directly. Read only its needed recipe in docs/harness-manual.md.
+While working with the user, say in one sentence what you will do before the
+first tool call of multi-step work, and give a brief readable update when a
+finding changes the plan, a worker is launched or returns, or direction changes.
 
 If no fresh HARNESS PLATFORM output arrived, run
 `python .claude/scripts/harness-session.py start --host claude` from the root.
