@@ -77,6 +77,21 @@ execution. Launchers check the arguments they receive themselves. Change
 detection is after the fact; it cannot undo an external action already
 performed or replace isolation.
 
+## What the guards do not cover
+
+The harness is an accident guard and evidence layer, not a universal sandbox.
+
+- Host permission rules and the guard cover their documented tool interfaces,
+  not every read a subprocess makes. A script the agent runs can read a file
+  that a `Read` deny rule protects.
+- The web reader's summary reduces prompt-injection exposure; it does not
+  contain it. Injection can also sit in files an agent reads directly, such
+  as vendored third-party code, committed fetch output or documents under
+  review.
+- Running a model locally does not eliminate injection or exfiltration.
+- Minimal native-worker metadata records who ran where; it is not acceptance
+  evidence. Inspect actual changed outputs.
+
 ## Project protection policy
 
 The adopting project states the files to protect, external actions and approval
