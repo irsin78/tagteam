@@ -350,6 +350,8 @@ TREE_BEFORE=$(mktemp "${TMPDIR:-/tmp}/codex-tree-before.XXXXXX") || exit 2
 TREE_AFTER=$(mktemp "${TMPDIR:-/tmp}/codex-tree-after.XXXXXX") || exit 2
 CP_BEFORE=$(mktemp "${TMPDIR:-/tmp}/codex-cp-before.XXXXXX") || exit 2
 CP_AFTER=$(mktemp "${TMPDIR:-/tmp}/codex-cp-after.XXXXXX") || exit 2
+# Resume only: the assembled `-` prompt (role sentence + <stdin> block).
+RESUME_INPUT=$(mktemp "${TMPDIR:-/tmp}/codex-resume-input.XXXXXX") || exit 2
 # Persisted (not a tmpfile): when the report truncates it, the full final
 # message must remain readable after the run.
 LAST_MSG="$LOG_DIR/lastmsg-$TIMESTAMP.txt"
@@ -358,7 +360,7 @@ LAST_MSG="$LOG_DIR/lastmsg-$TIMESTAMP.txt"
 # only after the report is written; anything else (signal, script error)
 # ends as `aborted` so --wait never hangs on a record nobody will finish.
 FINAL_STATE_WRITTEN=0
-cleanup() { rm -f "$VERIFY_LOG" "$CHANGED_FILE" "$TREE_BEFORE" "$TREE_AFTER" "$CP_BEFORE" "$CP_AFTER" ; }
+cleanup() { rm -f "$VERIFY_LOG" "$CHANGED_FILE" "$TREE_BEFORE" "$TREE_AFTER" "$CP_BEFORE" "$CP_AFTER" "$RESUME_INPUT" ; }
 on_exit() {
     if [ "$FINAL_STATE_WRITTEN" -eq 0 ] && [ -f "$(state_file "$RUN_ID")" ]; then
         state_write aborted 1 "launcher exited before postflight"
@@ -444,7 +446,22 @@ if [ -n "$RESUME_ID" ]; then
     else
         set -- resume "$RESUME_ID"
     fi
-    "${RUNNER[@]}" codex exec "$@" -c windows.sandbox=unelevated -c "model_reasoning_effort=$EFFORT" -m "$MODEL" -c "sandbox_mode=$SANDBOX" --output-last-message "$LAST_MSG" "${EXTRA_ARGS[@]}" "$DELEGATE_INSTRUCTION Follow the correction provided in the <stdin> block." < "$PROMPT_FILE" > "$RUN_LOG" 2>&1 &
+    # Delivery differs from a fresh run: `codex exec` appends piped stdin
+    # to a positional prompt as a `<stdin>` block, but `codex exec resume`
+    # reads stdin ONLY when the prompt argument is `-` and otherwise drops
+    # it (help text + observed 2026-09-28 on 0.157.1: the resumed turn
+    # carried no <stdin> block and the model answered NEEDS_INPUT). So the
+    # role sentence and the correction are joined in a launcher-owned
+    # temp file that mirrors the fresh-run shape, and `-` is the only
+    # prompt argument -- task text still never enters a shell argument.
+    {
+        printf '%s\n\n<stdin>\n' "$DELEGATE_INSTRUCTION Follow the correction provided in the <stdin> block."
+        cat "$PROMPT_FILE"
+        # Close the block on its own line without adding a blank one.
+        [ -z "$(tail -c1 "$PROMPT_FILE")" ] || printf '\n'
+        printf '</stdin>\n'
+    } > "$RESUME_INPUT" || { echo "codex-run.sh: cannot assemble the resume prompt in $RESUME_INPUT" >&2; exit 2; }
+    "${RUNNER[@]}" codex exec "$@" -c windows.sandbox=unelevated -c "model_reasoning_effort=$EFFORT" -m "$MODEL" -c "sandbox_mode=$SANDBOX" --output-last-message "$LAST_MSG" "${EXTRA_ARGS[@]}" - < "$RESUME_INPUT" > "$RUN_LOG" 2>&1 &
 else
     "${RUNNER[@]}" codex exec -c windows.sandbox=unelevated -c "model_reasoning_effort=$EFFORT" -m "$MODEL" --sandbox "$SANDBOX" --output-last-message "$LAST_MSG" "${EXTRA_ARGS[@]}" "$DELEGATE_INSTRUCTION Follow the task specification provided in the <stdin> block." < "$PROMPT_FILE" > "$RUN_LOG" 2>&1 &
 fi

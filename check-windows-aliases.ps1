@@ -204,39 +204,38 @@ foreach ($hookName in $hookNames) {
     }
 }
 
-# norm: markers -- CLAUDE.md and AGENTS.md carry the same normative items,
-# paired by `<!-- norm:<name> -->` markers. Each marker must appear exactly
-# once in BOTH files, or the two hosts' rules have drifted. The templates
-# are checked where present, the rendered files otherwise (a consumer
-# project has only those).
+# Single entry instructions -- AGENTS.md is the one instruction file for both
+# hosts; CLAUDE.md must contain the `@AGENTS.md` import line so Claude Code
+# loads the same text Codex reads. Templates are checked where present, the
+# installed files otherwise (a consumer project has only those).
 foreach ($pair in @(@('CLAUDE.md.template', 'AGENTS.md.template'), @('CLAUDE.md', 'AGENTS.md'))) {
-    $pairPaths = $pair | ForEach-Object { Join-Path $PSScriptRoot $_ }
-    if (-not ((Test-Path -LiteralPath $pairPaths[0]) -and (Test-Path -LiteralPath $pairPaths[1]))) { continue }
-    $markerRegex = [regex]'<!-- norm:([a-z-]+) -->'
-    $texts = $pairPaths | ForEach-Object { [System.IO.File]::ReadAllText($_) }
-    $markers = @($texts | ForEach-Object { $markerRegex.Matches($_) | ForEach-Object { $_.Groups[1].Value } } | Sort-Object -Unique)
-    if ($markers.Count -eq 0) {
-        Write-Host "INFO: no norm: markers in $($pair[0]) / $($pair[1]) (files predate the pairing); skipped."
-        break
+    $stubPath = Join-Path $PSScriptRoot $pair[0]
+    $entryPath = Join-Path $PSScriptRoot $pair[1]
+    $hasStub = Test-Path -LiteralPath $stubPath
+    $hasEntry = Test-Path -LiteralPath $entryPath
+    if (-not ($hasStub -or $hasEntry)) { continue }
+    if (-not $hasEntry) {
+        $warningCount++
+        Write-Host "WARN: $($pair[0]) is present but $($pair[1]) is missing -- the import line has nothing to load."
+        Write-Host "      Install AGENTS.md.template as $($pair[1]) (manual: install section, step 2)."
     }
-    $drift = @()
-    foreach ($m in $markers) {
-        for ($k = 0; $k -lt 2; $k++) {
-            $n = ([regex]::Matches($texts[$k], [regex]::Escape("<!-- norm:$m -->"))).Count
-            if ($n -ne 1) { $drift += "$($pair[$k]):$m=$n" }
-        }
+    elseif (-not $hasStub) {
+        $warningCount++
+        Write-Host "WARN: $($pair[0]) is missing next to $($pair[1]) -- Claude Code loads $($pair[1]) only as a fallback, and any CLAUDE.md in a parent directory silently disables that."
+        Write-Host "      Add the stub $($pair[0]) with one '@AGENTS.md' import line (see CLAUDE.md.template)."
     }
-    if ($drift.Count -eq 0) {
-        Write-Host "OK: norm: marker names agree (not semantic equivalence) between $($pair[0]) and $($pair[1]) ($($markers.Count) markers, each exactly once in both)."
+    elseif ([regex]::IsMatch([System.IO.File]::ReadAllText($stubPath), '(?m)^@AGENTS\.md[ \t]*\r?$')) {
+        Write-Host "OK: $($pair[0]) imports $($pair[1]) (single instruction file for both hosts)."
     }
     else {
         $warningCount++
-        Write-Host "WARN: norm: markers drift between $($pair[0]) and $($pair[1]) (expected exactly 1 per file): $($drift -join ' ')"
+        Write-Host "WARN: $($pair[0]) has no '@AGENTS.md' import line -- Claude Code and Codex would read different instructions."
+        Write-Host "      Replace duplicated text in $($pair[0]) with the import line (manual: install section, step 2)."
     }
     break
 }
 
-# Behavioral host-role checks are separate from matching norm marker names.
+# Behavioral host-role checks are separate from the entry-file check.
 $hostRouteTests = Join-Path $PSScriptRoot '.claude/scripts/test_host_routes.py'
 if (Test-Path -LiteralPath $hostRouteTests) {
     & python $hostRouteTests

@@ -1,88 +1,83 @@
-# Codex harness instructions
+# Harness instructions (Claude Code and Codex)
 
-<!-- Copy to AGENTS.md in the project root or merge with existing
-     instructions. Fill Project policy. No global host switch is needed. -->
+<!-- Install as AGENTS.md in the project root: Codex reads it directly and
+     Claude Code loads it through the one-line import in CLAUDE.md.template.
+     Both hosts read this single file. Merge with existing instructions
+     instead of duplicating them. Fill Project policy. -->
 
 ## Resolve this session's role first
-HARNESS_DELEGATE_RUN=1 or a parent-assigned task means DELEGATE: role is already
+HARNESS_DELEGATE_RUN=1, a parent-assigned task, or `(DELEGATE)` on the
+SessionStart `HARNESS PLATFORM:` line means DELEGATE: the role is already
 resolved. Skip the Orchestrator workflow and all its linked reading/setup.
 Do not run harness-route.py or load harness rules/manuals for onboarding.
 Follow the assignment, applicable project/security/verification rules and
 Every role below. Read only missing task guidance and the required platform
 subsection; do not reread unchanged material already supplied by the parent.
-Otherwise, human-started Codex is the ORCHESTRATOR (host `codex`),
-regardless of terminal, desktop or IDE.
+Otherwise the app the human started is the ORCHESTRATOR, regardless of
+terminal, desktop or IDE. The `host:` value on the same line (`claude` or
+`codex`) is the `<host>` for every command below.
 
-<!-- norm:commit-orchestrator-only -->
-Only the orchestrator performs authorized git commit/push/merge. Delegates
-never commit/push, destroy history or revert existing work. A task does
-not authorize unrelated external actions. Reuse authorization already given.
-<!-- norm:control-plane-forbidden -->
-Delegates cannot edit harness enforcement/configuration (the control plane),
-except scoped maintenance through an already authorized launcher with
-HARNESS_ALLOW_CONTROL_PLANE=1; commit/push remain forbidden. The orchestrator
-may maintain the harness within the user's task. Host permissions and the
-direct-command accident checks still apply; no universal containment guarantee is made.
-See docs/runtime-boundary.md for default hooks, optional tools and their limits.
+Only the orchestrator performs authorized git commit/push/merge; delegates
+never commit, push, destroy history or revert existing work. Delegates cannot
+edit the harness control plane (hooks, settings, rules, launchers) except
+through an already authorized launcher with HARNESS_ALLOW_CONTROL_PLANE=1.
+Guards and launchers enforce both for direct commands; the orchestrator may
+maintain the harness within the user's task. A task never authorizes unrelated
+external actions. Contract and limits: `.claude/rules/security-boundary.md`,
+docs/runtime-boundary.md.
 
 ## Orchestrator workflow
-Read `.claude/rules/session-role.md` for the shared role and execution contract.
-Git is optional and does not change the host. Use the shared process launchers
-from the project root in non-Git projects; Git worktree agents require Git.
+Read `.claude/rules/session-role.md` for the shared role and execution contract
+(Codex does not auto-load rules; read the file). Git is optional and does not
+change the host; non-Git projects use the process launchers from the root.
 Resolve delegated work with
-`python .claude/scripts/harness-route.py --host codex --role implement`.
+`python .claude/scripts/harness-route.py --host <host> --role implement`.
 
-<!-- norm:delegation-route -->
 Before choosing direct implementation or delegation, read only "Direct work or
-delegation" in `docs/orchestration/delegation-matrix.md`. When delegating, also use
-its assignment and author-separation sections; read fallback only when needed.
-Handle targeted reads directly. Several new behaviors with interacting
-input/output/validation paths take the cross-vendor route even inside one file,
-and a same-vendor native worker is not an independent substitute for it. If a
-direct change grows past the scope you actually inspected, stop expanding it,
-preserve the partial work, say so and delegate the remaining implementation;
-continue without waiting for a new user turn.
-<!-- norm:delegation-announcement -->
-Before launching, state task, capability tier with its reason, and the actual
-model/effort and selection reason. Announce changed assignments. Follow the
-matrix's announcement contract; this adds no approval pause.
-<!-- norm:verification-tiers -->
-Use `.claude/rules/verification-tiering.md` for affected checks and risk-based
-independent review, and `delegate-output-trust.md` for inspecting actual worker
-output before relying on it. Read `docs/orchestration/retry-policy.md` when
-diagnosing failures. Reuse valid evidence; required checks that cannot pass
-are incomplete, not a reason to loop.
-<!-- norm:budget-declaration -->
-Budget: HARNESS_BUDGET > local bindings budget > normal.
-Usage is declared; session startup makes no quota or endpoint request. Tight budget drops optional work, not required checks;
-an exhausted vendor follows the matrix's availability fallback. Never switch the
-main host/model automatically for quota exhaustion or keep cycling through workers.
-<!-- norm:mission-workflow -->
-For implementation, first read `.claude/rules/mission-artifacts.md` for mission
-files, the user-confirmed spec, the small grounded conversational-spec exception
-and the session continuation guard. Reuse prior confirmation and keep
-implementing, verifying and fixing until acceptance, across phases and reviews;
-only a new user decision/authorization, an explicit pause or a real blocker ends
-the turn, and announcing the next step is not performing it. `plan-check-gate.md`
+delegation" in `docs/orchestration/delegation-matrix.md`; when delegating, also
+its assignment, author-separation and announcement sections. Interacting new
+behaviors take the cross-vendor route even inside one file. Read the fallback
+section when a vendor is unavailable or exhausted (no probe needed), and
+`docs/orchestration/retry-policy.md` when a run fails.
+Verification depth and inspection of actual worker output follow
+`.claude/rules/verification-tiering.md` and `delegate-output-trust.md`.
+Required checks that cannot pass are incomplete, not a reason to loop.
+
+Budget: HARNESS_BUDGET > local bindings budget > normal. Usage is declared;
+startup makes no quota or endpoint request. Tight budget drops optional work,
+not required checks. Never switch the user's host/model for quota exhaustion
+or keep cycling through workers.
+
+For implementation, first read `.claude/rules/mission-artifacts.md` (mission
+files, the user-confirmed spec, the small conversational-spec exception, the
+session continuation guard). Keep implementing, verifying and fixing until
+acceptance; announcing the next step is not performing it. `plan-check-gate.md`
 covers the conditional external plan review, not routine approval.
-Give workers the confirmed goal/spec, file scope/current inputs, constraints,
+Give workers the confirmed goal/spec, file scope and current inputs, constraints,
 verification and output contract; let them decide reversible details. Use the
-selected launcher directly. Read only its needed recipe in docs/harness-manual.md.
+selected launcher directly and read only its recipe in docs/harness-manual.md.
+Say in one sentence what you will do before the first tool call of multi-step
+work, and give a brief update when a finding changes the plan, a worker is
+launched or returns, or direction changes.
 
 If no fresh HARNESS PLATFORM output arrived, run
-`python .claude/scripts/harness-session.py start --host codex` from the root.
-Read the indicated platform note. If `.claude/.stop-gate` is present, run
-`python .claude/scripts/harness-session.py finish` before reporting completion;
-a failed or remaining marker is incomplete. Otherwise task verification is
-sufficient. These steps do not prove hook trust or replace PreToolUse guards.
+`python .claude/scripts/harness-session.py start --host <host>` from the root
+and read the indicated platform note. This does not prove hook trust or
+replace PreToolUse guards.
 
 ## Every role
-Workers implement the assignment, do not spawn agents or model CLIs, and
-return CHANGED / VERIFY / NOTES or NEEDS_INPUT for missing requirements.
-If the environment blocks verification, return the changes and exact failed
-check for the parent to resolve; do not expand into permission repair or cleanup.
-Host launcher-controller recipes are only for assignments explicitly asking
-for that bounded pipeline; they cannot spawn further controller agents.
+Workers implement the assignment, never spawn agents or launch model CLIs, and
+return CHANGED / VERIFY / NOTES, or NEEDS_INPUT for a missing requirement.
+If the environment blocks verification, return the changes and the exact failed
+check to the parent; do not expand into permission repair or cleanup.
+If `.claude/.stop-gate` is present, run
+`python .claude/scripts/harness-session.py finish` before reporting completion;
+a failed or remaining marker is incomplete. Otherwise task verification suffices.
+A denied command does not mean all shell tools are unavailable: run an already
+allowed check as written, and never rewrite a denied action to bypass
+permission; report that operation's limitation instead.
+Launcher-controller recipes run only for an assignment that explicitly asks for
+that bounded pipeline, and they cannot spawn further controllers.
 Apply `.claude/rules/security-boundary.md` to permission/data decisions.
 Use python/py on Windows and the route's real Bash `shell` path for .sh
 launchers (PowerShell: `& <shell> <launcher> ...`), not a WindowsApps alias.

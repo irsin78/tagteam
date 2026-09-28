@@ -564,11 +564,20 @@ expect_case "codex DONE report and saved state" "$ok" "status exit=$LAST_RC"
 
 fresh_case
 : > "$TEST_ROOT/codex-args.log"
+# `codex exec resume` reads stdin only when the prompt argument is `-`
+# (a positional prompt drops piped stdin; observed 2026-09-28 on 0.157.1),
+# so the role sentence and the correction travel together on stdin in the
+# fresh-run `<stdin>` block shape and no task text reaches the argument list.
 run_capture codex-resume-role env STUB_ACTION=none bash "$CODEX_RUN" -p prompt.txt -r fixture-session
 ok=0
-if [ "$LAST_RC" -eq 0 ] && has "$TEST_ROOT/codex-args.log" 'exec resume fixture-session.*You are a DELEGATE.*Role is already resolved.*Follow the correction' \
-   && cmp -s "$CASE_REPO/prompt.txt" "$TEST_ROOT/codex-stdin.log"; then ok=1; fi
-expect_case "codex resume retains delegate context and original stdin" "$ok" "rc=$LAST_RC"
+if [ "$LAST_RC" -eq 0 ] && has "$TEST_ROOT/codex-args.log" 'exec resume fixture-session .* -$' \
+   && ! has "$TEST_ROOT/codex-args.log" 'You are a DELEGATE' \
+   && ! has "$TEST_ROOT/codex-args.log" 'Follow the correction' \
+   && has "$TEST_ROOT/codex-stdin.log" '^You are a DELEGATE.*Role is already resolved.*Follow the correction provided in the <stdin> block\.$' \
+   && has "$TEST_ROOT/codex-stdin.log" '^<stdin>$' && has "$TEST_ROOT/codex-stdin.log" '^</stdin>$' \
+   && sed -e '1,/^<stdin>$/d' -e '/^<\/stdin>$/,$d' "$TEST_ROOT/codex-stdin.log" | cmp -s "$CASE_REPO/prompt.txt" - \
+   && has "$LAST_OUT" '^RESUME: fixture-session'; then ok=1; fi
+expect_case "codex resume sends role context and correction through the '-' stdin prompt" "$ok" "rc=$LAST_RC"
 
 # Hook canary reports observed status lines or unknown activity. It cannot
 # authenticate merged output and must never change the launcher's exit code.

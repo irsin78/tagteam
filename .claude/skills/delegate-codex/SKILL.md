@@ -89,6 +89,12 @@ harness-route.py; use its model/effort, not an assumed maximum model.
    file, keeping the SAME -m/-e/-s as the original — the launcher
    re-applies every override (a bare `codex exec resume` silently reverts
    to the global config; resume has no --sandbox/--profile flags).
+   Delivery differs from a fresh run: `codex exec resume` reads stdin
+   only when its prompt argument is `-`, so the launcher joins the role
+   sentence and the correction into one stdin file wrapped in a
+   `<stdin>` block (the fresh-run shape) and passes `-`. The resumed
+   turn should show that block in the run log; a `NEEDS_INPUT` about a
+   missing `<stdin>` block means the correction did not arrive.
 
 ## What the launcher does deterministically
 

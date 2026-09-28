@@ -154,35 +154,29 @@ for hook in deny_dangerous.py stop_gate.py; do
     fi
 done
 
-# ---- 6a. norm: markers -- CLAUDE.md and AGENTS.md carry the same normative
-# items, paired by `<!-- norm:<name> -->` markers. Each marker must appear
-# exactly once in BOTH files, or the two hosts' rules have drifted. The
-# templates are checked where present, the rendered files otherwise (a
-# consumer project has only those).
+# ---- 6a. single entry instructions -- AGENTS.md is the one instruction file
+# for both hosts; CLAUDE.md must contain the `@AGENTS.md` import line so Claude
+# Code loads the same text Codex reads. The templates are checked where
+# present, the installed files otherwise (a consumer project has only those).
 for pair in "CLAUDE.md.template AGENTS.md.template" "CLAUDE.md AGENTS.md"; do
     set -- $pair
-    [ -f "$SCRIPT_DIR/$1" ] && [ -f "$SCRIPT_DIR/$2" ] || continue
-    markers=$(cat "$SCRIPT_DIR/$1" "$SCRIPT_DIR/$2" | grep -o '<!-- norm:[a-z-]* -->' | sed 's/^<!-- norm://; s/ -->$//' | sort -u)
-    if [ -z "$markers" ]; then
-        echo "INFO: no norm: markers in $1 / $2 (files predate the pairing); skipped."
-        break
-    fi
-    drift=""
-    for m in $markers; do
-        for f in "$1" "$2"; do
-            n=$(grep -c "<!-- norm:$m -->" "$SCRIPT_DIR/$f")
-            [ "$n" -eq 1 ] || drift="$drift $f:$m=$n"
-        done
-    done
-    if [ -z "$drift" ]; then
-        echo "OK: norm: marker names agree (not semantic equivalence) between $1 and $2 ($(printf '%s\n' $markers | wc -l | tr -d ' ') markers, each exactly once in both)."
+    [ -f "$SCRIPT_DIR/$1" ] || [ -f "$SCRIPT_DIR/$2" ] || continue
+    if [ ! -f "$SCRIPT_DIR/$2" ]; then
+        warn "$1 is present but $2 is missing -- the import line has nothing to load."
+        note "Install AGENTS.md.template as $2 (manual: install section, step 2)."
+    elif [ ! -f "$SCRIPT_DIR/$1" ]; then
+        warn "$1 is missing next to $2 -- Claude Code loads $2 only as a fallback, and any CLAUDE.md in a parent directory silently disables that."
+        note "Add the stub $1 with one '@AGENTS.md' import line (see CLAUDE.md.template)."
+    elif grep -qE '^@AGENTS\.md[[:space:]]*$' "$SCRIPT_DIR/$1"; then
+        echo "OK: $1 imports $2 (single instruction file for both hosts)."
     else
-        warn "norm: markers drift between $1 and $2 (expected exactly 1 per file):$drift"
+        warn "$1 has no '@AGENTS.md' import line -- Claude Code and Codex would read different instructions."
+        note "Replace duplicated text in $1 with the import line (manual: install section, step 2)."
     fi
     break
 done
 
-# Host-role behavior is checked separately from the marker-name comparison.
+# Host-role behavior is checked separately from the entry-file check.
 if [ -f "$SCRIPT_DIR/.claude/scripts/test_host_routes.py" ]; then
     if python "$SCRIPT_DIR/.claude/scripts/test_host_routes.py"; then
         echo "OK: host routing and lifecycle scenarios passed."

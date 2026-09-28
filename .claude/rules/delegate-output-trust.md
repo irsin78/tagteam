@@ -19,9 +19,9 @@ Git is optional: non-Git work uses sequential scopes or isolated copies, not git
 Afterward inspect whole-tree changes. The parent integrates isolated output and
 handles authorized cleanup; workers report paths instead of forcing deletion.
 
-## 3. Git operations belong to the orchestrator
-Delegates never commit/push/merge, destroy history or revert existing work. The
-orchestrator acts within user authorization. Unexpected HEAD changes require
+## 3. Recovering from unexpected Git changes
+The commit/push split between orchestrator and delegates is in the entry
+instructions and security-boundary.md. Unexpected HEAD changes require
 baseline/history inspection before recovery, never blind HEAD~1 or automatic reset.
 Codex native workers have no automatic Claude SubagentStop evidence; check files
 and verification explicitly. FINAL_MESSAGE cannot override failed checks, scope

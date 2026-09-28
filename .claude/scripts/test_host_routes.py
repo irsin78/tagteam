@@ -365,25 +365,32 @@ for line in sys.stdin:
         self.assertTrue(Path(shell).is_file())
         self.assertNotIn('windowsapps', shell.lower())
 
-    def test_both_templates_resolve_delegate_before_onboarding(self):
-        for name in ('AGENTS.md.template', 'CLAUDE.md.template'):
-            installed = ROOT / name.removesuffix('.template')
-            source = installed if installed.exists() else ROOT / name
-            if not source.exists():
-                self.skipTest('both host entry instructions are not installed')
-            text = source.read_text(encoding='utf-8')
-            self.assertIn('HARNESS_DELEGATE_RUN=1', text)
-            workflow = text.index('## Orchestrator workflow')
-            entry = text[:workflow]
-            self.assertIn('Skip the Orchestrator workflow and all its linked reading/setup', entry)
-            self.assertIn('applicable project/security/verification rules', entry)
-            self.assertLess(text.index('HARNESS_DELEGATE_RUN=1'), text.index('session-role.md'))
-            self.assertLess(workflow, text.index('Read `.claude/rules/session-role.md`'))
-            self.assertLess(workflow, text.index('python .claude/scripts/harness-route.py'))
-            self.assertLess(text.index('session-role.md'), text.index('norm:delegation-route'))
-            self.assertIn('harness-session.py finish', text)
-        source = ROOT / ('AGENTS.md' if (ROOT / 'AGENTS.md').exists() else 'AGENTS.md.template')
-        self.assertNotIn('- NEVER run `git commit`', source.read_text(encoding='utf-8'))
+    def test_single_entry_resolves_delegate_before_onboarding(self):
+        # AGENTS.md is the one instruction file for both hosts; CLAUDE.md only imports it.
+        installed = ROOT / 'AGENTS.md'
+        source = installed if installed.exists() else ROOT / 'AGENTS.md.template'
+        if not source.exists():
+            self.skipTest('the entry instructions are not installed')
+        text = source.read_text(encoding='utf-8')
+        self.assertIn('HARNESS_DELEGATE_RUN=1', text)
+        workflow = text.index('## Orchestrator workflow')
+        entry = text[:workflow]
+        self.assertIn('Skip the Orchestrator workflow and all its linked reading/setup', entry)
+        self.assertIn('applicable project/security/verification rules', entry)
+        self.assertLess(text.index('HARNESS_DELEGATE_RUN=1'), text.index('session-role.md'))
+        self.assertLess(workflow, text.index('Read `.claude/rules/session-role.md`'))
+        self.assertLess(workflow, text.index('python .claude/scripts/harness-route.py'))
+        self.assertLess(text.index('Read `.claude/rules/session-role.md`'), text.index('delegation-matrix.md'))
+        self.assertIn('harness-session.py finish', text)
+        self.assertNotIn('- NEVER run `git commit`', text)
+        # The host comes from the SessionStart line, never from a hardcoded name.
+        for hardcoded in ('host `claude`', 'host `codex`', '--host claude', '--host codex'):
+            self.assertNotIn(hardcoded, text)
+        self.assertIn('--host <host>', text)
+        stub = ROOT / 'CLAUDE.md'
+        stub = stub if stub.exists() else ROOT / 'CLAUDE.md.template'
+        self.assertTrue(stub.exists(), 'CLAUDE.md stub is required next to AGENTS.md (a parent CLAUDE.md disables the fallback)')
+        self.assertRegex(stub.read_text(encoding='utf-8'), r'(?m)^@AGENTS\.md[ \t]*$')
 
     def test_explicit_finish_keeps_failure_and_clears_pass(self):
         with tempfile.TemporaryDirectory() as root:
