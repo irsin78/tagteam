@@ -87,7 +87,13 @@ launchers (PowerShell: `& <shell> <launcher> ...`), not a WindowsApps alias.
 - Conventions: TODO (path to existing project guidance).
 - Protected files/data and permitted worker scope: TODO (project-specific paths).
 - Consequential risks and required reviews: TODO (effects, not keyword lists).
-- External actions/release checks needing authorization: TODO (project workflow).
+- Git commit/push (default; replace to tighten): within a confirmed task this is
+  durable authorization. The orchestrator commits verified checkpoints, staging
+  explicit paths, and pushes them to the current branch's existing upstream
+  without asking, then continues; this includes the default branch. Ask first
+  for force push, history rewrite, tag/release/publish, branch or remote
+  deletion, a new remote/upstream, or any other external service.
+- Other external actions/release checks needing authorization: TODO (project workflow).
 - Model/role exceptions: `.claude/model-bindings.local.json` (see .example).
 
 Project policy supplies domain-specific detail; the template provides role,
