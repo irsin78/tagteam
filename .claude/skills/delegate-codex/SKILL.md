@@ -139,8 +139,8 @@ harness-route.py; use its model/effort, not an assumed maximum model.
 - 2 = CODEX_UNAVAILABLE (binary/prompt-file problem) → codex fallback
   applies at the required capability/risk floor (delegation matrix). Required
   independent review cannot use an implementation fallback.
-- The optional sandbox diagnostic is separate; ordinary launchers no longer emit
-  exit 3 for a startup model probe. Classify actual execution failures before retry.
+- Ordinary launchers do not use exit 3; the optional sandbox diagnostic is a
+  separate tool. Classify actual execution failures before retry.
 - 4 = HARNESS_DENIED: policy refusal (invalid sandbox/effort/verify/
   log-dir/image/schema/timeout args, bad flag, `max` without `-b`, any
   worker `ultra`, GNU coreutils `timeout` not first on PATH, or project
