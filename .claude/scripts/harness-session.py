@@ -129,9 +129,8 @@ def main():
             parser.error(str(exc))
         return 0
     if args.command == 'start':
-        role = 'delegate' if os.environ.get('HARNESS_DELEGATE_RUN') == '1' else 'orchestrator'
-        print('HARNESS SESSION: host=%s role=%s' % (args.host, role), flush=True)
-        return subprocess.run([sys.executable, str(HOOKS / 'session_preflight.py')],
+        # Same line the SessionStart hook prints: platform, host and role.
+        return subprocess.run([sys.executable, str(HOOKS / 'session_preflight.py'), '--host', args.host],
                               input=json.dumps({'cwd': os.getcwd(), 'source': 'startup'}),
                               text=True).returncode
     code, message = evaluate(os.getcwd())

@@ -40,14 +40,13 @@ fix known causes, continue unaffected work and report unmet requirements as inco
 Closing confirmation adds no speculative hardening. Environment failures do not
 by themselves raise the task's risk tier.
 
-A worker blocked by the execution environment returns the implemented changes,
-the failed command and the exact limitation to the parent. Do not expand into
-permission repair or repeated cleanup. The parent may run the same required
-check in its already authorized environment; that evidence must identify who
-ran it. A blocked worker check is not a pass, and does not require reimplementation.
+When a worker reports an environment-blocked check (entry instructions, Every
+role), the parent may run the same required check in its already authorized
+environment; that evidence must identify who ran it. A blocked worker check is
+not a pass, and does not require reimplementation.
 
-Use .claude/.stop-gate for unattended/project-required completion verification.
-If present, run `python .claude/scripts/harness-session.py finish` before completion;
-a failed or remaining marker is incomplete. Otherwise actual task checks suffice.
+`.claude/.stop-gate` is the opt-in completion verifier for unattended or
+project-required work; every role runs `finish` while it is present (entry
+instructions, Every role) and a failed or remaining marker is incomplete.
 Attended multi-step missions use the separate session continuation guard in
 mission-artifacts.md. It checks declared execution state, not verifier success.

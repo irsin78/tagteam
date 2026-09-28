@@ -23,6 +23,37 @@ simplification target: the aim is fewer mandatory conditions, less unnecessary
 execution, and less duplicated implementation of the shared checks that are
 needed.
 
+## Host and role asymmetries in the protected range
+
+The PreToolUse guard has the same content on both hosts, and most of its rules
+switch on the role (the delegate marker `agent_id` or `HARNESS_DELEGATE_RUN=1`).
+A human-started session on either host gets only the thin shared set (permission
+bypass flags, unapproved full access, force push, remote deletion, unapproved
+destructive git, deleting `.git`); permission prompts are its boundary. A
+threat-by-mechanism review on 2026-09-28 found the following real asymmetries
+and weak cells. They are recorded here rather than closed with new hooks.
+
+- Preserving existing work: only Claude native workers are prevented up front by
+  a worktree cut from HEAD. Both launcher workers edit the live tree; an ordinary
+  `rm -rf` or overwrite is only detected afterwards through the snapshot's CHANGED.
+- Isolating untrusted web text: every isolated reader is a Claude implementation
+  (native haiku-fetcher, or the process route `claude-run.sh -a web` read-only).
+  The bindings' web route points both hosts at that process route, so a Codex
+  orchestrator can use it, but when the Claude vendor is unavailable the Codex
+  host has no substitute reader and "no isolated reader" means unavailable.
+  Launcher workers never start a reader on either host.
+- A worker relaunching a model CLI: Claude native workers are stopped by the tool
+  list and spawn depth; for Codex launcher workers only `ultra` is refused and the
+  `codex` invocation itself rests on the entry instructions' prose.
+- Hook liveness: in a human-started Codex session a stale trust hash silently
+  drops the hooks, and the compensation is the prose "run `start` when the
+  PLATFORM line is missing". The launcher path refuses to run through
+  `check-codex-hooks`. A failing Claude hook is also fail-open, and neither host
+  detects a hook that never fired.
+- Credential reads: Claude's Read deny applies to the Read tool path only; shell
+  reads are not inspected on either host. Only the optional WSL lane's denyRead
+  applies to OS paths.
+
 ## Limits of the direct-command check
 
 The guard inspects directly named Git and model-CLI options, a delegate setting

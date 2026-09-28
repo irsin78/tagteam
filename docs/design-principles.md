@@ -220,8 +220,9 @@ re-reviewed wholesale. When a problem in the shared contract is observed, widen
 the review to match its blast radius.
 
 The rationale for rules and their re-review conditions live in the manual.
-Detailed operating rules are reflected in both hosts' entry templates and in
-`.claude/rules/`. When operation changes, align the affected rules, bindings and
+Detailed operating rules are reflected in the shared entry instructions
+(AGENTS.md) and in `.claude/rules/`; the entry file points at the authoritative
+rule instead of repeating its sentence. When operation changes, align the affected rules, bindings and
 manual together, but do not lift an existing permission boundary automatically
 on the strength of this principle.
 

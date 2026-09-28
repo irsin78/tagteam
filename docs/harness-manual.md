@@ -29,8 +29,8 @@ are separate in [Maintenance guide](harness-maintenance.md).
   hooks/      Host-specific hooks and regression tests for dangerous commands, startup, stop, delegation results
   scripts/    codex·agy·claude·local delegation launchers (preflight/invocation/postflight), control-plane hashes, WSL isolation lane helpers
   settings.json · sandbox-sensitive.json · model-bindings.json (tier table) · model-bindings.local.json.example (local override skeleton; .local.json is gitignored)
-CLAUDE.md.template          Orchestrator instructions to copy to the project root
-AGENTS.md.template          Codex orchestrator/delegate instructions (install as AGENTS.md)
+AGENTS.md.template          Single entry instructions for both hosts (install as AGENTS.md; Codex reads it directly, Claude Code through the import)
+CLAUDE.md.template          One-line `@AGENTS.md` import stub (install as CLAUDE.md)
 .codex/hooks.json           Codex SessionStart/PreToolUse/UserPromptSubmit/Stop wiring
 check-windows-aliases.ps1   Windows installation preflight (aliases + hook liveness + agy grant)
 check-posix.sh              macOS/Linux installation preflight (bash ≥ 4 · python · hook liveness · agy grant)
@@ -89,7 +89,7 @@ For example:
 Fill the angle brackets with the actual routing result. Capability tiers A–D
 and verification risk Tiers 0–2 are separate. If the model changes, announce the
 new assignment and reason, without waiting again for user approval because of
-this message. Both entry templates and shared instructions apply this behavior.
+this message. The shared entry instructions (AGENTS.md) and the delegation matrix apply this behavior.
 
 ### Separating shared contracts, host mechanisms, model traits, and roles
 
@@ -123,12 +123,14 @@ conflicting instruction files, excessive verification, and response format are
 reflected in shared rules. Both hosts follow `session-role.md`; necessary
 verification and economical delegation follow `verification-tiering.md` and
 `docs/orchestration/delegation-matrix.md`, respectively. When inspecting
-instruction files, check scope and duplication in both entry templates and the
-rules, skills, and agent recipes actually read. A full instruction audit is not
-needed on every task.
+instruction files, check scope and duplication in the shared entry instructions
+(AGENTS.md) and the rules, skills, and agent recipes actually read. The entry
+file points at the other required documents instead of restating their
+sentences. A full instruction audit is not needed on every task.
 
 Codex execution conditions also apply to Codex workers directed by Claude Code.
-Copy `AGENTS.md.template` to `AGENTS.md` during installation; do not put behavioral
+Copy `AGENTS.md.template` to `AGENTS.md` during installation (Claude Code reads
+the same file through the `@AGENTS.md` import in `CLAUDE.md`); do not put behavioral
 principles in `.codex/hooks.json`.
 [Official AGENTS.md loading guide](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 
@@ -238,13 +240,13 @@ different points; do not calculate improvement rates by simple comparison.
   `docs/platform-notes-linux.md` for macOS/Linux. These notes stay outside
   `.claude/rules/` so sessions on other platforms do not pay their cost each turn.
 - Rules scoped to `docs/missions/**` (frontmatter `paths:`):
-  `rules/mission-artifacts.md`, `rules/plan-check-gate.md`. Both entry templates
-  contain implementation start conditions; the orchestrator reads rules before
+  `rules/mission-artifacts.md`, `rules/plan-check-gate.md`. The shared entry
+  instructions (AGENTS.md) contain implementation start conditions; the orchestrator reads rules before
   starting a mission. Do not assume Claude's path-based auto-loading delivers
   rules before creation. Codex also follows the explicit AGENTS.md read path.
   Document examples are in [Mission operation](missions/README.md).
 - codex delegation recipe: `skills/delegate-codex/SKILL.md`; agy delegation
-  recipe: `skills/delegate-agy/SKILL.md`. Both entry templates explain role
+  recipe: `skills/delegate-agy/SKILL.md`. The entry instructions explain role
   resolution and when to read needed authoritative sources without recopying
   detailed contracts.
 
@@ -324,7 +326,7 @@ individual missions. Merge existing project settings/instructions without overwr
 
 | Shared required files | Required when | Reason |
 |---|---|---|
-| `CLAUDE.md.template` → `CLAUDE.md`, `AGENTS.md.template` → `AGENTS.md` | Bidirectional delegation | Instructions for the starting host and delegate. Fill in the same Project policy |
+| `AGENTS.md.template` → `AGENTS.md`, `CLAUDE.md.template` → `CLAUDE.md` | Shared | One entry instruction file for both hosts plus the `@AGENTS.md` import stub for Claude Code. Fill Project policy in AGENTS.md only |
 | `.claude/settings.json`, `.claude/model-bindings.json`, `.claude/model-bindings.local.json.example`, `.claude/rules/*.md` | Shared | Hook wiring, permissions, shared contracts. Create personal settings in the target project from the example |
 | `docs/orchestration/delegation-matrix.md`, `docs/orchestration/retry-policy.md` | Shared | Orchestrator reads only needed documents when selecting delegation/diagnosing failures. Separate from Claude's automatic rules loading |
 | `.claude/hooks/deny_dangerous.py`, `session_preflight.py`, `stop_gate.py`, `verify_delegation.py`, `evidence.py` | Shared (all in the same hooks folder) | Shared dependencies of default hooks and delegation records |
@@ -496,10 +498,18 @@ shared steps first, followed by platform-specific details.
    by control-plane hashes. The former locates hooks using `$PSScriptRoot`, the
    latter its own directory, so they must be at the root. For the full list, see
    [Copy targets](#copy-targets).
-2. Copy `CLAUDE.md.template` to root `CLAUDE.md` (merge sections if it exists).
-   Fill the bottom Project policy with verification/completion criteria,
-   conventions, protected paths, major risks/mandatory reviews, and external-work
-   approval criteria. Put necessary model exceptions in local bindings.
+2. Copy `AGENTS.md.template` to root `AGENTS.md` and fill the bottom Project
+   policy with verification/completion criteria, conventions, protected paths,
+   major risks/mandatory reviews, and external-work approval criteria. Put
+   necessary model exceptions in local bindings. Copy `CLAUDE.md.template` to
+   `CLAUDE.md` (if a CLAUDE.md already exists, add the single `@AGENTS.md` line
+   to it). Claude Code loads AGENTS.md through that import and Codex reads
+   AGENTS.md directly, so both hosts see the same instructions. The file names
+   no host: the SessionStart `HARNESS PLATFORM:` line reports
+   `host: claude|codex (ORCHESTRATOR|DELEGATE)` for the session. When upgrading
+   an existing installation, merge the text that was split across the two files
+   into AGENTS.md and leave only the import line in CLAUDE.md; the installation
+   checks verify that line.
 2-1. **[Git project installation step]** Add these entries to project `.gitignore`.
    The repository's `.gitignore` has the same entries, ready to copy:
    ```
@@ -524,10 +534,11 @@ shared steps first, followed by platform-specific details.
    ```
 2-2. Copy `docs/platform-notes-macos.md` and/or `docs/platform-notes-linux.md` for
    your platforms. They live outside rules; SessionStart points to them by OS.
-2-3. If using codex, copy `AGENTS.md.template` to root `AGENTS.md` and fill the
-   same Project policy. codex automatically reads these role-specific instructions
+2-3. If using codex, the `AGENTS.md` from step 2 is codex's entry instruction
+   file as it stands: codex automatically reads these role-specific instructions
    each run (including no delegate commits), providing a second defense if the
-   delegation prompt omits them. Keep it short (quota cost each run).
+   delegation prompt omits them. Keep it short (quota cost each run). It is the
+   same file Claude Code reads, so nothing separate needs filling.
    Note: codex reads and concatenates `AGENTS.override.md`/`AGENTS.md` in global
    `$CODEX_HOME` (default `~/.codex`) **before** project instructions. Like global
    `config.toml`, this can silently intervene; check for these files first if
@@ -562,8 +573,8 @@ shared steps first, followed by platform-specific details.
    Note: in user scope, `${CLAUDE_PROJECT_DIR}` in settings.json hook paths points
    to the project. Change script paths in hook `command`/`args` to the absolute
    user `.claude/hooks/deny_dangerous.py` path.
-3. Copy `CLAUDE.md.template` per project as in Method A (user-scoped allow rules
-   apply immediately without trust).
+3. Copy `AGENTS.md.template` and `CLAUDE.md.template` per project as in Method A
+   (user-scoped allow rules apply immediately without trust).
 
 **Shared steps (after Method A/B)**
 0-1. **[Git project line endings: no machine setting needed]** The `.gitattributes`
@@ -638,21 +649,26 @@ shared steps first, followed by platform-specific details.
 When a person starts the conversation in Codex, Codex orchestrates; when they
 start in Claude Code, Claude orchestrates. Terminal, desktop app, and IDE are
 entry methods, not routing criteria. VS Code is one IDE example. Install
-`AGENTS.md.template` and `CLAUDE.md.template` as root `AGENTS.md` and `CLAUDE.md`.
-Template filenames themselves do not auto-load. Installing both does not create
-role conflicts. An agent assigned work by a parent or a launcher child with
+`AGENTS.md.template` as root `AGENTS.md` and `CLAUDE.md.template` as a `CLAUDE.md`
+holding the single `@AGENTS.md` import line. Template filenames themselves do not
+auto-load. The instructions name no host: the `host:` and
+`(ORCHESTRATOR|DELEGATE)` values on the SessionStart (or explicit `start`)
+`HARNESS PLATFORM:` line are this session's host and role. Claude Code falls back
+to AGENTS.md when no CLAUDE.md exists (v2.1.277+), but a CLAUDE.md in any parent
+directory disables that fallback, hence the import stub. An agent assigned work
+by a parent or a launcher child with
 `HARNESS_DELEGATE_RUN=1` is a delegate and receives its task with its role resolved.
 Both launchers directly supply role guidance; delegates skip the Orchestrator
 section, linked onboarding reading, and rerouting. Follow task-relevant project
 rules and platform subsections, but do not reread unchanged supplied documents.
 The procedure below is for orchestrators; `session-role.md` is the shared source
-of truth for both templates.
+of truth the entry instructions point to.
 
 1. If SessionStart output is absent, run
-   `python .claude/scripts/harness-session.py start --host codex` at the root
-   (`--host claude` for Claude). It does not wait for stdin; identify the platform
-   from existing preflight guidance. Declare budgets; check server connections
-   when using the corresponding route.
+   `python .claude/scripts/harness-session.py start --host <host>` at the root
+   (`codex` or `claude`). It prints the same single `HARNESS PLATFORM:` line as the
+   hook, carrying host, role and the platform note, and does not wait for stdin.
+   Declare budgets; check server connections when using the corresponding route.
 2. First read only "Direct work or delegation" in
    `docs/orchestration/delegation-matrix.md` to decide direct work versus delegation.
    For delegation, also read assignment/author-separation sections. If needed,
@@ -766,7 +782,8 @@ that lane. Under `~/.gemini/config/`, remove only the `agy-web-no-tools` key fro
 
 | Feature | Claude Code | Codex |
 |---|---|---|
-| Shared policy | Auto-loaded rules + CLAUDE.md | Explicit reads from AGENTS.md |
+| Entry instructions | `@AGENTS.md` import in CLAUDE.md | AGENTS.md loaded directly (same file) |
+| Shared policy | Auto-loaded rules | Explicit reads directed by AGENTS.md |
 | Preflight | SessionStart | SessionStart + explicit start if output is absent |
 | Dangerous commands/delegate control plane | PreToolUse | Trusted PreToolUse |
 | Output management | Worker explicitly saves logs | Inspect exit code and needed output |
@@ -783,8 +800,9 @@ selection by starting app. Explicit start/finish supplements missing lifecycle
 handling but does not replace the PreToolUse guard. Do not label environments
 verified when automatic hook enforcement has not been verified.
 
-Installation checks cover relevant scenarios for both hosts' instructions and
-routing. Comparing norm marker names alone does not prove semantic equivalence.
+Installation checks cover the entry instructions (AGENTS.md and the import line
+in CLAUDE.md) and the relevant routing scenarios. The former norm-marker pairing
+was removed when the two files became one (2026-09-28).
 For harness regressions, follow [Maintenance guide](harness-maintenance.md).
 
 Measured (2026-09-08): In a Codex-orchestrated change task, both instructions were
@@ -1269,10 +1287,17 @@ go through permission prompts/classification.
   commit ban in the prompt too (double defense).
 - **Manual resume form**: `codex exec resume <SESSION_ID|--last> -c
   windows.sandbox=unelevated -c model_reasoning_effort=<current> -m <current
-  model> -c sandbox_mode=<current> "Follow the correction provided in the
-  <stdin> block." < "$CORRECTION_FILE"`. Resume has no `--sandbox`/`--profile`,
-  so repeat all overrides; `codex resume` is interactive-only. Launcher `-r`
-  handles this.
+  model> -c sandbox_mode=<current> - < "$RESUME_INPUT"` — the only positional
+  argument is **`-`**, and stdin is a file that joins the role sentence and the
+  correction body. A fresh `codex exec` appends piped stdin to a positional prompt
+  as a `<stdin>` block, but `codex exec resume` drops stdin when a positional
+  prompt is present and reads it only for `-` (stated in its help; measured
+  2026-09-28 on 0.157.1: with the old form the correction never arrived and the
+  model answered `NEEDS_INPUT`). Launcher `-r` assembles a temp file in the order
+  `$DELEGATE_INSTRUCTION Follow the correction provided in the <stdin> block.` +
+  blank line + `<stdin>` … `</stdin>`, reproducing the fresh-run shape while task
+  text still never enters a shell argument. Resume has no `--sandbox`/`--profile`,
+  so every override must be repeated; `codex resume` is interactive only.
 - **Image input**: `-i <file>` (codex native). Same as launcher `-i`.
 - **Structured output**: `--output-schema <schema.json>` fixes the final message
   to a JSON Schema; launcher `-o` passes it, and `codex-report.schema.json` is

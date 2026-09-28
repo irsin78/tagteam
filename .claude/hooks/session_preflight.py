@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Minimal SessionStart: platform guidance, no network, quota or file-tree probes."""
+"""Minimal SessionStart: platform guidance plus host/role, no network, quota or file-tree probes."""
 import json
 import os
 import platform
@@ -43,8 +43,28 @@ def platform_note(label, cwd):
         note += " (file not found -- copy it from the template: README copy-targets table)"
     return note
 
-def platform_line(label, note):
-    return "HARNESS PLATFORM: %s -- before operational work read: %s" % (label, note)
+def host_from_argv(argv):
+    """`--host codex` / `--host=codex`; absent or unknown means claude."""
+    for i, value in enumerate(argv):
+        if value.startswith("--host="):
+            host = value.split("=", 1)[1]
+        elif value == "--host" and i + 1 < len(argv):
+            host = argv[i + 1]
+        else:
+            continue
+        return host if host in ("claude", "codex") else "claude"
+    return "claude"
+
+def session_role(data, env=None):
+    """DELEGATE for a launcher child or native worker; otherwise ORCHESTRATOR."""
+    env = os.environ if env is None else env
+    if env.get("HARNESS_DELEGATE_RUN") == "1" or data.get("agent_id"):
+        return "DELEGATE"
+    return "ORCHESTRATOR"
+
+def platform_line(label, note, host="claude", role="ORCHESTRATOR"):
+    return "HARNESS PLATFORM: %s -- host: %s (%s) -- before operational work read: %s" % (
+        label, host, role, note)
 
 
 def main():
@@ -55,7 +75,9 @@ def main():
     cwd = data.get('cwd') or os.getcwd()
     label = detect_platform()
     note = platform_note(label, cwd)
-    status = {'platform_label': label, 'platform_note': note,
+    host = host_from_argv(sys.argv[1:])
+    role = session_role(data)
+    status = {'platform_label': label, 'platform_note': note, 'host': host, 'role': role,
               'hook_interpreter': sys.executable, 'hook_alive': True,
               'session_source': data.get('source'), 'diagnostics': 'not requested'}
     folder = Path(cwd) / '.claude'
@@ -64,7 +86,7 @@ def main():
             (folder / '.preflight-status').write_text(json.dumps(status), encoding='utf-8')
         except OSError:
             print('HARNESS NOTICE: could not record session metadata', file=sys.stderr)
-    print(platform_line(label, note))
+    print(platform_line(label, note, host, role))
     return 0
 
 
