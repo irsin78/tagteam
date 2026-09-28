@@ -46,7 +46,6 @@ environment; that evidence must identify who ran it. A blocked worker check is
 not a pass, and does not require reimplementation.
 
 `.claude/.stop-gate` is the opt-in completion verifier for unattended or
-project-required work; every role runs `finish` while it is present (entry
-instructions, Every role) and a failed or remaining marker is incomplete.
+project-required work (its `finish` step: entry instructions, Every role).
 Attended multi-step missions use the separate session continuation guard in
 mission-artifacts.md. It checks declared execution state, not verifier success.

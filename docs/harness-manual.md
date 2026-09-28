@@ -468,8 +468,8 @@ or review completion alone does not require renewed approval. Clearly report
 issues needing new user judgment and actual blockers.
 
 Follow [Mission operation guide](missions/README.md) for document structure,
-splitting large tasks into stages, cross-verification/resume, Git management,
-and transition from `.planning`. Preserve existing spec confirmation; do not
+splitting large tasks into stages, cross-verification/resume and Git
+management. Preserve existing spec confirmation; do not
 approve new specs arbitrarily. Do not add mandatory hook-setting changes or
 per-stage commits.
 
@@ -523,10 +523,8 @@ shared steps first, followed by platform-specific details.
    Even if a global user gitignore blocks it, that protection does not travel
    with the repository and disappears for clone/drop-in targets. The remaining
    two lines are local evidence left by hooks.
-2-1a. Copy `docs/missions/README.md` to the same path. An existing `.planning/`
-   may remain as archival material but must not serve as active state for new
-   work. Git projects track `docs/missions/` and exclude only raw logs/temporary
-   material. Non-Git projects also preserve Mission documents and exclude
+2-1a. Copy `docs/missions/README.md` to the same path. Git projects track
+   `docs/missions/` and exclude only raw logs/temporary material. Non-Git projects also preserve Mission documents and exclude
    logs/local settings from sharing:
    ```gitignore
    docs/missions/**/logs/

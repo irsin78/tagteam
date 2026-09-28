@@ -80,8 +80,6 @@ $RECYCLE.BIN/
 .claude/worktrees/
 __pycache__/
 
-# Legacy local planning history; new mission records under docs/missions/ are tracked.
-.planning/
 # Raw mission logs and disposable scratch data, not intent/spec/plan/state.
 docs/missions/**/logs/
 docs/missions/**/scratch/

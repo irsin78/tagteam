@@ -222,14 +222,6 @@ only the summarised verification evidence that may be shared in the repository.
 Completed missions are preserved as history; the authoritative source for
 current usage stays in the manual.
 
-New work does not create `.planning/` or use it as progress state. An existing
-`.planning/` is left as untracked past material. Only when switching an
-incomplete purpose, move the necessary intent, decisions and verification
-evidence into that mission and make the latest spec and its confirmation status
-clear. Do not record subsequent progress in both places at once. Do not move
-old raw logs and personal settings into tracking as they are, and do not turn a
-spec without an approval record into an approved one.
-
 When adopting the template, copy this guide and the shared rules but exclude
 the template repository's actual mission folders. The adopting project creates
 its own per-purpose folders.

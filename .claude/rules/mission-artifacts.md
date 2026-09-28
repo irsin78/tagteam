@@ -10,7 +10,7 @@ existing mission without creating approval gates or new missions.
 For substantial or multi-session work, use one persistent
 `docs/missions/<purpose>/` folder per independent outcome.
 Track it when the project uses Git; non-Git projects keep the same documents
-under their own persistence/backup policy. Do not initialize Git as a prerequisite.
+under their own persistence/backup policy.
 Keep related fixes, phases and worker handoffs in that mission. A new authorized
 purpose with its own acceptance criteria gets a new folder.
 
@@ -31,8 +31,7 @@ not user consent. Do not infer spec approval from a vague implementation request
 After confirmation, follow session-role.md's continuous execution and decision
 contract. Ask when scope, observable behavior, constraints or acceptance must
 change; carry confirmed changes into the affected spec/plan and workers. Never
-weaken acceptance to fit the implementation. Announcing the next unit is not
-performing it: do it before ending the turn, or explain the actual blocker.
+weaken acceptance to fit the implementation.
 
 For a confirmed multi-step mission, arm the session's continuation guard with
 `python .claude/scripts/harness-session.py mission --session <id> --state active --mission <folder>`.
@@ -56,11 +55,10 @@ in Git); history is not filesystem evidence. Preserve the mission and consent,
 refresh stale facts and give workers relevant intent/spec and evidence. Read only
 the active mission and referenced dependencies. Conditional plan review follows
 plan-check-gate.md. Compact or start a fresh session only for stale/noisy/near-full
-context or at the user's request, never merely for a phase boundary. Avoid
-unnecessary model/tool/config changes; batching follows the delegation matrix.
+context or at the user's request, never merely for a phase boundary.
 
 Complete with acceptance evidence under verification-tiering.md. Record outcome,
 deviations and material limitations in state.md or a short spec completion note;
-update affected user/operating docs. Commit/push need their existing authorization.
-Keep finished missions as history; legacy `.planning/` is not active state.
-Examples, optional artifacts and migration: docs/missions/README.md.
+update affected user/operating docs. Commit/push follow Project policy. Keep
+finished missions as history. Examples and optional artifacts:
+docs/missions/README.md.

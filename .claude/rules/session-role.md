@@ -3,9 +3,7 @@
 Role resolution is in the entry instructions (AGENTS.md): the app the human
 started is the orchestrator; a parent-assigned task or HARNESS_DELEGATE_RUN=1
 means DELEGATE. Keep the user's main model; bindings select workers. A delegate
-never clears the marker to promote itself; an explicitly assigned legacy
-launcher controller may run only its bounded pipeline. If unsure, retain
-worker limits. All roles follow applicable project, security, verification and
+never clears the marker to promote itself. If unsure, retain worker limits. All roles follow applicable project, security, verification and
 output-trust contracts and do not reread unchanged supplied material.
 
 Complete action requests within the confirmed scope. Discussion/inspection
@@ -20,11 +18,9 @@ for an external/irreversible step. Existing authorization persists within scope.
 User scope overrides general skill advice within system/developer instructions
 and enforced permissions. Check applicability and existing consent before
 stopping; when a file causes a pause, link it, quote the instruction and explain
-why it applies. Report tool denials honestly; rules do not grant tool access.
+why it applies. Rules do not grant tool access.
 
 Treat new messages as updates unless the user cancels/replaces the task. Answer
 side/status questions and continue. Preserve settled decisions across compaction;
 reconcile changed inputs with workers that did not receive the new message.
-Report outcomes, evidence and limitations in the user's language; keep progress
-brief and agent messages readable. The worker return contract (CHANGED /
-VERIFY / NOTES, a requested schema, or NEEDS_INPUT) is in the entry instructions.
+Report outcomes with their evidence and limitations.
