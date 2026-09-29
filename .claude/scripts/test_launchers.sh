@@ -142,7 +142,7 @@ echo "stub codex running"
 printf '%s\n' "stub final message" > "${out:-$FIXTURE_ROOT/codex-last-message.log}"
 case "${STUB_ACTION:-none}" in
     status-line) printf '%s\n' "$STUB_STATUS_LINE"; exit "${STUB_STATUS_EXIT:-1}" ;;
-    touch-reader-agent) mkdir -p .agents/agents; echo 'changed reader' > .agents/agents/url-reader.md ;;
+    touch-project-agent) mkdir -p .agents/agents; echo 'changed project agent' > .agents/agents/project-agent.md ;;
     quota-status) echo 'ERROR: HTTP 429 Too Many Requests'; exit 1 ;;
     usage-status) echo "ERROR: You've hit your usage limit. Try again later."; exit 1 ;;
     quota-prose) printf '%s\n' 'The model quotes "HTTP 429 Too Many Requests".' '12: ERROR: usage limit exceeded' '> ERROR: HTTP 429 Too Many Requests'; exit 1 ;;
@@ -205,31 +205,6 @@ case "${STUB_ACTION:-none}" in
     touch-control-plane) printf '%s\n' '# stub changed control plane' >> .claude/settings.json ;;
     # agy widening its OWN grant list: must BLOCK.
     touch-agy-settings) printf '%s\n' '{"permissions":{"allow":["write_file(*)","command(*)"]}}' > "$HOME/.gemini/antigravity-cli/settings.json" ;;
-    web-*)
-        case "$STUB_ACTION" in
-            web-denied) echo 'read_url auto-denied' >&2 ;;
-            web-denied-empty) echo 'read_url auto-denied' >&2; echo '{"status":"SUCCESS","response":""}'; exit 0 ;;
-            web-write) echo changed > app.txt ;;
-            web-missing) echo '{"status":"SUCCESS","response":""}'; exit 0 ;;
-            web-malformed) echo '{"status":"SUCCESS","response":"not structured JSON"}'; exit 0 ;;
-        esac
-        python - <<'PY'
-import json, os
-state = os.environ['STUB_ACTION']
-result = {'status': 'unavailable' if state in ('web-unavailable', 'web-fenced-unavailable') else 'ok',
-          'summary': 'Example summary\nINJECTION_NOTICE: ignored page instructions',
-          'sources': [{'url': 'https://example.com/', 'fetched': state not in ('web-unavailable', 'web-fenced-unavailable', 'web-nofetch')}]}
-response = json.dumps(result)
-if state.startswith('web-fenced'):
-    # agy 1.2.12 wraps the --json-schema object in a ```json fence, sometimes twice.
-    block = '```json\n' + json.dumps(result, indent=2) + '\n```'
-    response = block + '\n' + block
-elif state == 'web-repeated':
-    # ... or repeats the bare object without fences.
-    response = json.dumps(result, indent=2) + '\n' + json.dumps(result, indent=2)
-print(json.dumps({'status': 'SUCCESS', 'response': response, 'num_turns': 1}))
-PY
-        exit 0 ;;
     success-stderr) printf '%s\n' "$STUB_STATUS_LINE" >&2 ;;
     quota-failed-stderr) echo 'ERROR: HTTP 429 Too Many Requests' >&2; exit 1 ;;
     quota-stderr) echo 'HTTP 429 Too Many Requests' >&2; exit 0 ;;
@@ -1601,85 +1576,31 @@ done
 if selected evidence; then
     for approval in 0 1; do
         fresh_case
-        run_capture reader-control-plane env STUB_ACTION=touch-reader-agent HARNESS_ALLOW_CONTROL_PLANE="$approval" bash "$CODEX_RUN" -p prompt.txt
+        run_capture project-agent-control-plane env STUB_ACTION=touch-project-agent HARNESS_ALLOW_CONTROL_PLANE="$approval" bash "$CODEX_RUN" -p prompt.txt
         ok=0
         if [ "$approval" = 0 ]; then
-            [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'CONTROL_PLANE_WARNING.*[.]agents/agents/url-reader.md' && has "$LAST_OUT" '^STATUS: BLOCKED' && ok=1
+            [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'CONTROL_PLANE_WARNING.*[.]agents/agents/project-agent.md' && has "$LAST_OUT" '^STATUS: BLOCKED' && ok=1
         else
             [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
         fi
-        expect_case "reader agent control-plane approval=$approval" "$ok" "exit=$LAST_RC"
+        expect_case "project agent control-plane approval=$approval" "$ok" "exit=$LAST_RC"
     done
 fi
 
 if selected agy; then
-# Web lane uses read_url alone, with a structured fetch verdict.
-fresh_case
-printf '%s\n' '{"permissions":{"allow":["read_url(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
-rm -f "$TEST_ROOT/agy-args.log"
-run_capture agy-web-missing-agent bash "$AGY_RUN" -p prompt.txt -a web
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'AGY_UNAVAILABLE: reader agent .agents/agents/url-reader.md not installed' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
-expect_case "agy web missing reader agent never invokes CLI" "$ok" "exit=$LAST_RC"
-
 for line in 'at x.js:429:3' 'quota check ok' 'ERROR: HTTP 429 Too Many Requests'; do
     fresh_case
     run_capture agy-success-stderr env STUB_ACTION=success-stderr STUB_STATUS_LINE="$line" bash "$AGY_RUN" -p prompt.txt
     ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
     expect_case "agy successful stderr cannot exhaust: $line" "$ok" "exit=$LAST_RC"
 done
-fresh_case
-rm -f "$TEST_ROOT/agy-args.log"
-run_capture agy-web-no-grant bash "$AGY_RUN" -p prompt.txt -a web
-ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'AGY_UNAVAILABLE: no read_url grant.*install section' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
-expect_case "agy web requires read_url before CLI invocation" "$ok" "exit=$LAST_RC"
-
-fresh_case
-rm -f "$TEST_ROOT/agy-args.log"
-run_capture agy-web-x bash "$AGY_RUN" -p prompt.txt -a web -x output.txt
-ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -x is invalid' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
-expect_case "agy web rejects expected write outputs" "$ok" "exit=$LAST_RC"
-
-for action in web-ok web-fenced web-fenced-unavailable web-repeated web-unavailable web-denied web-denied-empty web-write web-missing web-malformed web-nofetch; do
-    fresh_case
-    printf '%s\n' '{"permissions":{"allow":["read_url(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
-    mkdir -p "$CASE_REPO/.agents/agents"
-    echo reader > "$CASE_REPO/.agents/agents/url-reader.md"
-    rm -f "$TEST_ROOT/agy-args.log"
-    run_capture "agy-$action" env STUB_ACTION="$action" bash "$AGY_RUN" -p prompt.txt -a web -m reader-model
-    ok=0
-    case "$action" in
-        web-ok)
-            [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^SUMMARY: Example summary' && has "$LAST_OUT" '^SOURCES:' && has "$LAST_OUT" '^https://example.com/ \(fetched\)' && has "$LAST_OUT" '^INJECTION_NOTICE:' && ok=1
-            for flag in '--agent url-reader' '--sandbox' '--output-format json' '--json-schema' '--model reader-model'; do
-                grep -q -- "$flag" "$TEST_ROOT/agy-args.log" || ok=0
-            done ;;
-        web-fenced) [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^SUMMARY: Example summary' && has "$LAST_OUT" '^https://example.com/ \(fetched\)' && ok=1 ;;
-        web-repeated) [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^https://example.com/ \(fetched\)' && ok=1 ;;
-        web-fenced-unavailable) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch unavailable' && ok=1 ;;
-        web-unavailable) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch unavailable' && ok=1 ;;
-        web-denied-empty) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch permission denied.*attempts=1' && ok=1 ;;
-        web-denied) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch permission denied' && ok=1 ;;
-        web-write) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(read-only lane changed the workspace' && ok=1 ;;
-        web-missing) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web structured_output missing' && ok=1 ;;
-        web-malformed) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web structured_output malformed' && ok=1 ;;
-        web-nofetch) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch produced no fetched source' && ok=1 ;;
-    esac
-    expect_case "agy $action with read_url and no write_file" "$ok" "exit=$LAST_RC"
-done
-
 for action in error:quota quota-stderr quota-banner quota-failed-stderr; do
-    for lane in write web; do
-        fresh_case
-        printf '%s\n' '{"permissions":{"allow":["write_file(*)","read_url(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
-        mkdir -p "$CASE_REPO/.agents/agents"
-        echo reader > "$CASE_REPO/.agents/agents/url-reader.md"
-        args=(); [ "$lane" != web ] || args=(-a web)
-        rm -f "$TEST_ROOT/agy-args.log"
-        run_capture "agy-$lane-$action" env STUB_ACTION="$action" bash "$AGY_RUN" -p prompt.txt "${args[@]}"
-        invocations=$(wc -l < "$TEST_ROOT/agy-args.log")
-        ok=0; [ "$LAST_RC" -eq 2 ] && [ "$invocations" -eq 1 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE.*attempts=1' && has "$LAST_OUT" '^AVAILABILITY: exhausted:google$' && ok=1
-        expect_case "agy $lane $action skips quota retry" "$ok" "exit=$LAST_RC invocations=$invocations"
-    done
+    fresh_case
+    rm -f "$TEST_ROOT/agy-args.log"
+    run_capture "agy-write-$action" env STUB_ACTION="$action" bash "$AGY_RUN" -p prompt.txt
+    invocations=$(wc -l < "$TEST_ROOT/agy-args.log")
+    ok=0; [ "$LAST_RC" -eq 2 ] && [ "$invocations" -eq 1 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE.*attempts=1' && has "$LAST_OUT" '^AVAILABILITY: exhausted:google$' && ok=1
+    expect_case "agy write $action skips quota retry" "$ok" "exit=$LAST_RC invocations=$invocations"
 done
 fresh_case
 run_capture agy-quota-prose env STUB_ACTION=quota-prose bash "$AGY_RUN" -p prompt.txt

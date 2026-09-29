@@ -87,12 +87,9 @@ only after inspecting partial output/changes. Unknown errors remain failures.
 Never classify arbitrary merged-log text as a CLI error or blindly retry revoked
 credentials. Required independent advice/review cannot use a same-vendor fallback.
 
-Web tier D uses `haiku-fetcher` (native on Claude, or
-`claude-run.sh -a web -s read-only` on either host); tier C uses agy's declared
-`url-reader` via `agy-run.sh -a web` when its requirements are met.
+Web tiers D and C use `haiku-fetcher` (native on Claude, or
+`claude-run.sh -a web -s read-only` on either host).
 Bounded extraction is D; summaries feeding a decision or comparing sources are C.
-Exhaustion of one vendor makes the other tier's reader the candidate; without
-agy's reader, both tiers use Haiku when available.
 No declared isolated web reader means unavailable, never a direct read; pass only the parent's necessary summary
 of untrusted material to implementers. Local bulk reading is optional, declared,
 D-only under tight/exhausted budget; use local-run.sh's file manifest, never commands

@@ -16,8 +16,7 @@ pushes. Authorized orchestrator maintenance needs no extra approval file/ritual.
 Codex hook trust is the user's step; agents never synthesize it. Inspect changed
 control-plane files before further delegation.
 
-AGY is granted only write_file for write lanes and read_url for the isolated
-reader lane; shell access needs existing explicit authorization. Route
+AGY is granted write_file only; shell access needs existing explicit authorization. Route
 unsupported work to a capable worker instead of widening
 permissions. Local endpoints may be LAN hosts: confirm the project's data
 boundary on use. local-run.sh accepts project-file manifests only, no commands
