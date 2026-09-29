@@ -117,6 +117,15 @@ admit_run
         self.assertEqual(hashes[".claude/rules/ünïcode rule.md"], hashlib.sha256(target.read_bytes()).hexdigest())
         self.assertTrue(any(path.endswith("/personal/.codex/config.toml") for path in hashes))
 
+    def test_url_reader_definition_is_hashed_and_classified(self):
+        target = self.root / '.agents/agents/url-reader.md'
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'original')
+        self.assertEqual(self.hashes()['.agents/agents/url-reader.md'], hashlib.sha256(b'original').hexdigest())
+        result = self.control('echo changed > .agents/agents/url-reader.md')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('HITS=.agents/agents/url-reader.md', result.stdout)
+
     def test_only_hook_runtime_trust_is_ignored(self):
         config = self.personal / ".codex/config.toml"
         text = 'model = "sample"\n  [hooks.state."example"]\ntrusted_hash = "old"\n  [projects."example"]\ntrust_level = "untrusted"\n'

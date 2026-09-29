@@ -21,7 +21,7 @@ READ_GIT = {'status', 'diff', 'log', 'show', 'rev-parse', 'grep', 'blame',
 CP_PATTERN = (
     r'(?:^|/)docs/orchestration/(?:delegation-matrix|retry-policy)\.md$|'
     r'(?:^|/)(?:\.claude/(?:hooks|scripts|rules|agents|skills|commands)(?:/|$)|'
-    r'\.codex/hooks(?:/|$)|'
+    r'\.codex/hooks(?:/|$)|\.agents/agents(?:/|$)|'
     r'\.claude/(?:settings(?:\.local)?\.json|sandbox-sensitive\.json|'
     r'model-bindings(?:\.local)?\.json|\.stop-gate|\.preflight-status)$|'
     r'\.codex/(?:config\.toml|hooks\.json|AGENTS(?:\.override)?\.md)$|'
