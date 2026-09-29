@@ -1,10 +1,8 @@
 # Dependencies
 
-This page is the single list of what the harness needs on a machine, what
-breaks without each item, and how the installation checks report it. The
-[installation manual](harness-manual.md#installation) keeps the procedure
-(settings merge, instruction files, trust registration); platform notes keep
-operational details. When a requirement changes, update this page first.
+This is the canonical dependency list. Update it first when requirements change.
+For settings, instruction files and trust registration, see the
+[installation manual](harness-manual.md#installation); platform notes cover operation.
 
 Run the platform check after installing anything below:
 `bash check-posix.sh` (macOS/Linux) or
@@ -53,7 +51,7 @@ suites pass on macOS system Python 3.9.6 and on Homebrew Python 3.14.
 | macOS | `/bin/bash` is 3.2. `brew install bash`; no PATH change needed | `brew install coreutils` |
 | Linux | Included | Included |
 
-macOS notes (observed 2026-09-24, Homebrew coreutils 9.12 on arm64):
+macOS notes (Homebrew coreutils 9.12 on arm64):
 
 - Homebrew installs most coreutils with a `g` prefix (`gls`, `gsed`), but links
   `timeout`, which macOS lacks, unprefixed as `$(brew --prefix)/bin/timeout`.
@@ -63,9 +61,9 @@ macOS notes (observed 2026-09-24, Homebrew coreutils 9.12 on arm64):
   entry; either way satisfies its check, which only asks that `timeout` on PATH
   is GNU coreutils.
 - PATH order does not matter for the launchers. A desktop app session may
-  order PATH differently from a login shell (observed: a Claude desktop app
-  session started before the Homebrew install had `/bin` first; after an app
-  restart it matched the shell), so bare `bash` can be 3.2. When started under bash 3, `codex-run.sh`, `claude-run.sh` and
+  put `/bin` before Homebrew, so bare `bash` can be 3.2
+  (restarting the app usually aligns it with the login shell). When started under
+  bash 3, `codex-run.sh`, `claude-run.sh` and
   `agy-run.sh` replace their own process once with `/opt/homebrew/bin/bash` or
   `/usr/local/bin/bash` (`exec`, about 1 ms; the run itself happens once).
   Without either, they still report `*_UNAVAILABLE`. `check-posix.sh` reports

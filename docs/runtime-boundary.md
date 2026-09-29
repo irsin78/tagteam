@@ -1,7 +1,6 @@
 # Harness runtime boundary
 
-This is the current contract. Older measurements describe the version they were
-taken on and are not evidence of broader protection or of current performance.
+Older measurements do not establish current performance or broader protection.
 
 ## Default features
 
@@ -18,10 +17,8 @@ Claude's Bash and PowerShell tool calls and its structured edits are wired to
 the same guard. Codex uses the same guard, and the Stop behaviour answers in
 that host's format. PreToolUse's `--host` argument is accepted for
 compatibility with existing wiring; the direct-check verdict and the JSON
-response are common to both hosts. The number of Python files or tests is not a
-simplification target: the aim is fewer mandatory conditions, less unnecessary
-execution, and less duplicated implementation of the shared checks that are
-needed.
+response are common to both hosts. Simplify mandatory conditions, unnecessary
+execution and duplicated checks, not Python file or test counts.
 
 ## Host and role asymmetries in the protected range
 
@@ -29,9 +26,8 @@ The PreToolUse guard has the same content on both hosts, and most of its rules
 switch on the role (the delegate marker `agent_id` or `HARNESS_DELEGATE_RUN=1`).
 A human-started session on either host gets only the thin shared set (permission
 bypass flags, unapproved full access, force push, remote deletion, unapproved
-destructive git, deleting `.git`); permission prompts are its boundary. A
-threat-by-mechanism review on 2026-09-28 found the following real asymmetries
-and weak cells. They are recorded here rather than closed with new hooks.
+destructive git, deleting `.git`); permission prompts are its boundary.
+The following asymmetries and gaps remain:
 
 - Preserving existing work: only Claude native workers are prevented up front by
   a worktree cut from HEAD. Both launcher workers edit the live tree; an ordinary
@@ -61,7 +57,7 @@ and weak cells. They are recorded here rather than closed with new hooks.
 The guard inspects directly named Git and model-CLI options, a delegate setting
 grant variables, explicitly named file edit targets and some basic shell writes.
 It handles ordinary command separation, quoting and environment-variable
-prefixes, but it does not reproduce shell execution semantics.
+prefixes, not shell execution semantics.
 
 Variable evaluation, command substitution, heredocs, the inside of shell or
 interpreter programs, script files, encodings, aliases and indirect path
@@ -74,10 +70,9 @@ outside this check. PowerShell-specific syntax is not interpreted generally
 either. That the hook allowed such input does not mean its safety was
 confirmed.
 
-The host's permissions, and the isolation the project chose where needed, limit
-execution. Launchers check the arguments they receive themselves. Change
-detection is after the fact; it cannot undo an external action already
-performed or replace isolation.
+Host permissions and project-selected isolation, where needed, limit execution. Launchers check
+their own arguments. Change detection cannot undo external actions or replace
+isolation.
 
 ## What the guards do not cover
 
@@ -129,11 +124,10 @@ input is not itself evidence of user approval. A delegate cannot widen its own
 permissions or commit and push; the actual scope of user approval is confirmed
 by the orchestrator.
 
-Ordinary work is judged complete by the actual output and the required
-verification results. Only work that needs a completion hook, because it runs
-unattended or the project requires it, writes the verification script path to
-.claude/.stop-gate and uses harness-session.py finish. No separate completion
-command is mandated for work without a marker.
+Completion requires actual output and required verification. Only work that needs a
+completion hook (unattended or project-required) writes the verification script
+path to .claude/.stop-gate and uses harness-session.py finish. Work without a marker
+requires no separate completion command.
 
 A confirmed multi-item mission additionally registers a per-session marker
 under `.claude/.mission-open/`. If the session ends while it is still active,
@@ -165,7 +159,7 @@ candidates return `LOCAL_UNAVAILABLE` with the loaded ids. Fixed model ids skip
 discovery; HTTP 400 errors mentioning "Failed to load model" also return
 `LOCAL_UNAVAILABLE`. Reports show the actual `MODEL` and `MODEL_SOURCE: auto|declared`.
 
-Invoke it as follows from the selected project root. Git is not required.
+Invoke from the selected project root; Git is not required.
 
 ~~~json
 [
@@ -267,11 +261,10 @@ python .claude/scripts/harness-clean.py --days 14
 python .claude/scripts/harness-clean.py --days 14 --apply
 ~~~
 
-The first call is a preview. Only --apply deletes that project's old finished
-records and log files, and it never deletes directories. When a run record is
-running or unreadable, the logs are preserved. Starting an ordinary delegation
-does not delete past logs. Evidence that is needed is kept separately under the
-project's retention policy.
+The first call previews. Only --apply deletes the project's old finished records
+and logs, never directories. Running or unreadable records preserve their logs;
+ordinary delegation never deletes past logs. Keep needed evidence separately
+under the project's retention policy.
 
 For commands with large output, the worker saves the log explicitly and checks
 the exit code and the parts it needs. No automatic command rewriting and no

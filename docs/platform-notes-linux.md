@@ -1,17 +1,12 @@
 # Platform notes — Linux (Ubuntu) — PARTLY VERIFIED
 
-Originally derived from WSL2 isolation-lane measurements on 2026-09-01/02.
-A native measurement now exists: Ubuntu 24.04 LTS on **aarch64** (Oracle
-Cloud VM, kernel 6.17-oracle, systemd, bash 5.2), 2026-09-04, from a fresh
-clone via `tools/linux-probe.sh`. Items below carry their evidence grade;
-"inferred, unverified" now means neither lane has measured it. The harness manual
-support table, Linux install section and this header move together. (observed, native aarch64)
+Evidence covers the WSL2 isolation lane and one native Ubuntu 24.04 LTS
+**aarch64** Oracle Cloud VM (kernel 6.17-oracle, systemd, bash 5.2), checked via
+`tools/linux-probe.sh`. "Inferred, unverified" means neither lane measured it.
+Keep this header, the manual support table and Linux install section aligned.
+Sandboxing failed on the native host (§5).
 
-One item was REFUTED on that host and is called out in §5.
-
-It deliberately lives outside `.claude/rules/`: those files cost context on
-every turn, while the SessionStart hook points here on Linux and WSL2.
-(observed, WSL2 lane)
+SessionStart points here on Linux/WSL2; this stays outside `.claude/rules/`.
 
 ## Linux (Ubuntu)
 
@@ -19,10 +14,8 @@ every turn, while the SessionStart hook points here on Linux and WSL2.
 
 Hooks are invoked as `python`; Ubuntu ships only `python3`, so install it with
 `sudo apt install python-is-python3`. Otherwise every prohibition is silently
-inert, and `check-posix.sh` reports WARN. (observed, WSL2 lane AND native
-aarch64: a fresh clone gave `WARN: python was not found on PATH.` plus three
-skipped hook self-tests, the agy grant unchecked, and exit 1 — the cascade
-this note predicts, all at once.)
+inert, and `check-posix.sh` reports `WARN: python was not found on PATH.`, skips
+three hook self-tests and the agy grant check, and exits 1 (both lanes verified).
 
 ### 2. Login-shell PATH
 
@@ -34,17 +27,15 @@ profile-read vs not, not interactive vs not — systemd units and cron get the
 short PATH, and must reference interpreters and `claude` by absolute path.
 This mirrors the macOS launchd rule. (observed, native aarch64)
 
-A second trap on top of it: **nvm-managed `node` is on the interactive PATH
-but NOT on the login PATH**, because nvm is sourced from `.bashrc`, not
+**nvm-managed `node` is on the interactive PATH but NOT on the login PATH**,
+because nvm is sourced from `.bashrc`, not
 `.profile`. Anything that shells out to `node` from a login shell or a unit
 needs an absolute path too. (observed, native aarch64)
 
 ### 3. Headless servers
 
-Servers without a browser need each CLI's URL/device-login flow. Confirmed
-headless natively: `DISPLAY` empty and no `xdg-open`, so nothing can open a
-browser on the user's behalf. The login flows themselves are still unmeasured.
-(observed, native aarch64; login flows inferred)
+Headless servers (`DISPLAY` empty, no `xdg-open`) need each CLI's URL/device-login
+flow. These login flows remain unmeasured on the native host.
 
 ### 4. Installing the CLIs
 
@@ -62,24 +53,19 @@ native aarch64; the install commands themselves were not re-run)
 
 ### 5. Sandboxing
 
-**REFUTED, and the cause is pinned.** bubblewrap 0.9.0 was installed, but
-every unprivileged run failed. The first symptom was misleading:
+On the native host, bubblewrap 0.9.0 failed every unprivileged run:
 
     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
 
-That reads like a network-namespace problem. It is not — a run with no new
-network namespace fails earlier and more plainly:
+Without a new network namespace, it failed earlier:
 
     bwrap: setting up uid map: Permission denied
 
-On the measured host `kernel.apparmor_restrict_unprivileged_userns` was set to
-`1`, which restricts unprivileged USER namespaces outright — so bwrap cannot map
-uids at all and the loopback error was a downstream symptom. Ubuntu documents
-that setting as a 24.04 default, but this measurement observed ONE host and did
-not A/B the sysctl, so treat "every 24.04 host behaves this way" as likely, not
-proven. Check your own host with
-`sysctl kernel.apparmor_restrict_unprivileged_userns` before assuming either
-way.
+The host set `kernel.apparmor_restrict_unprivileged_userns` to `1`, blocking
+unprivileged USER namespaces and uid mapping; the loopback error was secondary.
+Ubuntu documents this as a 24.04 default, but only one host was measured, without
+an A/B sysctl check. Generalisation is likely but unproven. Check your host with
+`sysctl kernel.apparmor_restrict_unprivileged_userns`.
 
 Consequence: any sandboxing that relies on unprivileged bwrap — the codex
 Linux sandbox included — does not work on a stock Ubuntu 24.04 host until an
@@ -136,12 +122,8 @@ Absent on the measured server image: `socat`, `xdg-open`, and the unversioned
 `python`. One image is not every image — check rather than assume. (observed,
 native aarch64)
 
-**The harness itself was then verified there.** After
-`sudo apt install python-is-python3`, `bash check-posix.sh --launchers` gave:
-`python` resolving and running (3.12.3), all three hook self-tests PASSING —
-so the guards are alive on Linux/aarch64, not merely installed — and the
-launcher regression suite `ALL PASS / 64 cases`. One warning remained, the
-Codex hook trust, which is an interactive per-clone step (§ security-boundary).
-The box also reported no agy `write_file` grant, so `agy-run.sh` there would
-report `AGY_UNAVAILABLE` — the documented fallback, behaving as designed.
-(observed, native aarch64)
+Native verification after `sudo apt install python-is-python3`:
+`bash check-posix.sh --launchers` found `python` 3.12.3, passed all three hook
+self-tests and reported `ALL PASS / 64 cases`. Codex hook trust still required
+the interactive per-clone step (§ security-boundary). Without an agy `write_file`
+grant, `agy-run.sh` reports `AGY_UNAVAILABLE`.

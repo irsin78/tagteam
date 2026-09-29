@@ -1,10 +1,8 @@
 # tagteam
 
-A **harness template for solo developers** in which frontier coding agents
-tag-team: whichever one you start orchestrates, the other implements and
-cross-checks. It currently pairs Claude Code and Codex. Copy it into your
-projects as the shared structure for dividing work, choosing models and
-verifying results.
+A **harness template for solo developers** pairing Claude Code and Codex:
+whichever you start orchestrates; the other implements and cross-checks. Copy
+it into your projects to divide work, choose models and verify results.
 
 The goal is to complete work that meets the required quality and safety bar
 with less cost, time and user intervention. Models are chosen for the tier of
@@ -24,15 +22,11 @@ Projects that do not use Git run the same way.
 
 Optional workers are declared in the bindings' `workers` list or local `workers_local` overrides and selected only when their requirements are met.
 
-A single model that designs, implements and verifies can wave its own
-assumptions and mistakes through. To reduce that, roles are split and the
-result is cross-checked from another model's perspective.
+Split roles and cross-checks help catch a model's own assumptions and mistakes.
 
-The table is the default route. The orchestrator checks the actual designer,
-implementer and task risk, adjusts who is delegated to and who reviews, and
-judges completion by the actual output and verification results. When a review
-is needed it picks a model from a vendor other than the author's. A different
-vendor alone does not guarantee correctness.
+The orchestrator adjusts this default route to actual authorship and task risk,
+and judges completion by outputs and verification. Reviews use a vendor other
+than the author's; vendor separation alone does not guarantee correctness.
 
 Direct handling is chosen when the actual target code and interfaces have been
 read, the change closes locally and the way to verify it is known. A request
@@ -77,7 +71,7 @@ mission documents. The document layout and procedure follow
 
 Copy the template and shared files into the project, install the instruction
 files as `CLAUDE.md` and `AGENTS.md`, and fill in the project-specific items.
-Connecting the apps and tools you use follows the
+Connect apps and tools using the
 [installation manual](docs/harness-manual.md#installation).
 
 - [Dependencies](docs/dependencies.md) — what to install per platform and what breaks without it

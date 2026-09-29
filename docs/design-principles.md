@@ -1,10 +1,8 @@
 # Design principles and the scope of the template
 
-The purpose of this project is to keep the app the user started as the
-orchestrator while completing work that meets each project's required quality
-and safety bar with less cost, time and user intervention. Delegation, hooks and
-verification rules are means to that end. Installation and execution procedures
-follow the [harness manual](harness-manual.md).
+Keep the user-started app as orchestrator and meet the project's quality and
+safety bar with less cost, time and user intervention. For installation and
+execution, see the [harness manual](harness-manual.md).
 
 ## Premises and the responsibility boundary
 
@@ -23,13 +21,9 @@ a terminal, a desktop app or an IDE, the app that was started orchestrates.
 | Bounded retries and failure reporting | Domain-specific risk and extra approval conditions |
 | Configuration extension points and the adoption procedure | Project-specific exceptions |
 
-When adding a shared rule, judge whether several projects need it and whether it
-is needed to keep the harness's own role, delegation and verification contract.
-If neither holds, handle it first in the adopting project's configuration. A
-problem in one project does not automatically become a shared rule. The aim is
-to respond through the instruction file's project items and local settings
-without changing harness internals. Defects in the shared contract itself are
-fixed in the template.
+Add a shared rule only for demonstrated reuse or to preserve the harness's role,
+delegation and verification contract. Otherwise use project policy and local
+settings, not harness internals. Fix shared-contract defects in the template.
 
 Per-vendor subscriptions and quotas are declared in local settings. Using
 another vendor's quota is not always cheaper or faster. Local inference is
@@ -39,12 +33,9 @@ by itself is no guarantee against information leakage or prompt injection.
 
 ## Cross-verification and role selection
 
-A model that handles design through implementation and verification can carry
-its initial assumptions all the way and miss errors. That is why, by default,
-implementation is handed to another vendor and roles are split so the result is
-reviewed from another perspective. A different vendor does not guarantee
-correctness; the actual output and the project's acceptance checks are the
-basis for judging completion.
+By default, cross-vendor implementation and split review roles challenge a
+model's own assumptions. Vendor separation does not guarantee correctness: actual output and
+project acceptance checks determine completion.
 
 The app that was started decides the orchestrator. Concrete roles are adjusted
 by who actually authored what. If an external model produced the design,
@@ -92,10 +83,9 @@ switch procedures, and the differences from Anthropic's original guidance follow
 
 ## Basis for model selection
 
-The benchmark scores, cost and latency, sources and measurement dates in
-[model-bindings.json](../.claude/model-bindings.json) are the basis for the
-default bindings. There is no need to build a new data collection system or a
-complex composite scoring formula for the initial choice.
+Default bindings use benchmark scores, cost, latency, sources and measurement
+dates in [model-bindings.json](../.claude/model-bindings.json), without a new
+data-collection system or complex composite score for the initial choice.
 
 The criterion is: among models likely enough to finish the task properly, the
 one with the better expected cost and time to completion. When no candidate
@@ -122,7 +112,7 @@ differences in local overrides.
 The authoritative source for current models, efforts and per-host routes is the
 JSON. Do not duplicate the evidence as numbers in this document. Measured
 records are in the manual's
-[measurement appendix](harness-manual.md#appendix-measured-route-profiles-measurement-date-per-tag-update-tags-when-remeasuring).
+[measurement appendix](harness-manual.md#appendix-measured-route-profiles).
 
 ## Delegation and efficiency
 
@@ -172,9 +162,8 @@ extend the protection scope without end.
 
 ## Confirming adoption success and effect
 
-Renaming files, writing project TODOs and per-machine settings are the normal
-template adoption procedure. The existence of installation work is not itself a
-failure.
+Renaming files, filling project TODOs and per-machine settings are normal
+adoption work, not installation failures.
 
 | Area | Adoption success criterion |
 |---|---|
@@ -211,13 +200,11 @@ The release of a new model is not by itself a reason to re-review every rule.
 When a model is actually adopted, failures repeat or a performance change is
 observed, the affected bindings and policies are re-reviewed.
 
-For example, when adopting a new implementation model, compare it with the
-existing one on representative implementation tasks. If it is more efficient,
-replace the binding; if it handles larger work reliably, review the delegation
-unit; if a specific failure disappears, review the retry rule created for that
-failure. Unrelated security hooks or installation procedures are not
-re-reviewed wholesale. When a problem in the shared contract is observed, widen
-the review to match its blast radius.
+Compare a newly adopted implementation model on representative tasks: greater
+efficiency warrants a binding change, reliable larger tasks a delegation-unit
+review, and a disappeared failure a review of its retry rule. Do not re-review
+unrelated security hooks or installation procedures wholesale. Widen review to
+the impact of an observed shared-contract problem.
 
 The rationale for rules and their re-review conditions live in the manual.
 Detailed operating rules are reflected in the shared entry instructions

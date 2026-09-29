@@ -1,11 +1,9 @@
 # Mission operation
 
-A mission is the unit of work that completes one purpose agreed with the user.
-Create a folder `docs/missions/<purpose>/` per purpose and carry the
-investigation, design, implementation, verification and fixes for that purpose
-forward as records inside it. Implementation code is edited at its original
-location in the project. The execution rules for both hosts are defined
-authoritatively in [mission-artifacts.md](../../.claude/rules/mission-artifacts.md).
+A mission completes one user-agreed purpose. Record investigation, design,
+implementation, verification and fixes in `docs/missions/<purpose>/`; edit code
+at its original location. Both hosts follow the authoritative rules in
+[mission-artifacts.md](../../.claude/rules/mission-artifacts.md).
 
 ## From start to completion
 
@@ -22,11 +20,9 @@ authoritatively in [mission-artifacts.md](../../.claude/rules/mission-artifacts.
    was already confirmed in conversation, record that decision instead of
    asking for approval again. An agent review's PASS, a status value in a
    document, and time elapsed without a reply are not user confirmation.
-4. **Continuous execution**: within the confirmed spec, make the implementation
-   plan concrete and carry implementation, verification and fixes forward. When
-   a step, a delegation or a review ends, check the result and proceed to the
-   next item. Do not end the turn or wait for the user's "continue" merely
-   because a progress report was given.
+4. **Continuous execution**: plan, implement, verify and fix within the confirmed
+   spec. Check each step, delegation or review and proceed to the next item; a
+   progress report is no reason to end the turn or wait for "continue".
 5. **Completion**: confirm the confirmed completion criteria with the actual
    changes and verification evidence. Record the result and important
    limitations, and update the relevant manual when behaviour or usage changed.
@@ -141,9 +137,8 @@ Per-phase material references the parent `intent.md` and `spec.md` and does not
 require separate approval, a stop or a session restart. The same fact is not
 duplicated across documents; choose a reference document and link to it.
 
-The simple starting format for `intent.md` and `spec.md` is as follows. The
-level of detail of each item and the completion check commands are decided by
-the adopting project; short work is recorded briefly.
+Starting formats for `intent.md` and `spec.md` follow. The project decides detail
+and completion checks; record short work briefly.
 
 ```markdown
 # Intent: <purpose>
@@ -195,11 +190,10 @@ Confirm not only that the implementation plan was followed but that the
 original purpose and spec were met. An agent review is not mandated for every
 document.
 
-An external plan review follows the conditions in
-[plan-check-gate.md](../../.claude/rules/plan-check-gate.md). That review does
-not replace the user's spec confirmation, and the review-round limit does not
-mean stopping other approved work. Simply writing up an already confirmed spec
-needs no re-approval.
+External plan reviews follow
+[plan-check-gate.md](../../.claude/rules/plan-check-gate.md), without replacing user
+spec confirmation. Review-round limits do not stop other approved work; writing
+up a confirmed spec needs no re-approval.
 
 The same mission continues after compaction, a session change or a delegation.
 A new session reads the host instructions, the current purpose and confirmed
