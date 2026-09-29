@@ -541,6 +541,12 @@ hooks_canary() {
 
 report() {
     echo "STATUS: $STATUS (codex_exit=$CODEX_EXIT, output=$OUTPUT_STATE, sandbox=$SANDBOX, model=$MODEL, effort=$EFFORT)"
+    # Only failed CLI runs and whole status lines: HTTP 429, usage/rate limit,
+    # or the CLI's "You've hit your usage limit". Quoted/numbered task text
+    # and model prose prefixes are excluded, as in hooks_canary above.
+    if [ "$CODEX_EXIT" -ne 0 ] && grep -qiE "^(ERROR: |Error: |error: )?(HTTP 429( Too Many Requests)?|((usage|rate)[ -]limit)( exceeded| reached)?[.!]?|You've hit your usage limit([. ].*)?)"$'\r?$' "$RUN_LOG"; then
+        echo "AVAILABILITY: exhausted:openai"
+    fi
     echo "$BINDINGS_LINE"
     echo "RUN_ID: $RUN_ID (state: $(state_file "$RUN_ID"), report: $REPORT_FILE)"
     if [ -n "$STALE_CLEANED" ]; then

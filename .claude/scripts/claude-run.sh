@@ -321,6 +321,25 @@ timing_enter postflight
 PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
 FINAL_TEXT=""
 OUTPUT_VALID=0
+AVAILABILITY=""
+# Only the CLI error envelope is authoritative. Whole status lines recognise
+# HTTP 429 and explicit usage/rate limits; quoted/numbered task text and normal
+# result prose are excluded (the same anchoring convention as hooks_canary).
+if [ -n "$PY" ]; then
+    AVAILABILITY=$("$PY" - "$RUN_JSON" <<'PY'
+import json, re, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+    pattern = r"(?:ERROR: |Error: |error: )?(?:HTTP 429(?: Too Many Requests)?|(?:usage|rate)[ -]limit(?: exceeded| reached)?[.!]?|You've hit your usage limit(?:[. ].*)?)"
+    if (isinstance(data, dict) and data.get("is_error") is True
+            and isinstance(data.get("result"), str)
+            and re.fullmatch(pattern, data["result"].strip(), re.IGNORECASE)):
+        print("AVAILABILITY: exhausted:claude")
+except (OSError, ValueError, TypeError):
+    pass
+PY
+)
+fi
 TOKENS=unknown
 API_REPORTED_MS=unknown
 WEB_STATE=-
@@ -484,6 +503,7 @@ fi
 
 report() {
     echo "STATUS: $STATUS (claude_exit=$CLAUDE_EXIT, output=$OUTPUT_STATE, mode=$PERMISSION_MODE, model=$MODEL, effort=${EFFORT:-unspecified})"
+    [ -z "$AVAILABILITY" ] || echo "$AVAILABILITY"
     echo "$BINDINGS_LINE"
     echo "RUN_ID: $RUN_ID (state: $(state_file "$RUN_ID"), report: $REPORT_FILE)"
     if [ "$CLAUDE_EXIT" -eq 124 ]; then

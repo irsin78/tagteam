@@ -511,6 +511,60 @@ for line in sys.stdin:
             self.assertEqual(routes.budget_for(data, {'HARNESS_BUDGET': 'tight'}), 'tight')
             self.assertEqual(routes.budget_for(data, {'HARNESS_BUDGET': 'bad'}), 'normal')
 
+    def test_session_budget_record_is_read_only_for_the_named_session(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / '.claude').mkdir()
+            previous = os.getcwd()
+            os.chdir(root)
+            try:
+                # No session id: no record is consulted.
+                self.assertIsNone(routes.session_budget({}))
+                message = session.update_budget(root, 'sess-1', exhausted='openai')
+                self.assertEqual(message, 'HARNESS BUDGET: exhausted:openai')
+                session.update_budget(root, 'sess-1', exhausted='google,openai')
+                self.assertEqual(routes.session_budget({'HARNESS_SESSION_ID': 'sess-1'}), 'exhausted:google,openai')
+                self.assertIsNone(routes.session_budget({'HARNESS_SESSION_ID': 'sess-2'}))
+                # Precedence: HARNESS_BUDGET > session record > local budget > normal.
+                data = routes.merge(self.data, {'budget': 'tight'})
+                self.assertEqual(routes.budget_for(data, {'HARNESS_SESSION_ID': 'sess-1'}), 'exhausted:google,openai')
+                self.assertEqual(routes.budget_for(data, {'HARNESS_SESSION_ID': 'sess-1', 'HARNESS_BUDGET': 'normal'}), 'normal')
+                self.assertEqual(routes.budget_for(data, {'HARNESS_SESSION_ID': 'sess-2'}), 'tight')
+                # The recorded exhaustion ranks that vendor last and marks the route unavailable.
+                route = routes.resolve(self.data, 'claude', 'implement', budget='exhausted:google,openai', root=root, env={})
+                self.assertEqual((route['vendor'], route['available']), ('openai', False))
+                route = routes.resolve(self.data, 'claude', 'write', budget='exhausted:openai', root=root, env={})
+                self.assertEqual((route['vendor'], route['available']), ('google', True))
+                self.assertEqual(session.update_budget(root, 'sess-1', clear=True), 'HARNESS BUDGET: cleared')
+                self.assertIsNone(routes.session_budget({'HARNESS_SESSION_ID': 'sess-1'}))
+                with self.assertRaises(ValueError):
+                    session.update_budget(root, 'sess-1', exhausted='vendorx')
+            finally:
+                os.chdir(previous)
+
+    def test_budget_command_refuses_delegates_and_router_reads_the_record(self):
+        with tempfile.TemporaryDirectory() as root:
+            shutil.copytree(ROOT / '.claude', Path(root) / '.claude',
+                            ignore=shutil.ignore_patterns('*-logs', '__pycache__', '.mission-open', 'worktrees'))
+            command = [sys.executable, str(HERE / 'harness-session.py'), 'budget', '--session', 'sess-9']
+            env = dict(os.environ)
+            env.pop('HARNESS_DELEGATE_RUN', None)
+            denied = subprocess.run(command + ['--exhausted', 'openai'], cwd=root,
+                                    env=dict(env, HARNESS_DELEGATE_RUN='1'), capture_output=True, text=True)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertIn('orchestrator session id', denied.stderr)
+            recorded = subprocess.run(command + ['--exhausted', 'openai'], cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            self.assertIn('HARNESS BUDGET: exhausted:openai', recorded.stdout)
+            route = subprocess.run([sys.executable, str(HERE / 'harness-route.py'), '--host', 'claude', '--role', 'implement'],
+                                   cwd=root, env=dict(env, HARNESS_SESSION_ID='sess-9'), capture_output=True, text=True)
+            self.assertEqual(route.returncode, 2, route.stderr)
+            data = json.loads(route.stdout)
+            self.assertEqual((data['vendor'], data['available'], data['budget']), ('openai', False, 'exhausted:openai'))
+            unrelated = subprocess.run([sys.executable, str(HERE / 'harness-route.py'), '--host', 'claude', '--role', 'implement'],
+                                       cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(unrelated.returncode, 0, unrelated.stderr)
+            self.assertTrue(json.loads(unrelated.stdout)['available'])
+
     def test_delegate_cannot_resolve_another_worker(self):
         env = dict(os.environ, HARNESS_DELEGATE_RUN='1')
         result = subprocess.run([sys.executable, str(HERE / 'harness-route.py'),

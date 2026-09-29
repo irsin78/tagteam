@@ -190,6 +190,28 @@ def mission_tests():
             assert result.returncode == 0 and 'session id unavailable' in result.stdout
             assert os.path.exists(os.path.join(d, '.claude', '.stop-gate'))
 
+        def budget_survives_prompt(d):
+            arm(d)
+            recorded = subprocess.run([sys.executable, SESSION, 'budget', '--session', 'orchestrator-1',
+                                       '--exhausted', 'openai'], cwd=d, capture_output=True, text=True, env=mission_env())
+            check(recorded.returncode == 0 and 'HARNESS BUDGET: exhausted:openai' in recorded.stdout)
+            released = run(d, json.dumps({'session_id': 'orchestrator-1', 'hook_event_name': 'UserPromptSubmit',
+                                          'prompt': 'What is the status?'}), env=mission_env(), args=args + ('--new-prompt',))
+            check(released.returncode == 0 and 'Previous mission guard released' in released.stdout)
+            record = json.loads(mission_marker(d, 'orchestrator-1').read_text(encoding='utf-8'))
+            check(record == {'exhausted': ['openai']})
+            # An exhaustion-only record never asks for a continuation.
+            check(allowed(invoke(d)))
+            arm(d)
+            record = json.loads(mission_marker(d, 'orchestrator-1').read_text(encoding='utf-8'))
+            check(record.get('exhausted') == ['openai'] and record.get('state') == 'active')
+            done = mission_command(d, '--state', 'complete')
+            check(done.returncode == 0 and not mission_marker(d, 'orchestrator-1').exists())
+            denied = subprocess.run([sys.executable, SESSION, 'budget', '--session', 'orchestrator-1',
+                                     '--exhausted', 'claude'], cwd=d, capture_output=True, text=True,
+                                    env=dict(mission_env(), HARNESS_DELEGATE_RUN='1'))
+            check(denied.returncode != 0 and not mission_marker(d, 'orchestrator-1').exists())
+
         scenarios = [
             ('pending item rejects promise-only stop, bounded recovery, explicit finish', sequence),
             ('completed mission allows stop', completed),
@@ -203,6 +225,7 @@ def mission_tests():
             ('independent verifier remains enforced', verifier),
             ('Codex-style synthetic prompt keeps host continuation cap', resumed),
             ('malformed new-prompt input never invokes verifier or rejects user', malformed_prompt),
+            ('budget record survives a new prompt and completion clears it', budget_survives_prompt),
             ('different session unaffected', lambda d: (arm(d, 'other-session'),
                                                        check(allowed(invoke(d))))),
             ('native subagent unaffected', lambda d: (arm(d), check(allowed(invoke(d, agent_id='worker'))))),

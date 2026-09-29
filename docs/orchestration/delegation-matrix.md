@@ -62,7 +62,7 @@ Continue authorized work immediately: this is a progress update, not an approval
 Examples and detailed launch recipes: docs/harness-manual.md (read only the needed section).
 
 ## Availability and fallback
-An exhausted vendor is unavailable without a probe. CODEX_UNAVAILABLE -> Claude
+An exhausted vendor is unavailable without a probe. The `AVAILABILITY: exhausted:<vendor>` line triggers orchestrator recording with `harness-session.py budget --session <id> --exhausted <vendor>`. CODEX_UNAVAILABLE -> Claude
 native implementation; CLAUDE_UNAVAILABLE -> Codex native implementation; if native
 workers are unavailable, the host handles it directly at the same risk floor.
 AGY_UNAVAILABLE -> the host's implementation route, then its one native fallback.
