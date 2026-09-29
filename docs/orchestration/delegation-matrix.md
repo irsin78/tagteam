@@ -31,7 +31,7 @@ Choose role -> capability tier -> risk floor/budget -> specialty and hard constr
 for the `workers` list: one row per worker with model/effort and per-host role
 priorities; declare optional workers with `status: optional` and `requires`.
 For separated roles, `--tier` selects the chosen vendor's tier cell; for
-explore/web it prefers a reader tier with fallback (`tier_fallback` in the output).
+explore it prefers a reader tier with fallback (`tier_fallback` in the output).
 Use `--worker <id>` for conditional rows, and quote the router's `skipped` entries
 in the delegation announcement when a candidate was passed over. The output's
 `tier` field is the selected worker's tier.
@@ -87,10 +87,9 @@ only after inspecting partial output/changes. Unknown errors remain failures.
 Never classify arbitrary merged-log text as a CLI error or blindly retry revoked
 credentials. Required independent advice/review cannot use a same-vendor fallback.
 
-Web tiers D and C use `haiku-fetcher` (native on Claude, or
+Web reading uses `haiku-fetcher` (native on Claude, or
 `claude-run.sh -a web -s read-only` on either host).
-Bounded extraction is D; summaries feeding a decision or comparing sources are C.
-No declared isolated web reader means unavailable, never a direct read; pass only the parent's necessary summary
+Without it the lane is unavailable, never a direct read; pass only the parent's necessary summary
 of untrusted material to implementers. Local bulk reading is optional, declared,
 D-only under tight/exhausted budget; use local-run.sh's file manifest, never commands
 or web content. Data and permission boundaries: security-boundary.md.

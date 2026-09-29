@@ -717,8 +717,8 @@ of truth the entry instructions point to.
    when small direct work suffices. Select `--tier C` for mechanical implementation,
    default B for ordinary implementation, `--tier A` for higher judgment needs.
    For separated roles, `--tier` checks author separation and selects that
-   vendor's tier cell; explore/web prefer a reader tier with fallback.
-   Decisions, planning, and deep reviews require B or above; web accepts C/D.
+   vendor's tier cell; explore prefers a reader tier with fallback.
+   Decisions, planning, and deep reviews require B or above.
    `--step 1` is the next implementation ladder step;
    use only for insufficient reasoning. `--tier` cannot combine with `--step`
    greater than 0. Implementation, writing, and decide advice assume the
@@ -777,22 +777,13 @@ fetch a domain. Delegated runs operate without permission prompts, so requests
 to domains without allow rules are denied immediately; workers report without
 having read the contents. Prepare as follows:
 
-Web tiers D (the default) and C both resolve to Haiku.
-Bounded extraction is D; summaries feeding a decision or comparing sources are C.
-Select C with `python .claude/scripts/harness-route.py --host <claude|codex> --role web --tier C`.
-Reader fallback and exhaustion follow [Availability and fallback](orchestration/delegation-matrix.md#availability-and-fallback).
 Claude can use the native `haiku-fetcher`; its process route carries the same
 reader rules and requests a structured summary
 and source list. The launcher reports `FAILED` for WebFetch permission denials,
 missing/malformed results or sources reported as unfetched. `WEB_FETCH` explains
 the reason; it is not a proof that every source claim or summary is correct.
 Review the reported sources against the task. This uses the host's WebFetch
-permissions, not the retired agy URL validator or a general network sandbox.
-
-For existing agy-web installations, first check that no other project still uses
-that lane. Under `~/.gemini/config/`, remove only the `agy-web-no-tools` key from
-`hooks.json` and the installed `agents/agy-summarizer.md` /
-`hooks/agy_web_no_tools.py`. Preserve other hooks and agy write permissions.
+permissions, not a general network sandbox.
 
 - Add only domains actually needed to project `.claude/settings.json`
   `permissions.allow`, as `WebFetch(domain:docs.example.com)`. Do not broaden to
