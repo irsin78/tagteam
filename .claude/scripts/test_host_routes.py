@@ -24,7 +24,10 @@ session_spec.loader.exec_module(session)
 
 class HostRoutes(unittest.TestCase):
     def setUp(self):
-        self.data = routes.load_bindings(ROOT)
+        # Public bindings only: a developer's model-bindings.local.json (declared local
+        # endpoint, budget) must not change these expectations.
+        public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
+        self.data = routes.merge_bindings(public, {})
 
     def cell(self, tier, vendor):
         return next(w for w in self.data['workers'] if w.get('tier_cell') and w['tier'] == tier and w['vendor'] == vendor)
@@ -209,7 +212,9 @@ class HostRoutes(unittest.TestCase):
                                        ('claude', 'implement', 'claude-opus-5-5 high')]:
             result = subprocess.run(command + ['--vendor', vendor, '--role', role], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), 'public ' + expected)
+            source, _, rest = result.stdout.strip().partition(' ')
+            self.assertIn(source, ('public', 'public+local'))
+            self.assertEqual(rest, expected)
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp) / '.claude'
             folder.mkdir()
