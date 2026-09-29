@@ -37,10 +37,7 @@ and weak cells. They are recorded here rather than closed with new hooks.
   a worktree cut from HEAD. Both launcher workers edit the live tree; an ordinary
   `rm -rf` or overwrite is only detected afterwards through the snapshot's CHANGED.
 - Isolating untrusted web text: every isolated reader is a Claude implementation;
-  without Claude the lane is unavailable. An agy reader was evaluated on
-  2026-09-29 and removed because agy's URL tool needs `view_file`, which reads
-  arbitrary local files, and without it the model answered from memory while
-  reporting a fetch.
+  without Claude the lane is unavailable.
   Launcher workers never start a reader on either host.
 - Optional workers are explicit in the bindings' `workers` list; `requires`
   checks local files/declarations and PATH only, never probes a CLI or endpoint.
