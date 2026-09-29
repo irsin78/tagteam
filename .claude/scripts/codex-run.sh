@@ -541,10 +541,14 @@ hooks_canary() {
 
 report() {
     echo "STATUS: $STATUS (codex_exit=$CODEX_EXIT, output=$OUTPUT_STATE, sandbox=$SANDBOX, model=$MODEL, effort=$EFFORT)"
-    # Only failed CLI runs and whole status lines: HTTP 429, usage/rate limit,
-    # or the CLI's "You've hit your usage limit". Quoted/numbered task text
-    # and model prose prefixes are excluded, as in hooks_canary above.
-    if [ "$CODEX_EXIT" -ne 0 ] && grep -qiE "^(ERROR: |Error: |error: )?(HTTP 429( Too Many Requests)?|((usage|rate)[ -]limit)( exceeded| reached)?[.!]?|You've hit your usage limit([. ].*)?)"$'\r?$' "$RUN_LOG"; then
+    # Failed runs only; whole lines, optional warning/ERROR/stream error prefixes.
+    # Accepted: HTTP 429[ Too Many Requests], usage/rate-limit[ exceeded/reached],
+    # You've hit your usage limit, exceeded retry limit, last status: 429 Too Many Requests,
+    # Quota exceeded. Check your plan and billing details., 429 Too Many Requests,
+    # usage limit reached/exceeded (the latter real CLI shapes allow trailing text).
+    # Known narrow false positive: tool output exactly equal to a recognised status
+    # line in this merged log matches too when codex also exits non-zero.
+    if [ "$CODEX_EXIT" -ne 0 ] && grep -qiE "^(⚠️ |ERROR: |stream error: )*(HTTP 429( Too Many Requests)?|((usage|rate)[ -]limit)( exceeded| reached)?[.!]?|You've hit your usage limit([. ].*)?|exceeded retry limit, last status: 429 Too Many Requests.*|Quota exceeded\. Check your plan and billing details\..*|429 Too Many Requests|usage limit (reached|exceeded).*)"$'\r?$' "$RUN_LOG"; then
         echo "AVAILABILITY: exhausted:openai"
     fi
     echo "$BINDINGS_LINE"

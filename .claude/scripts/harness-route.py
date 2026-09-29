@@ -83,6 +83,8 @@ def validate_bindings(data):
         validate_requires(w.get('requires', {}))
         if not isinstance(w.get('roles'), dict) or set(w['roles']) - set(ROLES):
             raise ValueError('unknown or invalid worker roles')
+        if w['status'] == 'optional' and not w.get('requires') and not w['roles']:
+            raise ValueError('optional worker needs requires')
         for role in w['roles']:
             cfg = role_config(w, role)
             if set(cfg) - {'priority', 'hosts', 'requires'}:
@@ -99,6 +101,8 @@ def validate_bindings(data):
             if 'hosts' in cfg and (not isinstance(cfg['hosts'], list) or any(h not in HOSTS for h in cfg['hosts'])):
                 raise ValueError('invalid hosts')
             validate_requires(cfg.get('requires', {}))
+            if w['status'] == 'optional' and not w.get('requires') and not cfg.get('requires'):
+                raise ValueError('optional worker needs requires')
             for host in HOSTS:
                 rank = priority(w, role, host)
                 if rank is None or host not in cfg.get('hosts', HOSTS):
@@ -183,6 +187,9 @@ def unmet_requires(requirements, data, root, env):
             try:
                 settings = json.loads(path.read_text(encoding='utf-8'))
                 grants = settings.get('permissions', {}).get('allow', [])
+                if (isinstance(grants, list) and env.get('HARNESS_ALLOW_AGY_COMMAND') != '1'
+                        and any(isinstance(g, str) and g.strip().startswith('command(') for g in grants)):
+                    return 'requires agy_grant: command grant present'
                 allowed = isinstance(grants, list) and any(isinstance(g, str) and g.startswith(value + '(') for g in grants)
             except (OSError, ValueError, AttributeError):
                 allowed = False
@@ -232,6 +239,8 @@ def resolve(data, host, role, step=0, budget='normal', tier=None, author_vendors
         raise ValueError('invalid author vendor')
     allowed = {'implement': 'ABC', 'write': 'ABCD', 'explore': 'ABCD', 'web': 'CD',
                'decide': 'AB', 'plan_review': 'AB', 'review_gate': 'ABC', 'review_deep': 'AB'}
+    if worker is not None and tier is not None:
+        raise ValueError('--worker cannot be combined with --tier')
     if tier is not None and (tier not in allowed.get(role, '') or step):
         raise ValueError('tier is incompatible with this role or ladder step')
     if worker is not None and not any(w['id'] == worker for w in data['workers']):
@@ -256,7 +265,7 @@ def resolve(data, host, role, step=0, budget='normal', tier=None, author_vendors
         selected = diagnostic[0]
     else:
         if tier and role in SEPARATED_ROLES and eligible:
-            vendor = eligible[0]['vendor']
+            vendor = min(eligible, key=lambda w: w['vendor'] in exhausted)['vendor']
             cell = next((w for w in data['workers'] if w.get('tier_cell') and w['tier'] == tier and w['vendor'] == vendor), None)
             if cell is None:
                 raise ValueError('no tier cell for ' + tier + '/' + vendor)

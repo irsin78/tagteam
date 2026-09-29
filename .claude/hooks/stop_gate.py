@@ -68,9 +68,12 @@ def mission_prompt(cwd, data):
     marker = mission_marker(cwd, session)
     if marker is None:
         return 'HARNESS MISSION: session id unavailable; automatic continuation is inactive.'
-    record = json.loads(marker.read_text(encoding='utf-8')) if marker.exists() else {}
+    try:
+        record = json.loads(marker.read_text(encoding='utf-8')) if marker.exists() else {}
+    except ValueError:
+        record = {}
     if not isinstance(record, dict):
-        raise ValueError('invalid session record')
+        record = {}
     if record.get('exhausted'):
         marker.write_text(json.dumps({'exhausted': record['exhausted']}), encoding='utf-8')
     else:

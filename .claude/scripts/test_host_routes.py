@@ -32,6 +32,36 @@ class HostRoutes(unittest.TestCase):
     def override(self, ident, **fields):
         return routes.merge_bindings(self.data, {'workers_local': [dict(id=ident, **fields)]})
 
+    def test_tier_prefers_nonexhausted_vendor(self):
+        for role, tier, exhausted, fallback, normal in (
+                ('review_deep', 'A', 'claude', 'astra-high', 'opus55-xhigh'),
+                ('implement', 'B', 'openai', 'opus55-high', 'astra-medium')):
+            for budget, expected in [('exhausted:' + exhausted, fallback), ('normal', normal)]:
+                with self.subTest(role=role, budget=budget):
+                    result = routes.resolve(self.data, 'claude', role, tier=tier,
+                                            author_vendors=['google'], budget=budget)
+                    self.assertEqual(result['worker_id'], expected)
+                    self.assertTrue(result['available'])
+
+    def test_worker_cannot_combine_with_tier(self):
+        with self.assertRaisesRegex(ValueError, '--worker cannot be combined with --tier'):
+            routes.resolve(self.data, 'claude', 'implement', worker='luna56-max', tier='B')
+
+    def test_optional_worker_needs_requires(self):
+        with self.assertRaisesRegex(ValueError, 'optional worker needs requires'):
+            self.override('sol-high', status='optional', requires={})
+
+    def test_agy_command_grant_requires_authorization(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Path(temp) / 'settings.json'
+            settings.write_text(json.dumps({'permissions': {'allow': ['read_url(*)', 'command(*)']}}))
+            env = {'HARNESS_AGY_SETTINGS': str(settings)}
+            requires = {'agy_grant': 'read_url'}
+            self.assertEqual(routes.unmet_requires(requires, self.data, temp, env),
+                             'requires agy_grant: command grant present')
+            env['HARNESS_ALLOW_AGY_COMMAND'] = '1'
+            self.assertIsNone(routes.unmet_requires(requires, self.data, temp, env))
+
     def test_v1_baseline_all_92_cases(self):
         fixture = HERE / 'test_fixtures/route-baseline-v1.json'
         if not fixture.exists():

@@ -190,6 +190,15 @@ def mission_tests():
             assert result.returncode == 0 and 'session id unavailable' in result.stdout
             assert os.path.exists(os.path.join(d, '.claude', '.stop-gate'))
 
+        def corrupt_marker_prompt(d):
+            for contents in ('{', '[]', 'null'):
+                arm(d)
+                path = mission_marker(d, 'orchestrator-1')
+                path.write_text(contents, encoding='utf-8')
+                result = invoke(d, hook_event_name='UserPromptSubmit', prompt='New request')
+                check(result.returncode == 0 and 'Previous mission guard released' in result.stdout)
+                check(not path.exists())
+
         def budget_survives_prompt(d):
             arm(d)
             recorded = subprocess.run([sys.executable, SESSION, 'budget', '--session', 'orchestrator-1',
@@ -213,6 +222,7 @@ def mission_tests():
             check(denied.returncode != 0 and not mission_marker(d, 'orchestrator-1').exists())
 
         scenarios = [
+            ('corrupt and non-dict markers release on new prompt', corrupt_marker_prompt),
             ('pending item rejects promise-only stop, bounded recovery, explicit finish', sequence),
             ('completed mission allows stop', completed),
             ('explicit pause', lambda d: paused(d, 'paused')),

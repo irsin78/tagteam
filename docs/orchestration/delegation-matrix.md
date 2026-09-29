@@ -33,7 +33,8 @@ priorities; declare optional workers with `status: optional` and `requires`.
 For separated roles, `--tier` selects the chosen vendor's tier cell; for
 explore/web it prefers a reader tier with fallback (`tier_fallback` in the output).
 Use `--worker <id>` for conditional rows, and quote the router's `skipped` entries
-in the delegation announcement when a candidate was passed over.
+in the delegation announcement when a candidate was passed over. The output's
+`tier` field is the selected worker's tier.
 Benchmarks are initial evidence; adjust for
 repeated real-task mismatches, not frequency or one anecdote. No synthetic score.
 Use `python .claude/scripts/harness-route.py --host <claude|codex> --role <role>`
