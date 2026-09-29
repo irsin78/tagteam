@@ -23,8 +23,14 @@ class Handler(BaseHTTPRequestHandler):
     chat_error=None
     result='summary only'
     finish_reason='stop'
+    native=None
     def do_GET(self):
         self.model_requests.append(self.path)
+        if self.path=='/api/v0/models':
+            if self.native is None:
+                self.send_response(404);self.send_header('Content-Length','0');self.end_headers();return
+            data=json.dumps({'data':self.native}).encode()
+            self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
         if self.path.startswith('/redirect/'):
             self.send_response(307);self.send_header('Location','/v1/models');self.end_headers();return
         data=json.dumps({'data':[{'id':model} for model in self.models]}).encode()
@@ -59,7 +65,7 @@ class LocalTests(unittest.TestCase):
         (self.root/'prompt.txt').write_text('Summarize',encoding='utf-8')
         (self.root/'inputs.json').write_text(json.dumps([{'path':'source.txt','start':2,'end':2}]))
         Handler.requests.clear();Handler.result='summary only';Handler.finish_reason='stop'
-        Handler.model_requests.clear();Handler.models=['fixture'];Handler.chat_error=None
+        Handler.model_requests.clear();Handler.models=['fixture'];Handler.chat_error=None;Handler.native=None
     def set_auto(self):
         path=self.root/'.claude/model-bindings.local.json'
         data=json.loads(path.read_text());data['vendors']['local']['endpoint']['model']='auto'
@@ -85,9 +91,33 @@ class LocalTests(unittest.TestCase):
         Handler.models=['text-embedding-nomic-embed-text-v1.5','qwen3.6-35b-a3b-mlx']
         result=self.run_reader()
         self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual(Handler.model_requests,['/v1/models'])
+        self.assertEqual(Handler.model_requests,['/api/v0/models','/v1/models'])
         self.assertEqual(Handler.requests[0]['model'],'qwen3.6-35b-a3b-mlx')
         self.assertIn('MODEL: qwen3.6-35b-a3b-mlx\nMODEL_SOURCE: auto\n',result.stdout)
+    def test_auto_prefers_lmstudio_load_state(self):
+        # LM Studio lists every downloaded model in /v1/models; only /api/v0/models says which is loaded.
+        self.set_auto()
+        Handler.models=['qwen3.6-35b-a3b-mlx','qwen3.8-27b-mlx','text-embedding-nomic-embed-text-v1.5']
+        Handler.native=[{'id':'qwen3.6-35b-a3b-mlx','type':'vlm','state':'loaded'},
+                        {'id':'qwen3.8-27b-mlx','type':'vlm','state':'not-loaded'},
+                        {'id':'text-embedding-nomic-embed-text-v1.5','type':'embeddings','state':'loaded'}]
+        result=self.run_reader()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(Handler.model_requests,['/api/v0/models'])
+        self.assertEqual(Handler.requests[0]['model'],'qwen3.6-35b-a3b-mlx')
+        self.assertIn('MODEL_SOURCE: auto',result.stdout)
+    def test_auto_lmstudio_nothing_or_several_loaded(self):
+        self.set_auto()
+        for native in ([{'id':'a','type':'llm','state':'not-loaded'}],
+                       [{'id':'a','type':'llm','state':'loaded'},{'id':'b','type':'llm','state':'loaded'}]):
+            with self.subTest(native=native):
+                Handler.native=native;Handler.model_requests=[];Handler.requests=[]
+                result=self.run_reader()
+                self.assertEqual(result.returncode,2,result.stderr)
+                self.assertIn('LOCAL_UNAVAILABLE:',result.stderr)
+                self.assertIn('server models:',result.stderr)
+                self.assertEqual(Handler.model_requests,['/api/v0/models'])
+                self.assertEqual(Handler.requests,[])
     def test_auto_no_loaded_chat_model(self):
         self.set_auto()
         for models in ([],['text-embedding-nomic-embed-text-v1.5']):

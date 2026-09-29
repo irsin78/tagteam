@@ -160,8 +160,10 @@ change" or as success.
 ## Restricted file reads by a local model
 
 Set `vendors.local.endpoint.model` to `auto` for a server that holds one loaded
-chat model at a time. Only during a local-run invocation, the reader queries
-`<base_url>/models` with the chat timeout and no redirects or credentials, ignores
+chat model at a time. Only during a local-run invocation, the reader first asks
+LM Studio's native `/api/v0/models` (when `base_url` ends in `/v1`), which reports
+each model's load state, because LM Studio's `/v1/models` lists every downloaded
+model. Servers without that API fall back to `<base_url>/models` with the chat timeout and no redirects or credentials, ignores
 ids containing `embed`, and uses the sole remaining model. Zero or multiple
 candidates return `LOCAL_UNAVAILABLE` with the loaded ids. Fixed model ids skip
 discovery; HTTP 400 errors mentioning "Failed to load model" also return
