@@ -216,10 +216,15 @@ case "${STUB_ACTION:-none}" in
         python - <<'PY'
 import json, os
 state = os.environ['STUB_ACTION']
-result = {'status': 'unavailable' if state == 'web-unavailable' else 'ok',
+result = {'status': 'unavailable' if state in ('web-unavailable', 'web-fenced-unavailable') else 'ok',
           'summary': 'Example summary\nINJECTION_NOTICE: ignored page instructions',
-          'sources': [{'url': 'https://example.com/', 'fetched': state not in ('web-unavailable', 'web-nofetch')}]}
-print(json.dumps({'status': 'SUCCESS', 'response': json.dumps(result), 'num_turns': 1}))
+          'sources': [{'url': 'https://example.com/', 'fetched': state not in ('web-unavailable', 'web-fenced-unavailable', 'web-nofetch')}]}
+response = json.dumps(result)
+if state.startswith('web-fenced'):
+    # agy 1.2.12 wraps the --json-schema object in a ```json fence, sometimes twice.
+    block = '```json\n' + json.dumps(result, indent=2) + '\n```'
+    response = block + '\n' + block
+print(json.dumps({'status': 'SUCCESS', 'response': response, 'num_turns': 1}))
 PY
         exit 0 ;;
     success-stderr) printf '%s\n' "$STUB_STATUS_LINE" >&2 ;;
@@ -1631,7 +1636,7 @@ run_capture agy-web-x bash "$AGY_RUN" -p prompt.txt -a web -x output.txt
 ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -x is invalid' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
 expect_case "agy web rejects expected write outputs" "$ok" "exit=$LAST_RC"
 
-for action in web-ok web-unavailable web-denied web-denied-empty web-write web-missing web-malformed web-nofetch; do
+for action in web-ok web-fenced web-fenced-unavailable web-unavailable web-denied web-denied-empty web-write web-missing web-malformed web-nofetch; do
     fresh_case
     printf '%s\n' '{"permissions":{"allow":["read_url(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
     mkdir -p "$CASE_REPO/.agents/agents"
@@ -1645,6 +1650,8 @@ for action in web-ok web-unavailable web-denied web-denied-empty web-write web-m
             for flag in '--agent url-reader' '--sandbox' '--output-format json' '--json-schema' '--model reader-model'; do
                 grep -q -- "$flag" "$TEST_ROOT/agy-args.log" || ok=0
             done ;;
+        web-fenced) [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^SUMMARY: Example summary' && has "$LAST_OUT" '^https://example.com/ \(fetched\)' && ok=1 ;;
+        web-fenced-unavailable) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch unavailable' && ok=1 ;;
         web-unavailable) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch unavailable' && ok=1 ;;
         web-denied-empty) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch permission denied.*attempts=1' && ok=1 ;;
         web-denied) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch permission denied' && ok=1 ;;
