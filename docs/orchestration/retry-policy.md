@@ -8,6 +8,7 @@ Orchestrator-only reference outside automatic rules loading; the starting host s
    when a CLI returns exit 1. Inspect partial changes first; use the matrix
    fallback or request reauthentication, never repeat a revoked-token call.
    Record confirmed exhaustion with `python .claude/scripts/harness-session.py budget --session <id> --exhausted <vendor>`; with `HARNESS_SESSION_ID=<id>` the router skips that vendor.
+   The exhaustion wordings the launchers recognise are listed in their comments and must be replaced with captured CLI output when a real exhaustion is observed.
    Do not infer CLI errors from quoted task/tool output in merged logs.
    Sandbox, dependencies, quoting and unreachable MCP are infrastructure failures. Repair
    the environment and rerun at the same model/effort; do not promote.

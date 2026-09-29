@@ -325,12 +325,16 @@ AVAILABILITY=""
 # Only the CLI error envelope is authoritative. Whole status lines recognise
 # HTTP 429 and explicit usage/rate limits; quoted/numbered task text and normal
 # result prose are excluded (the same anchoring convention as hooks_canary).
+# Accepted: HTTP 429[ Too Many Requests], usage/rate-limit[ exceeded/reached],
+# You've hit your usage limit; Claude AI usage limit reached|<digits>,
+# <n>-hour limit reached ∙ resets <anything>, API Error: 429 <anything>,
+# rate_limit_error<anything>. New shapes allow suffixes after |, ∙ or period.
 if [ -n "$PY" ]; then
     AVAILABILITY=$("$PY" - "$RUN_JSON" <<'PY'
 import json, re, sys
 try:
     data = json.load(open(sys.argv[1], encoding="utf-8"))
-    pattern = r"(?:ERROR: |Error: |error: )?(?:HTTP 429(?: Too Many Requests)?|(?:usage|rate)[ -]limit(?: exceeded| reached)?[.!]?|You've hit your usage limit(?:[. ].*)?)"
+    pattern = r"(?:ERROR: |Error: |error: )?(?:HTTP 429(?: Too Many Requests)?|(?:usage|rate)[ -]limit(?: exceeded| reached)?[.!]?|You've hit your usage limit(?:[. ].*)?|Claude AI usage limit reached\|[0-9]+(?:[|.].*| ∙ .*)?|[0-9]+-hour limit reached ∙ resets .+|API Error: 429 .+|rate_limit_error.*)"
     if (isinstance(data, dict) and data.get("is_error") is True
             and isinstance(data.get("result"), str)
             and re.fullmatch(pattern, data["result"].strip(), re.IGNORECASE)):

@@ -45,6 +45,9 @@ and weak cells. They are recorded here rather than closed with new hooks.
   Launcher workers never start a reader on either host.
 - Optional workers are explicit in the bindings' `workers` list; `requires`
   checks local files/declarations and PATH only, never probes a CLI or endpoint.
+- Exhaustion signal: the launchers recognise whole CLI status lines only. Codex
+  tool output in the merged log that exactly equals a recognised status line also
+  matches when Codex exits non-zero; a known narrow false positive.
 - A worker relaunching a model CLI: Claude native workers are stopped by the tool
   list and spawn depth; for Codex launcher workers only `ultra` is refused and the
   `codex` invocation itself rests on the entry instructions' prose.

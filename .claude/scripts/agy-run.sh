@@ -143,6 +143,10 @@ if [ "${GRANTS##* }" != 1 ]; then
     echo "AGY_UNAVAILABLE: no $REQUIRED_GRANT grant in permissions.allow of $AGY_SETTINGS — configure the lane grant (docs/harness-manual.md, install section)" >&2
     exit 2
 fi
+if [ "$LANE" = web ] && [ ! -f .agents/agents/url-reader.md ]; then
+    echo "AGY_UNAVAILABLE: reader agent .agents/agents/url-reader.md not installed (docs/harness-manual.md, install section)" >&2
+    exit 2
+fi
 if ! command -v agy >/dev/null 2>&1; then
     echo "AGY_UNAVAILABLE: agy binary not found" >&2
     exit 2
@@ -301,7 +305,7 @@ run_agy() {
 # tab separated; "invalid" when no
 # JSON line parses.
 parse_result() {
-    "$PY" - "$RUN_JSON" "$RUN_ERR" "$RESPONSE_FILE" "$LANE" <<'PY'
+    "$PY" - "$RUN_JSON" "$RUN_ERR" "$RESPONSE_FILE" "$LANE" "$AGY_EXIT" <<'PY'
 import json, re, sys
 src, err, out = sys.argv[1], sys.argv[2], sys.argv[3]
 web = "missing"; exhausted = False; d = {}; signals = []
@@ -328,11 +332,20 @@ try:
             tokens = str((d.get("usage") or {}).get("total_tokens", "?"))
             error = str(d.get("error") or "").replace("\t", " ").replace("\n", " ")[:200]
             break
-    signals.append(str(d.get("error") or ""))
 except Exception:
     status = "invalid"
-# Runtime error/banner signals only; model response prose is not authority.
-exhausted = any(re.search(r"quota|rate[ -]limit|\b429\b", line, re.I) for line in signals)
+# The CLI error envelope is authoritative even if its status says SUCCESS.
+exhausted = bool(re.search(r"quota|rate[ -]limit|\b429\b", str(d.get("error") or "") if isinstance(d, dict) else "", re.I))
+# Stderr/banner status lines count only on failure, never successful prose.
+# Accepted: HTTP 429[ Too Many Requests], usage/rate-limit[ exceeded/reached],
+# quota[ exceeded/exhausted], 429 Too Many Requests; optional ERROR: prefix.
+status_line = r"(?:ERROR: )?(?:HTTP 429(?: Too Many Requests)?|(?:usage|rate)[ -]limit(?: exceeded| reached)?[.!]?|quota(?: exceeded| exhausted)?[.!]?|429 Too Many Requests)"
+if sys.argv[5] != "0" or status != "SUCCESS":
+    exhausted = exhausted or any(re.fullmatch(status_line, line.strip(), re.I) for line in signals)
+    # Existing login/auth failure messages are unavailable, not quota exhaustion.
+    if not error:
+        error = next((line.strip()[:200] for line in signals
+                      if re.fullmatch(r"(?:ERROR: )?(?:not logged(?: in)?|unauthenticated|auth(?:entication)?(?: failed|required)?)[.!]?", line.strip(), re.I)), "")
 if sys.argv[4] == "web":
     struct = d.get("structured_output") if isinstance(d, dict) else None
     if struct is None and response:

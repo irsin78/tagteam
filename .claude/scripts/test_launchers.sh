@@ -141,6 +141,8 @@ cat > "$FIXTURE_ROOT/codex-stdin.log"
 echo "stub codex running"
 printf '%s\n' "stub final message" > "${out:-$FIXTURE_ROOT/codex-last-message.log}"
 case "${STUB_ACTION:-none}" in
+    status-line) printf '%s\n' "$STUB_STATUS_LINE"; exit "${STUB_STATUS_EXIT:-1}" ;;
+    touch-reader-agent) mkdir -p .agents/agents; echo 'changed reader' > .agents/agents/url-reader.md ;;
     quota-status) echo 'ERROR: HTTP 429 Too Many Requests'; exit 1 ;;
     usage-status) echo "ERROR: You've hit your usage limit. Try again later."; exit 1 ;;
     quota-prose) printf '%s\n' 'The model quotes "HTTP 429 Too Many Requests".' '12: ERROR: usage limit exceeded' '> ERROR: HTTP 429 Too Many Requests'; exit 1 ;;
@@ -220,6 +222,8 @@ result = {'status': 'unavailable' if state == 'web-unavailable' else 'ok',
 print(json.dumps({'status': 'SUCCESS', 'response': json.dumps(result), 'num_turns': 1}))
 PY
         exit 0 ;;
+    success-stderr) printf '%s\n' "$STUB_STATUS_LINE" >&2 ;;
+    quota-failed-stderr) echo 'ERROR: HTTP 429 Too Many Requests' >&2; exit 1 ;;
     quota-stderr) echo 'HTTP 429 Too Many Requests' >&2; exit 0 ;;
     quota-banner) echo 'rate-limit exceeded'; exit 0 ;;
     quota-prose) echo '{"status":"SUCCESS","response":"The page discusses quota and HTTP 429."}'; exit 0 ;;
@@ -263,6 +267,7 @@ case "${STUB_ACTION:-none}" in
     write:*) echo 'stub-output' > "${STUB_ACTION#write:}" ;;
     commit) git -c user.name=Stub -c user.email=stub@example.invalid commit --allow-empty -m stub >/dev/null ;;
     nojson) echo 'not json'; exit 0 ;;
+    status-line) python -c 'import json,os; print(json.dumps({"is_error":True,"result":os.environ["STUB_STATUS_LINE"]}))'; exit 0 ;;
     quota-status) echo '{"is_error":true,"result":"HTTP 429 Too Many Requests"}'; exit 0 ;;
     usage-status) echo '{"is_error":true,"result":"Usage limit exceeded"}'; exit 0 ;;
     quota-prose) echo '{"is_error":false,"result":"HTTP 429 Too Many Requests"}'; exit 0 ;;
@@ -1555,8 +1560,65 @@ fi
 
 fi
 
+
+# Real CLI exhaustion shapes: positive, quoted, numbered, and successful logs.
+for vendor in codex claude; do
+    selected "$vendor" || continue
+    if [ "$vendor" = codex ]; then
+        launcher=$CODEX_RUN; exhausted_vendor=openai
+        status_lines=('ERROR: HTTP 429 Too Many Requests' 'rate-limit reached' "You've hit your usage limit. Later." '⚠️ stream error: exceeded retry limit, last status: 429 Too Many Requests, retry later' 'Error: Quota exceeded. Check your plan and billing details. More details' '429 Too Many Requests' 'usage limit reached, try later' 'usage limit exceeded. Try later')
+    else
+        launcher=$CLAUDE_RUN; exhausted_vendor=claude
+        status_lines=('HTTP 429 Too Many Requests' 'rate-limit reached' "You've hit your usage limit. Later." 'Claude AI usage limit reached|12345' '5-hour limit reached ∙ resets tomorrow' 'API Error: 429 Too Many Requests' 'rate_limit_error: try later')
+    fi
+    for line in "${status_lines[@]}"; do
+        for mode in status quoted numbered success; do
+            [ "$vendor" != claude ] || [ "$mode" != success ] || continue
+            fresh_case
+            text=$line; cli_exit=1
+            case "$mode" in quoted) text="> $line" ;; numbered) text="12: $line" ;; success) cli_exit=0 ;; esac
+            run_capture "$vendor-real-status" env STUB_ACTION=status-line STUB_STATUS_LINE="$text" STUB_STATUS_EXIT="$cli_exit" bash "$launcher" -p prompt.txt
+            ok=0
+            if [ "$mode" = status ]; then
+                [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" "^AVAILABILITY: exhausted:$exhausted_vendor$" && ok=1
+            else
+                ! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+                if [ "$mode" = success ]; then [ "$LAST_RC" -eq 0 ] || ok=0; fi
+            fi
+            expect_case "$vendor real status $mode: $line" "$ok" "exit=$LAST_RC"
+        done
+    done
+done
+
+if selected evidence; then
+    for approval in 0 1; do
+        fresh_case
+        run_capture reader-control-plane env STUB_ACTION=touch-reader-agent HARNESS_ALLOW_CONTROL_PLANE="$approval" bash "$CODEX_RUN" -p prompt.txt
+        ok=0
+        if [ "$approval" = 0 ]; then
+            [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'CONTROL_PLANE_WARNING.*[.]agents/agents/url-reader.md' && has "$LAST_OUT" '^STATUS: BLOCKED' && ok=1
+        else
+            [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+        fi
+        expect_case "reader agent control-plane approval=$approval" "$ok" "exit=$LAST_RC"
+    done
+fi
+
 if selected agy; then
 # Web lane uses read_url alone, with a structured fetch verdict.
+fresh_case
+printf '%s\n' '{"permissions":{"allow":["read_url(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-web-missing-agent bash "$AGY_RUN" -p prompt.txt -a web
+ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'AGY_UNAVAILABLE: reader agent .agents/agents/url-reader.md not installed' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy web missing reader agent never invokes CLI" "$ok" "exit=$LAST_RC"
+
+for line in 'at x.js:429:3' 'quota check ok' 'ERROR: HTTP 429 Too Many Requests'; do
+    fresh_case
+    run_capture agy-success-stderr env STUB_ACTION=success-stderr STUB_STATUS_LINE="$line" bash "$AGY_RUN" -p prompt.txt
+    ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+    expect_case "agy successful stderr cannot exhaust: $line" "$ok" "exit=$LAST_RC"
+done
 fresh_case
 rm -f "$TEST_ROOT/agy-args.log"
 run_capture agy-web-no-grant bash "$AGY_RUN" -p prompt.txt -a web
@@ -1572,6 +1634,8 @@ expect_case "agy web rejects expected write outputs" "$ok" "exit=$LAST_RC"
 for action in web-ok web-unavailable web-denied web-denied-empty web-write web-missing web-malformed web-nofetch; do
     fresh_case
     printf '%s\n' '{"permissions":{"allow":["read_url(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+    mkdir -p "$CASE_REPO/.agents/agents"
+    echo reader > "$CASE_REPO/.agents/agents/url-reader.md"
     rm -f "$TEST_ROOT/agy-args.log"
     run_capture "agy-$action" env STUB_ACTION="$action" bash "$AGY_RUN" -p prompt.txt -a web -m reader-model
     ok=0
@@ -1592,10 +1656,12 @@ for action in web-ok web-unavailable web-denied web-denied-empty web-write web-m
     expect_case "agy $action with read_url and no write_file" "$ok" "exit=$LAST_RC"
 done
 
-for action in error:quota quota-stderr quota-banner; do
+for action in error:quota quota-stderr quota-banner quota-failed-stderr; do
     for lane in write web; do
         fresh_case
         printf '%s\n' '{"permissions":{"allow":["write_file(*)","read_url(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+        mkdir -p "$CASE_REPO/.agents/agents"
+        echo reader > "$CASE_REPO/.agents/agents/url-reader.md"
         args=(); [ "$lane" != web ] || args=(-a web)
         rm -f "$TEST_ROOT/agy-args.log"
         run_capture "agy-$lane-$action" env STUB_ACTION="$action" bash "$AGY_RUN" -p prompt.txt "${args[@]}"
