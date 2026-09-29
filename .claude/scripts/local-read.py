@@ -234,7 +234,37 @@ def endpoint(root):
         raise InputError('endpoint input/token limits must be positive integers')
     return base.rstrip('/'), model.strip(), tokens, chars
 
+def native_loaded(base, timeout):
+    """LM Studio lists every downloaded model in /v1/models; its native
+    /api/v0/models carries a load state (measured 2026-09-29). Returns the
+    loaded chat ids and the listed ids, or None when the endpoint has no such API."""
+    if not base.endswith('/v1'):
+        return None
+    try:
+        with urllib.request.build_opener(NoRedirect).open(base[:-3] + '/api/v0/models', timeout=timeout) as response:
+            payload = response.read(2_000_001)
+        if len(payload) > 2_000_000:
+            return None
+        entries = json.loads(payload)['data']
+        if not isinstance(entries, list) or not entries or not all(
+                isinstance(e, dict) and isinstance(e.get('id'), str) and isinstance(e.get('state'), str)
+                for e in entries):
+            return None
+    except (urllib.error.URLError, TimeoutError, OSError, KeyError, TypeError, ValueError):
+        return None
+    listed = [e['id'] + ' (' + e['state'] + ')' for e in entries]
+    loaded = [e['id'] for e in entries if e['state'] == 'loaded'
+              and e.get('type') != 'embeddings' and 'embed' not in e['id'].lower()]
+    return loaded, listed
+
+
 def loaded_model(base, timeout):
+    native = native_loaded(base, timeout)
+    if native is not None:
+        loaded, listed = native
+        if len(loaded) != 1:
+            raise Unavailable('auto requires exactly one loaded chat model; server models: ' + json.dumps(listed))
+        return loaded[0]
     try:
         with urllib.request.build_opener(NoRedirect).open(base + '/models', timeout=timeout) as response:
             payload = response.read(2_000_001)
