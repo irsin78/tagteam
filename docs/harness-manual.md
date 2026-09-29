@@ -623,6 +623,14 @@ shared steps first, followed by platform-specific details.
      `command(...)` grant enforces HARNESS_DENIED (passes only with task-specific
      `HARNESS_ALLOW_AGY_COMMAND=1` + user approval). Recipe:
      `.claude/skills/delegate-agy/SKILL.md`.
+     For the optional web reader (agy 1.2.12), copy
+     `.agents/agents/url-reader.md` into the project's same path and add
+     `read_url(*)` to `permissions.allow` in the global settings above.
+     Project `.agents/settings.json` does not grant this tool. This is a
+     per-machine user installation step, like Codex hook trust. `agy-run.sh
+     -a web` uses only the reader's `read_url_content` tool and requires
+     `read_url`, never `write_file`; keep the existing command-grant refusal.
+
    - **agy grant conclusion** (measured 2026-08-31·09-02, agy 1.1.24): The only
      global grant is `write_file(*)`. Narrowing `command(<pattern>)` acts as total
      denial in this version; `agy --sandbox` blocks only commands and adds nothing

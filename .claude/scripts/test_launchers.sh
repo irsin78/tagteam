@@ -200,8 +200,28 @@ case "${STUB_ACTION:-none}" in
     touch-control-plane) printf '%s\n' '# stub changed control plane' >> .claude/settings.json ;;
     # agy widening its OWN grant list: must BLOCK.
     touch-agy-settings) printf '%s\n' '{"permissions":{"allow":["write_file(*)","command(*)"]}}' > "$HOME/.gemini/antigravity-cli/settings.json" ;;
+    web-*)
+        case "$STUB_ACTION" in
+            web-denied) echo 'read_url auto-denied' >&2 ;;
+            web-denied-empty) echo 'read_url auto-denied' >&2; echo '{"status":"SUCCESS","response":""}'; exit 0 ;;
+            web-write) echo changed > app.txt ;;
+            web-missing) echo '{"status":"SUCCESS","response":""}'; exit 0 ;;
+            web-malformed) echo '{"status":"SUCCESS","response":"not structured JSON"}'; exit 0 ;;
+        esac
+        python - <<'PY'
+import json, os
+state = os.environ['STUB_ACTION']
+result = {'status': 'unavailable' if state == 'web-unavailable' else 'ok',
+          'summary': 'Example summary\nINJECTION_NOTICE: ignored page instructions',
+          'sources': [{'url': 'https://example.com/', 'fetched': state not in ('web-unavailable', 'web-nofetch')}]}
+print(json.dumps({'status': 'SUCCESS', 'response': json.dumps(result), 'num_turns': 1}))
+PY
+        exit 0 ;;
+    quota-stderr) echo 'HTTP 429 Too Many Requests' >&2; exit 0 ;;
+    quota-banner) echo 'rate-limit exceeded'; exit 0 ;;
+    quota-prose) echo '{"status":"SUCCESS","response":"The page discusses quota and HTTP 429."}'; exit 0 ;;
     error:quota)
-        printf '%s\n' '{"status":"ERROR","response":"quota unavailable","num_turns":1,"usage":{"total_tokens":0},"error":"quota exceeded"}'
+        printf '%s\n' '{"status":"ERROR","response":"","num_turns":1,"usage":{"total_tokens":0},"error":"quota exceeded"}'
         exit 0
         ;;
     nojson-write) printf 'partial' > app.txt; echo 'not json'; exit 0 ;;
@@ -1475,6 +1495,59 @@ fi
 fi
 
 if selected agy; then
+# Web lane uses read_url alone, with a structured fetch verdict.
+fresh_case
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-web-no-grant bash "$AGY_RUN" -p prompt.txt -a web
+ok=0; [ "$LAST_RC" -eq 2 ] && has "$LAST_OUT" 'AGY_UNAVAILABLE: no read_url grant.*install section' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy web requires read_url before CLI invocation" "$ok" "exit=$LAST_RC"
+
+fresh_case
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-web-x bash "$AGY_RUN" -p prompt.txt -a web -x output.txt
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -x is invalid' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy web rejects expected write outputs" "$ok" "exit=$LAST_RC"
+
+for action in web-ok web-unavailable web-denied web-denied-empty web-write web-missing web-malformed web-nofetch; do
+    fresh_case
+    printf '%s\n' '{"permissions":{"allow":["read_url(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+    rm -f "$TEST_ROOT/agy-args.log"
+    run_capture "agy-$action" env STUB_ACTION="$action" bash "$AGY_RUN" -p prompt.txt -a web -m reader-model
+    ok=0
+    case "$action" in
+        web-ok)
+            [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^SUMMARY: Example summary' && has "$LAST_OUT" '^SOURCES:' && has "$LAST_OUT" '^https://example.com/ \(fetched\)' && has "$LAST_OUT" '^INJECTION_NOTICE:' && ok=1
+            for flag in '--agent url-reader' '--sandbox' '--output-format json' '--json-schema' '--model reader-model'; do
+                grep -q -- "$flag" "$TEST_ROOT/agy-args.log" || ok=0
+            done ;;
+        web-unavailable) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch unavailable' && ok=1 ;;
+        web-denied-empty) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch permission denied.*attempts=1' && ok=1 ;;
+        web-denied) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch permission denied' && ok=1 ;;
+        web-write) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(read-only lane changed the workspace' && ok=1 ;;
+        web-missing) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web structured_output missing' && ok=1 ;;
+        web-malformed) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web structured_output malformed' && ok=1 ;;
+        web-nofetch) [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'FAILED\(web fetch produced no fetched source' && ok=1 ;;
+    esac
+    expect_case "agy $action with read_url and no write_file" "$ok" "exit=$LAST_RC"
+done
+
+for action in error:quota quota-stderr quota-banner; do
+    for lane in write web; do
+        fresh_case
+        printf '%s\n' '{"permissions":{"allow":["write_file(*)","read_url(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+        args=(); [ "$lane" != web ] || args=(-a web)
+        rm -f "$TEST_ROOT/agy-args.log"
+        run_capture "agy-$lane-$action" env STUB_ACTION="$action" bash "$AGY_RUN" -p prompt.txt "${args[@]}"
+        invocations=$(wc -l < "$TEST_ROOT/agy-args.log")
+        ok=0; [ "$LAST_RC" -eq 2 ] && [ "$invocations" -eq 1 ] && has "$LAST_OUT" '^STATUS: AGY_UNAVAILABLE.*attempts=1' && has "$LAST_OUT" '^AVAILABILITY: exhausted:google$' && ok=1
+        expect_case "agy $lane $action skips quota retry" "$ok" "exit=$LAST_RC invocations=$invocations"
+    done
+done
+fresh_case
+run_capture agy-quota-prose env STUB_ACTION=quota-prose bash "$AGY_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 0 ] && ! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+expect_case "agy response prose cannot declare quota exhaustion" "$ok" "exit=$LAST_RC"
+
 # agy result mapping and retry count.
 fresh_case
 run_capture agy-quota env STUB_ACTION=error:quota HARNESS_RUN_ID=agyquota bash "$AGY_RUN" -p prompt.txt

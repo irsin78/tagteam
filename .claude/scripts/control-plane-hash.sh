@@ -18,7 +18,7 @@ def scan_error(error):
 def inventory():
     paths = {}
     for directory in (".claude/hooks", ".claude/scripts", ".claude/rules", ".claude/agents",
-                      ".claude/skills", ".claude/commands", ".codex/hooks"):
+                      ".claude/skills", ".claude/commands", ".codex/hooks", ".agents/agents"):
         base = Path(directory)
         if not base.is_dir() or base.is_symlink():
             continue

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared launcher evidence. App-specific options and result decoding stay in adapters.
-CONTROL_PLANE_RE='^(docs/orchestration/(delegation-matrix|retry-policy)\.md$|\.claude/(hooks|scripts|rules|agents|skills|commands)/|\.claude/settings\.json$|\.claude/sandbox-sensitive\.json$|\.claude/model-bindings(\.local)?\.json$|\.codex/(hooks(\.json$|/)|config\.toml$|AGENTS(\.override)?\.md$)|\.mcp\.json$|CLAUDE\.md$|AGENTS(\.override)?\.md$|check-windows-aliases\.ps1$|check-posix\.sh$)'
+CONTROL_PLANE_RE='^(\.agents/agents/|docs/orchestration/(delegation-matrix|retry-policy)\.md$|\.claude/(hooks|scripts|rules|agents|skills|commands)/|\.claude/settings\.json$|\.claude/sandbox-sensitive\.json$|\.claude/model-bindings(\.local)?\.json$|\.codex/(hooks(\.json$|/)|config\.toml$|AGENTS(\.override)?\.md$)|\.mcp\.json$|CLAUDE\.md$|AGENTS(\.override)?\.md$|check-windows-aliases\.ps1$|check-posix\.sh$)'
 CONTROL_PLANE_NOTICE_RE='^(\.claude/settings\.local\.json$|\.claude/\.stop-gate$|\.claude/\.preflight-status$)'
 
 control_before() {
