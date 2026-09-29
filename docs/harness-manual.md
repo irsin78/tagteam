@@ -48,6 +48,37 @@ The [bindings JSON](../.claude/model-bindings.json) is authoritative for specifi
 models, effort, benchmarks, sources, and measurement dates. Follow the `workers` list and its per-host role priorities
 for host routing and this manual's host-specific execution section for procedures.
 
+Schema v2 gives each worker an `id`, `vendor`, `model`, `tier`, `roles`, `status`
+and `launcher` (or `native: true`); optional fields include `effort`, `requires`,
+`tier_cell` and measurement metadata. Role priorities are positive integers or
+per-host maps; a role can also contain `priority`, `hosts` and `requires`.
+`tier_cell: true` identifies the vendor/tier row used by explicit tier selection
+for separated roles. Status is `active`, `optional`, `conditional` (explicit
+`--worker <id>`) or `unverified` (excluded from automatic selection).
+`workers_local` recursively merges matching IDs and appends new ones; a local
+`workers` array replaces the public list. For example, in local bindings:
+
+```json
+{
+  "workers_local": [{
+    "id": "project-reader", "vendor": "local",
+    "model": "auto", "effort": null,
+    "tier": "D", "status": "optional",
+    "launcher": ".claude/scripts/local-run.sh",
+    "roles": {"explore": 3},
+    "requires": {"local_endpoint": true}
+  }]
+}
+```
+
+Requirement keys are `local_endpoint` (declared endpoint with base URL/model),
+`agy_grant` (named global allow grant), `agent_file` (project-relative file),
+and `binary` (executable on PATH); worker and role requirements both apply.
+Checks use local declarations/files only, with no CLI or endpoint probe.
+The launchers' `--launcher-default` router mode reads active vendor/role defaults;
+it does not select another delegation. Reader inputs and local model `auto`
+behavior are defined in [Runtime boundary](runtime-boundary.md#restricted-file-reads-by-a-local-model).
+
 | Role | Default route and selection criteria |
 |---|---|
 | Orchestration and decisions | Keep the host the user started. Choose a tier matching the judgment required |
@@ -327,7 +358,7 @@ individual missions. Merge existing project settings/instructions without overwr
 | Shared required files | Required when | Reason |
 |---|---|---|
 | `AGENTS.md.template` → `AGENTS.md`, `CLAUDE.md.template` → `CLAUDE.md` | Shared | One entry instruction file for both hosts plus the `@AGENTS.md` import stub for Claude Code. Fill Project policy in AGENTS.md only |
-| `.claude/settings.json`, `.claude/model-bindings.json`, `.claude/model-bindings.local.json.example`, `.claude/rules/*.md` | Shared | Hook wiring, permissions, shared contracts. Create personal settings in the target project from the example |
+| `.claude/settings.json`, `.claude/model-bindings.json`, `.claude/model-bindings.local.json.example`, `.claude/rules/*.md` | Shared | Hook wiring, permissions, shared contracts; model-bindings.json uses schema v2. Create personal settings in the target project from the example |
 | `docs/orchestration/delegation-matrix.md`, `docs/orchestration/retry-policy.md` | Shared | Orchestrator reads only needed documents when selecting delegation/diagnosing failures. Separate from Claude's automatic rules loading |
 | `.claude/hooks/deny_dangerous.py`, `session_preflight.py`, `stop_gate.py`, `verify_delegation.py`, `evidence.py` | Shared (all in the same hooks folder) | Shared dependencies of default hooks and delegation records |
 | `.claude/scripts/harness-route.py`, `harness-session.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py` | Shared (all in the same scripts folder) | Routing, stop checks, configuration/change evidence, execution tracking. Keep with each launcher |
@@ -350,6 +381,7 @@ individual missions. Merge existing project settings/instructions without overwr
 |---|---|---|
 | Claude native workers | `claude-implementer.md`, `opus-architect.md`, `haiku-scout.md`, `haiku-fetcher.md`, `codex-delegate.md` in `.claude/agents/` | Native delegation/CLI controllers. Worktree roles require Git |
 | Antigravity | `.claude/scripts/agy-run.sh`, `.claude/agents/antigravity-delegate.md`, `.claude/skills/delegate-agy/SKILL.md` | Configure CLI/permissions only when selecting agy. Shared launcher dependencies also required |
+| Antigravity web reader | `.agents/agents/url-reader.md` | Optional isolated tier C reader; requires the Antigravity bundle and its read_url grant |
 | Local reads | `.claude/scripts/local-run.sh`, `local-read.py` | Declare only when using a local endpoint |
 | Enhanced WSL isolation | `.claude/scripts/lane-sensitive.sh`, `.claude/sandbox-sensitive.json` | When selecting a separate isolation lane |
 | Statistics, cleanup, Codex diagnostics | Needed files among `.claude/scripts/harness-stats.sh`, `harness-clean.py`, `check-codex-sandbox.sh` | Explicitly invoked tools. Diagnostics require shared `workspace-snapshot.py` |
@@ -674,7 +706,14 @@ of truth the entry instructions point to.
    `python .claude/scripts/harness-session.py start --host <host>` at the root
    (`codex` or `claude`). It prints the same single `HARNESS PLATFORM:` line as the
    hook, carrying host, role and the platform note, and does not wait for stdin.
-   Declare budgets; record confirmed exhaustion with `python .claude/scripts/harness-session.py budget --session <id> --exhausted <vendor>[,<vendor>]` and clear it with `python .claude/scripts/harness-session.py budget --session <id> --clear`; set `HARNESS_SESSION_ID` to that id when calling the router (precedence: `HARNESS_BUDGET` > session record > local bindings > normal). Check server connections when using the corresponding route.
+   Declare budgets (`HARNESS_BUDGET` > session record > local bindings > normal).
+   Handle exhaustion in this order:
+
+   - A launcher prints `AVAILABILITY: exhausted:<vendor>`.
+   - Record it with `python .claude/scripts/harness-session.py budget --session <id> --exhausted <vendor>` (comma-separated vendors are accepted).
+   - Set `HARNESS_SESSION_ID=<id>` for later router calls; they rank that vendor last and select an available candidate, or report the selected exhausted route unavailable.
+   - When the user says the quota is back, run `python .claude/scripts/harness-session.py budget --session <id> --clear`.
+
 2. First read only "Direct work or delegation" in
    `docs/orchestration/delegation-matrix.md` to decide direct work versus delegation.
    For delegation, also read assignment/author-separation sections. If needed,
@@ -685,9 +724,10 @@ of truth the entry instructions point to.
    plan_review, review_gate, review_deep, explore, write, web. Do not call a launcher
    when small direct work suffices. Select `--tier C` for mechanical implementation,
    default B for ordinary implementation, `--tier A` for higher judgment needs.
-   `--tier` checks author separation and retains the selected route's vendor.
-   Decisions, planning, and deep reviews require B or above; web routes are not
-   subject to tier changes. `--step 1` is the next implementation ladder step;
+   For separated roles, `--tier` checks author separation and selects that
+   vendor's tier cell; explore/web prefer a reader tier with fallback.
+   Decisions, planning, and deep reviews require B or above; web accepts C/D.
+   `--step 1` is the next implementation ladder step;
    use only for insufficient reasoning. `--tier` cannot combine with `--step`
    greater than 0. Implementation, writing, and decide advice assume the
    orchestrator is the designer by default. If the actual designer differs, pass
@@ -739,14 +779,19 @@ changed, so the worker cannot change the grader. Claude CLI JSON
 errors/empty results are FAILED. For both Codex/Claude, verification failure is
 FAILED even if the model process exits 0; the launcher returns nonzero.
 
-**Web reads: tool availability and permission are separate.** `-a web` leaves
+**Web reads: tool availability and permission are separate.** Claude's `-a web` leaves
 only WebFetch for the worker, but having the tool does not mean permission to
 fetch a domain. Delegated runs operate without permission prompts, so requests
 to domains without allow rules are denied immediately; workers report without
 having read the contents. Prepare as follows:
 
-Both hosts default to Haiku. Claude can use the native `haiku-fetcher`; the
-process route carries the same reader rules and requests a structured summary
+Web tier D (the default) uses Haiku; tier C uses agy's `url-reader` when declared
+and its requirements are met, via `agy-run.sh -a web` with the resolved model/effort.
+Bounded extraction is D; summaries feeding a decision or comparing sources are C.
+Select C with `python .claude/scripts/harness-route.py --host <claude|codex> --role web --tier C`.
+Reader fallback and exhaustion follow [Availability and fallback](orchestration/delegation-matrix.md#availability-and-fallback).
+Claude can use the native `haiku-fetcher`; its process route carries the same
+reader rules and requests a structured summary
 and source list. The launcher reports `FAILED` for WebFetch permission denials,
 missing/malformed results or sources reported as unfetched. `WEB_FETCH` explains
 the reason; it is not a proof that every source claim or summary is correct.

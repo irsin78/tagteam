@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "description": "Role -> tier -> binding. The rules (rules/) speak only of tiers and roles; the concrete model and effort are set here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
-  "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole). harness-route.py selects a route from host_routes, the role, the bindings and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
+  "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
+  "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
   "updated": "2026-09-29",
   "catalog_checked": "2026-09-29",
   "tiers": {
@@ -142,7 +142,7 @@
         "A"
       ],
       "escalate_when": "one step, only when a reasoning shortfall is diagnosed",
-      "ladder_note": "Current model/effort values are the ladder entries above; older xhigh comparisons are measurements, not execution settings.",
+      "ladder_note": "The implementation ladder is the ordered OpenAI (Claude host) or Claude (Codex host) implement rows in workers; older xhigh comparisons are measurements, not execution settings.",
       "excluded_steps": [
         {
           "model": "gpt-5.6-sol",
@@ -155,12 +155,12 @@
           "reason": "DeepSWE 73% $6.46 TTFT 163s — Astra medium reaches the same score at 2/3 the cost and 1/15 the latency"
         }
       ],
-      "claude_ladder_note": "Default implementation under Codex orchestration is B/claude (Opus 5.5 high). One step up to A/claude (Opus 5.5 xhigh) when a reasoning shortfall is diagnosed. Since 2026-09-23 both rungs are the same model, so the step costs $1.82 -> $3.46 per AA task and 40s -> 160s first token instead of the old Opus 5 -> Fable 5.1 jump (2.2x on DeepSWE). Explicitly mechanical work: C/claude (Opus 5.5 medium). Initial policy before tuning on real runs.",
+      "claude_ladder_note": "Default implementation under Codex orchestration is opus55-high (Opus 5.5 high). One step up to opus55-xhigh (Opus 5.5 xhigh) when a reasoning shortfall is diagnosed. Since 2026-09-23 both rungs are the same model, so the step costs $1.82 -> $3.46 per AA task and 40s -> 160s first token instead of the old Opus 5 -> Fable 5.1 jump (2.2x on DeepSWE). Explicitly mechanical work: C/claude (Opus 5.5 medium). Initial policy before tuning on real runs.",
       "pending_replacement": {
         "vendor": "openai",
         "model": "gpt-6-sol",
         "effort": "high",
-        "replaces": "ladder[0] gpt-5.6-sol high",
+        "replaces": "sol-high (implement step 0) gpt-5.6-sol high",
         "condition": "Switch when DeepSWE lists gpt-6-sol in the same band as gpt-5.6-sol high (69%). AA 9-23 already deprecated GPT-5.6 Sol; codex still lists it (priority 4).",
         "recorded": "2026-09-23"
       }
@@ -217,7 +217,7 @@
       "write",
       "decide"
     ],
-    "note": "Implementation, advisory and review routes are chosen per host through host_routes. The existing implement ladder is the OpenAI lane, claude_ladder the Claude lane. The HTML specialty is kept."
+    "note": "Implementation, advisory and review candidates are ordered per host through the workers' role priorities: the OpenAI rows form the implementation lane on the Claude host, the Claude rows on the Codex host. The HTML specialty is kept."
   },
   "budget": {
     "declared_by": "user",
@@ -335,11 +335,6 @@
       "launcher": ".claude/scripts/codex-run.sh"
     },
     {
-      "role": [
-        "decide",
-        "review",
-        "implement"
-      ],
       "tier": "B",
       "vendor": "openai",
       "model": "gpt-6-astra",
@@ -364,7 +359,7 @@
       },
       "intelligence_index": 50,
       "effective_cost": 1.54,
-      "note": "B default for decide/review on the OpenAI side and implementation ladder step 1. AA 9-23: Astra medium 50 / $1.54 / 6.2s = Fable 5.1 medium (49) band; DeepSWE 73% $3.08 (Opus 5 high 73% $6.08). Implementation entry remains roles.implement.ladder[0] = gpt-5.6-sol high (measured, 44/52 runs).",
+      "note": "B default for decide/review on the OpenAI side and implementation ladder step 1. AA 9-23: Astra medium 50 / $1.54 / 6.2s = Fable 5.1 medium (49) band; DeepSWE 73% $3.08 (Opus 5 high 73% $6.08). Implementation entry remains the sol-high row (implement step 0) = gpt-5.6-sol high (measured, 44/52 runs).",
       "alternatives": [
         {
           "model": "gpt-5.6-sol",
@@ -379,7 +374,7 @@
             "xhigh": 0.71,
             "max": 0.73
           },
-          "condition": "Implementation ladder entry (ladder[0]). AA deprecated it on 9-23 (only max=47 / $1.99 remains); the 9-06-scale row was 48 / $0.61 / 19s. DeepSWE-verified: high 69% $2.66. Successor gpt-6-sol is in the codex catalog but not on DeepSWE yet — see roles.implement.pending_replacement",
+          "condition": "Implementation ladder entry (implement step 0). AA deprecated it on 9-23 (only max=47 / $1.99 remains); the 9-06-scale row was 48 / $0.61 / 19s. DeepSWE-verified: high 69% $2.66. Successor gpt-6-sol is in the codex catalog but not on DeepSWE yet — see the sol-high row.pending_replacement",
           "evidence": "leaderboard",
           "sources": [
             "artificial_analysis",
@@ -392,7 +387,7 @@
           "intelligence_index": 43,
           "effective_cost": 0.37,
           "ttft_s": 9.9,
-          "condition": "Candidate ladder[0] once DeepSWE lists it. AA 9-23: max 48 / $1.06 / 150s, xhigh 44 / $0.53 / 47s, high 43 / $0.37 / 9.9s, medium 40 / $0.25 / 2s; 872k context. Roughly GPT-5.6 Sol's band at ~60% of the cost per task and half the first-token latency",
+          "condition": "Candidate implement step 0 once DeepSWE lists it. AA 9-23: max 48 / $1.06 / 150s, xhigh 44 / $0.53 / 47s, high 43 / $0.37 / 9.9s, medium 40 / $0.25 / 2s; 872k context. Roughly GPT-5.6 Sol's band at ~60% of the cost per task and half the first-token latency",
           "evidence": "leaderboard",
           "sources": [
             "artificial_analysis"
@@ -414,9 +409,6 @@
       "launcher": ".claude/scripts/codex-run.sh"
     },
     {
-      "role": [
-        "decide"
-      ],
       "tier": "A",
       "vendor": "openai",
       "model": "gpt-6-astra",
@@ -461,11 +453,6 @@
       "launcher": ".claude/scripts/codex-run.sh"
     },
     {
-      "role": [
-        "implement",
-        "write",
-        "review"
-      ],
       "tier": "C",
       "vendor": "openai",
       "model": "gpt-6-astra",
@@ -535,12 +522,6 @@
       "launcher": ".claude/scripts/codex-run.sh"
     },
     {
-      "role": [
-        "orchestrate",
-        "decide",
-        "review",
-        "image_verify"
-      ],
       "tier": "B",
       "vendor": "claude",
       "model": "claude-opus-5-5",
@@ -612,10 +593,6 @@
       "launcher": ".claude/scripts/claude-run.sh"
     },
     {
-      "role": [
-        "orchestrate",
-        "decide"
-      ],
       "tier": "A",
       "vendor": "claude",
       "model": "claude-opus-5-5",
@@ -629,7 +606,7 @@
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "note": "2026-09-23 Fable 5.1 xhigh -> Opus 5.5 xhigh. AA 9-23: Opus 5.5 xhigh 56 / $3.46 / 160s is the top of the board (max 58 / $5.98); Fable 5.1 xhigh is 53 / $5.98 / 126s. DeepSWE has no Opus 5.5 row yet, but its prior for the two lines already points the same way (Opus 5 max 74% vs Fable 5 xhigh 70%). Opus 5.5 high (54 / $1.82 / 40s) matches Fable 5.1 xhigh at a third of the cost — the fast A. This cell does not change the main session's model (roles.orchestrate); it drives the Codex-host decide/plan_review route and claude_ladder step 1. Recheck when DeepSWE lists claude-opus-5.5.",
+      "note": "2026-09-23 Fable 5.1 xhigh -> Opus 5.5 xhigh. AA 9-23: Opus 5.5 xhigh 56 / $3.46 / 160s is the top of the board (max 58 / $5.98); Fable 5.1 xhigh is 53 / $5.98 / 126s. DeepSWE has no Opus 5.5 row yet, but its prior for the two lines already points the same way (Opus 5 max 74% vs Fable 5 xhigh 70%). Opus 5.5 high (54 / $1.82 / 40s) matches Fable 5.1 xhigh at a third of the cost — the fast A. This cell does not change the main session's model (roles.orchestrate); it drives the Codex-host decide/plan_review route and Claude implement step 1. Recheck when DeepSWE lists claude-opus-5.5.",
       "intelligence_index": 56,
       "effective_cost": 3.46,
       "deepswe_pass1": {
@@ -701,11 +678,6 @@
       "launcher": ".claude/scripts/claude-run.sh"
     },
     {
-      "role": [
-        "implement",
-        "write",
-        "review"
-      ],
       "tier": "C",
       "vendor": "claude",
       "model": "claude-opus-5-5",
@@ -756,9 +728,6 @@
       "launcher": ".claude/scripts/claude-run.sh"
     },
     {
-      "role": [
-        "explore_fetch"
-      ],
       "tier": "D",
       "vendor": "claude",
       "model": "claude-haiku-4-5",
@@ -798,9 +767,6 @@
       "launcher": ".claude/scripts/claude-run.sh"
     },
     {
-      "role": [
-        "write"
-      ],
       "tier": "C",
       "vendor": "google",
       "model": "gemini-3.8-flash",
@@ -856,9 +822,6 @@
       "launcher": ".claude/scripts/agy-run.sh"
     },
     {
-      "role": [
-        "write"
-      ],
       "tier": "D",
       "vendor": "google",
       "model": "gemini-3.8-flash",
@@ -920,9 +883,6 @@
       "launcher": ".claude/scripts/codex-run.sh"
     },
     {
-      "role": [
-        "bulk_local_read"
-      ],
       "tier": "D",
       "vendor": "local",
       "endpoint": "local-run.sh",
