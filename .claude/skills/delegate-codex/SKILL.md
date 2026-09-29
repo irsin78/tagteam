@@ -168,9 +168,8 @@ harness-route.py; use its model/effort, not an assumed maximum model.
 Bash reads a running script incrementally: when the delegate edits
 `codex-run.sh` mid-run, the interpreter's read offset lands in shifted
 content and the run dies with a spurious syntax error AFTER codex
-finishes (observed 2026-09-01 — an infrastructure failure per
-retry-policy, not an implementation failure; the delegate's edit itself
-was fine). Changes to `codex-run.sh` are made directly by the
+finishes: an infrastructure failure per retry-policy, not an implementation
+failure; the delegate's edit itself may be fine. Changes to `codex-run.sh` are made directly by the
 orchestrator or by a worker in a separate immutable launcher copy — never through the launcher.
 
 ## Unauthorized commit recovery (delegate-output-trust.md §3)

@@ -1,9 +1,9 @@
 # Delegation matrix
 
-Orchestrator-only reference outside automatic rules loading; resolve session-role.md first. Workers skip this workflow.
+Orchestrator only, not auto-loaded; resolve session-role.md first. Workers skip this workflow.
 
 ## Direct work or delegation
-Consider preparation, startup, handoff and verification cost before delegating.
+Before delegating, weigh preparation, startup, handoff and verification cost.
 Handle targeted reads directly. Implement directly only when inspecting the
 actual affected code and interfaces establishes a closed local change with known
 verification; request wording, file count and optimistic time estimates are not
@@ -66,7 +66,7 @@ Unknown/inherited settings stay explicit; a planned route is not a running worke
 Announce material changes before retry/fallback or direct takeover, including lost
 independence. Unchanged retries may reference the first notice; polling needs none.
 Continue authorized work immediately: this is a progress update, not an approval gate.
-Examples and detailed launch recipes: docs/harness-manual.md (read only the needed section).
+Examples and launch recipes: docs/harness-manual.md (read only the needed section).
 
 ## Availability and fallback
 An exhausted vendor is unavailable without a probe. Only a launcher's
@@ -99,4 +99,4 @@ execution. These worker restrictions do not change the user's main mode.
 **Adding an optional worker:** Add one row to `workers_local` in local bindings
 (or `workers` in a project's public copy), with `status: optional` and `requires`
 naming what must exist; nothing else changes in routing configuration.
-An unmet requirement silently skips the row, with the reason in `skipped`.
+Unmet requirements silently skip the row; the reason appears in `skipped`.

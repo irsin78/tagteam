@@ -1,7 +1,6 @@
 # Platform notes — macOS (zsh)
 
-Read this when working on macOS. It stays outside `.claude/rules/` so
-other platforms do not need to load macOS operational details.
+Read on macOS; kept outside `.claude/rules/` to avoid loading it on other platforms.
 
 Windows-side deltas live in docs/harness-manual.md (installation
 preflight, the codex sandbox/Store-alias failure mode, and the direct
@@ -36,9 +35,8 @@ macOS filesystems return filenames in **NFD**. Windows has no equivalent
 issue. Hardcoding Korean/accented literals in source silently returns zero
 matches.
 
-Incident (recorded case, kept for persuasive value — the rule stands on
-its own): the same three-syllable Hangul string against a SQLite `LIKE` search returned
-**0 rows as NFC and 966 rows as NFD** when stored paths were NFD.
+A SQLite `LIKE` search against NFD paths returned **0 rows as NFC and 966 rows
+as NFD** for the same three-syllable Hangul string.
 
 **Rule**: store the filesystem's original string as-is; **normalize to NFC
 only at comparison/decision time**. When a path value is embedded in an
@@ -97,17 +95,14 @@ accept a review of unseen material.
 
 ### 7. Sandboxing
 
-The harness manual describes `sandbox.*` as out of this template's scope because
-it's unsupported on native Windows. **It is supported on macOS/Linux/
-WSL2.** Recorded here as an open option on macOS — this file does not
-prescribe turning any of it on.
+`sandbox.*` is unsupported on native Windows and outside the template's scope,
+but **supported on macOS/Linux/WSL2**. Enabling it on macOS is optional.
 
 ### 8. SMB/NAS mounts
 
 - SMB shares mount under `/Volumes/<share>`. **`df`'s usage figure is for
   the whole volume the share lives on, not the share itself** — using `df`
-  for capacity decisions is wrong. Incident (recorded case): `df` reported
-  4.9 TiB for a share whose actual capacity was 778.8 GiB.
+  for capacity decisions is wrong (for example, 4.9 TiB for a 778.8 GiB share).
 - Mounting via Finder can connect over **AFP**. Designs that assume SMB
   (including NFC/NFD analysis) need to be remounted over SMB explicitly.
 - `os.path.exists`/`isfile`/`isdir` **swallow exceptions**, so they can't

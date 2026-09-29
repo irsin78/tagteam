@@ -5,19 +5,17 @@
 > This document covers configuration, support, installation, operation, and checks.
 
 When first adopting the harness, read only [Copy targets](#copy-targets),
-[Installation](#installation), and the section for your platform. During work,
-look up the [host-specific execution](#host-specific-execution-2026-09-08) recipe
-needed. Delegates focus on their assigned task and necessary platform guidance.
-Do not read the entire manual for onboarding. Template regression procedures
-are separate in [Maintenance guide](harness-maintenance.md).
+[Installation](#installation), and the section for your platform. During work, look up
+the [host-specific execution](#host-specific-execution) recipe needed.
+Delegates focus on their assigned task and necessary platform guidance. Do not read the
+entire manual for onboarding. Template regression procedures are separate in
+[Maintenance guide](harness-maintenance.md).
 
 ## Configuration summary
 
-> **Source of truth**: This section is an introductory summary. The rules in
 > `.claude/rules/`, `.claude/agents/`, and `.claude/skills/` are authoritative.
-> Keep only **information absent from rules** here: reasons for configuration
-> keys, hook behavior, and observation dates. Point to rules with one-line
-> references. Do not duplicate details in the summary, which can drift from rules.
+> Keep only configuration-key reasons, hook behavior, and observation dates
+> absent from rules here; use one-line rule references to avoid drift.
 
 ### Directory layout
 
@@ -42,21 +40,20 @@ docs/                       Manual, runtime-boundary.md, platform notes
 
 ### Roles and model selection
 
-The baseline rationale and scope of practical adjustments belong in
-[Design principles](design-principles.md#basis-for-model-selection).
-The [bindings JSON](../.claude/model-bindings.json) is authoritative for specific
-models, effort, benchmarks, sources, and measurement dates. Follow the `workers` list and its per-host role priorities
-for host routing and this manual's host-specific execution section for procedures.
+See [Design principles](design-principles.md#basis-for-model-selection) for rationale.
+The [bindings JSON](../.claude/model-bindings.json) defines models, effort, benchmarks,
+sources, and measurement dates. Route by `workers` and per-host role priorities; use
+this manual's host-specific execution recipes.
 
 Schema v2 gives each worker an `id`, `vendor`, `model`, `tier`, `roles`, `status`
 and `launcher` (or `native: true`); optional fields include `effort`, `requires`,
-`tier_cell` and measurement metadata. Role priorities are positive integers or
-per-host maps; a role can also contain `priority`, `hosts` and `requires`.
-`tier_cell: true` identifies the vendor/tier row used by explicit tier selection
-for separated roles. Status is `active`, `optional`, `conditional` (explicit
-`--worker <id>`) or `unverified` (excluded from automatic selection).
-`workers_local` recursively merges matching IDs and appends new ones; a local
-`workers` array replaces the public list. For example, in local bindings:
+`tier_cell` and measurement metadata. Role priorities are positive integers or per-host
+maps; a role can also contain `priority`, `hosts` and `requires`. `tier_cell: true`
+identifies the vendor/tier row used by explicit tier selection for separated roles.
+Status is `active`, `optional`, `conditional` (explicit `--worker <id>`) or
+`unverified` (excluded from automatic selection). `workers_local` recursively merges
+matching IDs and appends new ones; a local `workers` array replaces the public list. For
+example, in local bindings:
 
 ```json
 {
@@ -72,12 +69,12 @@ for separated roles. Status is `active`, `optional`, `conditional` (explicit
 ```
 
 Requirement keys are `local_endpoint` (declared endpoint with base URL/model),
-`agy_grant` (named global allow grant), `agent_file` (project-relative file),
-and `binary` (executable on PATH); worker and role requirements both apply.
-Checks use local declarations/files only, with no CLI or endpoint probe.
-The launchers' `--launcher-default` router mode reads active vendor/role defaults;
-it does not select another delegation. Reader inputs and local model `auto`
-behavior are defined in [Runtime boundary](runtime-boundary.md#restricted-file-reads-by-a-local-model).
+`agy_grant` (named global allow grant), `agent_file` (project-relative file), and
+`binary` (executable on PATH); worker and role requirements both apply. Checks use local
+declarations/files only, with no CLI or endpoint probe. The launchers'
+`--launcher-default` router mode reads active vendor/role defaults; it does not select
+another delegation. Reader inputs and local model `auto` behavior are defined in
+[Runtime boundary](runtime-boundary.md#restricted-file-reads-by-a-local-model).
 
 | Role | Default route and selection criteria |
 |---|---|
@@ -89,43 +86,34 @@ behavior are defined in [Runtime boundary](runtime-boundary.md#restricted-file-r
 | Exploration, logs, external documents | Handle a few file lookups directly. Explicitly select D for simple extraction, C/B for structural or dependency analysis. Web isolation is a separate requirement |
 | Build/test execution | Run checks needed for the task and inspect exit codes/results. Explicitly save large output to logs |
 
-If an external CLI is unavailable, use the availability fallback, but report
-irreplaceable requirements such as independent review as incomplete. Follow the
-delegation matrix for detailed policy.
-
-For exploration, do not blindly use the default D route. Choose for the question,
-for example `--role explore --tier C`. Do not replace models across the board
-based on one benchmark score or one failure. Revoked authentication or exhausted
-quota may be reported as exit 1 after CLI execution. Inspect the original CLI
-error and partial artifacts/changes before choosing an availability fallback or
-reauthentication. Do not count error strings in documents printed by tools as
-authentication failures or repeat the same call with a revoked token.
+For unavailable CLIs, follow delegation-matrix fallback; report irreplaceable
+requirements (such as independent review) incomplete. Choose exploration by the
+question, not blindly by default D: e.g. `--role explore --tier C`. Do not replace
+models wholesale after one benchmark/failure. Authentication/quota failures may exit 1;
+inspect original CLI errors and partial artifacts before fallback or reauthentication.
+Printed document error strings are not authentication failures; never repeat a
+revoked-token call.
 
 ### Assignment announcement before delegation
 
-The [delegation matrix](orchestration/delegation-matrix.md#user-facing-delegation-announcement)
-is authoritative for announcements on both hosts. Immediately before delegating
-implementation, review, or exploration, give the user a short progress message
-with the task and tier rationale, actual model/effort, and selection reason.
-For example:
-
-> List sorting is a tier C task with a confirmed spec and implementation pattern.
-> I will assign it to `<assigned model>` (effort: `<configured value>`), an
-> efficient implementation route for this level.
+Follow the
+[delegation matrix](orchestration/delegation-matrix.md#user-facing-delegation-announcement)
+and AGENTS.md on both hosts. Immediately before implementation, review, or exploration
+delegation, announce the task, tier rationale, actual model/effort, and selection
+reason. For example:
 
 > The cache invalidation fix is a tier B task requiring reasoning across modules.
 > I will assign implementation to `<assigned model>` (effort: `<configured value>`)
 > from a different vendor than the designer to cross-check assumptions.
 
-Fill the angle brackets with the actual routing result. Capability tiers A–D
-and verification risk Tiers 0–2 are separate. If the model changes, announce the
-new assignment and reason, without waiting again for user approval because of
-this message. The shared entry instructions (AGENTS.md) and the delegation matrix apply this behavior.
+Fill the angle brackets from routing results.
+Capability tiers A–D differ from verification risk Tiers 0–2. Announce model changes and
+reasons; this message requires no renewed approval.
 
 ### Separating shared contracts, host mechanisms, model traits, and roles
 
-Decide where improvements belong by distinguishing these four layers. Do not
-change an entire other layer based on a problem observed in one layer.
+Distinguish four layers; do not change another layer wholesale because of a problem in
+one.
 
 | Layer | Content | Where to apply it |
 |---|---|---|
@@ -134,35 +122,21 @@ change an entire other layer based on a problem observed in one layer.
 | Model traits | Official guidance and observations for a model family (effort values, response format, etc.) | Routes using that model and bindings |
 | Role | Amount of instruction actually needed by orchestrators, implementers, reviewers, read-only workers | Role-specific instructions. Do not make delegates read orchestrator-only documents |
 
-Fix defects in evidence/approval contracts in shared rules. Add host- or
-model-specific adaptations only when that route shows actual gains (fewer
-failures, less rework or delay). Do not generalize one vendor's prompting advice
-to defaults for another vendor's routes. Do not generalize that a vendor's
-models require stricter or looser procedures; determine procedural strength
-from task risk and actual observations.
+Fix evidence/approval defects in shared rules. Add host/model adaptations only for
+demonstrated gains in failures, rework, or delay. Do not generalize one vendor's
+prompting advice to another, or assign procedural strength by vendor; use task risk and
+observations.
 
 ### Applying the GPT-6 Astra official guide
 
-This section belongs to **model traits** in the table above. It applies to
-OpenAI model family routes and does not prescribe prompting or procedural
-strength for other vendors. Items below described as reflected in shared rules
-belong to the shared contract.
-
 The [official OpenAI guide](https://developers.openai.com/api/docs/guides/latest-model)
-was reviewed on 2026-09-09. Recommendations on clarification questions,
-conflicting instruction files, excessive verification, and response format are
-reflected in shared rules. Both hosts follow `session-role.md`; necessary
-verification and economical delegation follow `verification-tiering.md` and
-`docs/orchestration/delegation-matrix.md`, respectively. When inspecting
-instruction files, check scope and duplication in the shared entry instructions
-(AGENTS.md) and the rules, skills, and agent recipes actually read. The entry
-file points at the other required documents instead of restating their
-sentences. A full instruction audit is not needed on every task.
-
-Codex execution conditions also apply to Codex workers directed by Claude Code.
-Copy `AGENTS.md.template` to `AGENTS.md` during installation (Claude Code reads
-the same file through the `@AGENTS.md` import in `CLAUDE.md`); do not put behavioral
-principles in `.codex/hooks.json`.
+applies to OpenAI routes, not other vendors' procedures. Both hosts follow
+`session-role.md`, `verification-tiering.md`, and
+`docs/orchestration/delegation-matrix.md` for shared contracts. Check scope and
+duplication in AGENTS.md and instructions actually read; point to required
+sources instead of restating them. No full instruction audit is needed per task.
+Codex execution conditions also apply to Codex workers directed by Claude Code. For installation,
+see [Method A](#installation); keep behavioral principles out of `.codex/hooks.json`.
 [Official AGENTS.md loading guide](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 
 | Category | Official basis and template handling |
@@ -172,50 +146,36 @@ principles in `.codex/hooks.json`.
 | Codex delegation launcher | For the single-worker contract, Ultra exits 4 for explicit arguments, bindings, detached execution, and resume. Max uses `-b` and `--wait`. The human's main settings remain unchanged |
 | CLI-verified scope | Enumerated values in the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) differ from app choices. Documentation, local catalogs, and stub checks alone do not establish successful real model execution |
 
-Default models/effort and benchmark figures remain the baseline. For future
-model changes, compare current settings by role and adjust after checking
-required quality and completion cost/time on representative tasks. External
-benchmarks inform initial selection; they do not directly guarantee completion
-cost including worker startup waits, rework, and parent inspection.
-
-Native subagents may inherit the parent's model/effort if unspecified. Set them
-explicitly for the role; if the environment cannot do so, include inheritance
-cost when deciding to delegate. Distinguish parallelization within one vendor
-from independent review by another vendor.
+Retain baseline models/effort and benchmarks. Before changing routes, compare
+representative tasks for role quality and full completion cost/time (startup,
+rework, parent inspection); external benchmarks only inform initial selection.
+Set native subagent model/effort explicitly; if unavailable, count inheritance
+cost when deciding to delegate. Same-vendor parallelism is not independent review.
 [Official subagent guide](https://learn.chatgpt.com/docs/agent-configuration/subagents).
 
-**Optional features and API boundary**: This template uses `codex exec`.
-Asynchronous tool calls, mid-task steering over WebSocket, and cache-preserving
-`configuration_update` are API execution-layer features; writing options in
-hooks or prompts cannot enable them. When implementing the API directly, use
-Responses for Astra tool calls, remove unsupported sampling arguments, and
-check the official migration section for cache settings.
-`configuration_update` is currently limited to Astra's standard single-agent
-mode and has constraints with automatic compaction.
+**API boundary**: This template uses `codex exec`. Asynchronous calls, WebSocket
+steering, and cache-preserving `configuration_update` require API implementation,
+not hook/prompt options. Use Responses for Astra tool calls, remove unsupported
+sampling arguments, and consult migration guidance for cache settings.
+`configuration_update` supports only Astra standard single-agent mode, with
+automatic-compaction constraints. CLI resume still reapplies settings explicitly.
 [Changing reasoning settings](https://developers.openai.com/api/docs/guides/reasoning#change-reasoning-mid-conversation).
-Existing CLI resume retains explicit setting reapplication in the recipes below.
 
-Experimental context management is optional for Plus/Pro accounts in supported
-clients; Business/Enterprise/API-key login is excluded at launch. Check support
-for the project before selecting it in personal settings. Do not generate or
-enable a shared config; retain explicit task contracts for handoff across hosts.
+Experimental context management is optional for supported Plus/Pro clients;
+Business/Enterprise/API-key login is excluded at launch. Check project support
+before personal selection; never enable/generate shared config, and retain
+explicit cross-host handoff contracts.
 [Official context management guide](https://learn.chatgpt.com/docs/models#experimental-context-management).
 
 ### Meaning of launcher statistics
 
-`bash .claude/scripts/harness-stats.sh 7` summarizes recent runs from existing
-reports. It separates counts by host, Codex sandbox, and Claude permission mode,
-and separately counts missing or unparseable fields. Different modes do not
-mean equivalent OS isolation. Records without corresponding fields, such as
-agy/local, are also shown without omission.
-
-`verify-attached` counts attached verification scripts, distinct from
-`verify-passed`/`verify-failed`. Missing results are unknown. DONE is the
-launcher's reported status, not the parent's final acceptance.
-`median-launcher-elapsed` covers only launcher execution, not total completion
-time including specification writing and parent inspection.
-
-Reports include the following `TIMING` intervals.
+`bash .claude/scripts/harness-stats.sh 7` summarizes existing reports by host,
+Codex sandbox, and Claude permission mode; separately counts missing/unparseable
+fields and includes agy/local records lacking them. Modes do not imply equivalent
+OS isolation. `verify-attached` counts scripts, not `verify-passed`/`verify-failed`;
+missing means unknown. DONE is launcher status, not parent acceptance.
+`median-launcher-elapsed` excludes specification and parent inspection.
+`TIMING` intervals:
 
 | Field | Time included |
 |---|---|
@@ -226,68 +186,52 @@ Reports include the following `TIMING` intervals.
 | `total_ms` | Sum of the four intervals. `ELAPSED: Ns` also includes initialization and record checks |
 | `attempts`, `resolution` | Actual child invocation attempts and time resolution. Bash 4 falls back to seconds |
 
-Repeated agy calls during retries are summed into `cli_ms`. Verification inside
-the child is in `cli_ms` and is not added again as `verify_ms`. For `-b`, timing
-starts at entry to the child launcher that does the work; it excludes the
-requesting parent's preparation and `--wait` polling delay. It also excludes
-final report output/state persistence completion and the main orchestrator's
-preparation/integration time. Runs denied or aborted before reporting may lack
-`TIMING`.
+AGY retries and child verification count in `cli_ms`, not `verify_ms`. For `-b`,
+timing starts in the working child launcher, excluding parent preparation,
+`--wait` polling, final report/state persistence, and orchestrator integration.
+Pre-report denials/aborts may lack `TIMING`. Claude's optional `API_REPORTED_MS`
+overlaps `cli_ms`: never add it to totals; missing means unknown. Local reads use
+the same scheme from input preparation, with `request_ms` for HTTP wait instead
+of `cli_ms`, excluding Python startup/argument parsing.
 
-Claude also displays `API_REPORTED_MS` if present in the response. This CLI-
-reported API interval overlaps `cli_ms`; do not add it to total time. A missing
-field is unknown. Local reads use the same recording scheme from input
-preparation, but use `request_ms` because they wait for HTTP responses instead
-of an external CLI. Python startup/argument parsing is outside this report scope.
-
-`timed-runs` and `mean-ms` in `harness-stats.sh` aggregate only complete records
-whose interval sums agree. External CLIs use per-tree records in the user home;
-local reads separately aggregate the current project's
-`.claude/local-logs/run-*/report.txt` as `checkout-local`. Local averages show
-`request` instead of `cli`. Do not infer missing intervals in older reports as 0.
-Date ranges use external report names and local `STARTED`. For older local
-records without `STARTED`, report use of file modification time. Copied older
-logs may have different dates. Older `ELAPSED` and new total time start at
-different points; do not calculate improvement rates by simple comparison.
+`harness-stats.sh` computes `timed-runs`/`mean-ms` only for complete, sum-consistent
+records: external per-tree records in user home; separate local
+`.claude/local-logs/run-*/report.txt` as `checkout-local`, using `request` instead
+of `cli`. Never infer missing intervals as 0. Date ranges use external report
+names/local `STARTED`; disclose modification-time fallback for older local
+records. Copies may change dates. Older `ELAPSED` and new totals start differently;
+do not derive improvement rates by simple comparison.
 
 ### Policy documents — pointers
-- Roles, autonomous progress, instruction conflicts, additional requirements,
-  communication: `rules/session-role.md`
-- Delegation routing, switching-cost exceptions, fallback:
-  `docs/orchestration/delegation-matrix.md`
-- Delegate artifact trust boundary (check actual artifacts, preserve existing
-  changes, only orchestrators commit): `rules/delegate-output-trust.md`
-- Verification tiering (risk-first classification, git event timing, mutation
-  checks): `rules/verification-tiering.md` + `skills/verify-safety-guard`
-- Retry/escalation ladder: `docs/orchestration/retry-policy.md`
-- Security boundary (host-specific restricted web routes for untrusted content,
-  agy grant, prompt-file handoff, Read deny): `rules/security-boundary.md`
-- Mission spec confirmation, continuous execution, handoff, context retention:
-  `rules/mission-artifacts.md`
-- Platform rule files are not part of the harness; platform notes live in
-  `docs/platform-notes-*.md`. The SessionStart hook detects the OS and injects
-  one `HARNESS PLATFORM:` line pointing to what to read: the install section
-  of this manual for Windows, `docs/platform-notes-macos.md` /
-  `docs/platform-notes-linux.md` for macOS/Linux. These notes stay outside
-  `.claude/rules/` so sessions on other platforms do not pay their cost each turn.
-- Rules scoped to `docs/missions/**` (frontmatter `paths:`):
-  `rules/mission-artifacts.md`, `rules/plan-check-gate.md`. The shared entry
-  instructions (AGENTS.md) contain implementation start conditions; the orchestrator reads rules before
-  starting a mission. Do not assume Claude's path-based auto-loading delivers
-  rules before creation. Codex also follows the explicit AGENTS.md read path.
-  Document examples are in [Mission operation](missions/README.md).
-- codex delegation recipe: `skills/delegate-codex/SKILL.md`; agy delegation
-  recipe: `skills/delegate-agy/SKILL.md`. The entry instructions explain role
-  resolution and when to read needed authoritative sources without recopying
-  detailed contracts.
 
+- Roles, progress, conflicts, requirements, communication: `rules/session-role.md`
+- Routing, switching-cost exceptions, fallback:
+  `docs/orchestration/delegation-matrix.md`
+- Actual artifacts, existing changes, orchestrator-only commits:
+  `rules/delegate-output-trust.md`
+- Risk, Git timing, mutation checks: `rules/verification-tiering.md` +
+  `skills/verify-safety-guard`
+- Retry/escalation: `docs/orchestration/retry-policy.md`
+- Restricted web routes, agy grant, prompt-file handoff, Read deny:
+  `rules/security-boundary.md`
+- Spec confirmation, execution, handoff, context: `rules/mission-artifacts.md`
+- Platform notes: `docs/platform-notes-*.md`, outside `.claude/rules/` to avoid
+  loading on other platforms. SessionStart's `HARNESS PLATFORM:` points to this
+  manual's Windows installation section or `docs/platform-notes-macos.md`/
+  `docs/platform-notes-linux.md`; platform rule files are not part of the harness.
+- `rules/mission-artifacts.md` and `rules/plan-check-gate.md` are scoped to
+  `docs/missions/**` with `paths:`. The orchestrator reads them before mission
+  creation as directed by AGENTS.md; do not rely on Claude's path auto-loading.
+  Codex also follows AGENTS.md's explicit read path. Examples:
+  [Mission operation](missions/README.md).
+- Recipes: `skills/delegate-codex/SKILL.md`, `skills/delegate-agy/SKILL.md`.
+  Entry instructions resolve roles and required reading.
 
 ### Rationale for rules and scope of reconsideration
 
-Reconsider only relevant policies according to
-[Design principles](design-principles.md#change-and-re-review).
-The following are decision evidence, not separate approval gates or measurement
-obligations for new rules.
+Reconsider only affected policies per
+[Design principles](design-principles.md#change-and-re-review). The table is decision
+evidence, not extra approval gates or measurement obligations.
 
 | Rule | Problem addressed | Observations for reconsideration |
 |---|---|---|
@@ -323,16 +267,15 @@ removed procedures, and optional tools.
 - Declare budgets in environment variables and local bindings. No automatic
   usage detection is provided.
 
-Do not clean logs at delegation startup. Preview with harness-clean.py, then
-explicitly execute with --apply. Execution tracking, duplicate-write prevention,
-and Git/non-Git file comparisons remain in place.
+Do not clean logs at delegation startup. Preview with harness-clean.py, then explicitly
+execute with --apply. Execution tracking, duplicate-write prevention, and Git/non-Git
+file comparisons remain in place.
 
 ### Default execution cost
 
-Default hooks provide platform guidance, limited direct checks, minimal delegate
-metadata, and optional per-task verification. Run detailed diagnostics/statistics
-when needed. Probe and output-compression measurements from other configurations
-do not represent the current cost.
+Default hooks provide platform guidance, limited direct checks, delegate metadata, and
+optional task verification. Run diagnostics/statistics as needed; other configurations'
+probe/compression measurements do not show current cost.
 
 ## Support status
 
@@ -343,17 +286,16 @@ do not represent the current cost.
 | Platform | macOS | Separate notes, partially verified |
 | Platform | Native Linux (Ubuntu) | Partially verified (24.04 aarch64: hooks/launchers passed); isolation lane unavailable on that host. See platform notes for item-specific scope |
 | Host | Claude Code orchestration | Verified |
-| Host | Codex orchestration | 2026-09-08 Codex → Claude real implementation/parent verification round trip passed. Host routing/role regression checks passed. CLI guard contract retains existing observations; separately check automatic hook firing and new SessionStart trust registration in each execution environment after installation |
+| Host | Codex orchestration | Codex → Claude implementation/parent verification and routing/role regressions passed. Separately verify automatic hook firing and SessionStart trust registration in each installed environment; CLI guard observations retain their original scope |
 | Model | Three cloud vendors | Rationale listed in the tier table |
 | Model | Local endpoint | Tier D bulk reads only, budget-linked (OpenAI-compatible server on LAN; declared only in local bindings) |
 
 ## Copy targets
 
-The default configuration is bidirectional delegation between Claude Code and
-Codex. Copy the shared files below and the files for your platform at the same
-relative paths; add only the optional bundles needed. Copying all of `.claude/`
-is not required. Do not copy local settings, logs, caches, or this repository's
-individual missions. Merge existing project settings/instructions without overwriting.
+Default: bidirectional Claude Code/Codex delegation. Copy shared files and your platform
+files at the same relative paths; add only needed optional bundles. Copying all of
+`.claude/` is unnecessary. Do not copy local settings, logs, caches, or individual
+missions. Merge existing settings/instructions without overwriting.
 
 | Shared required files | Required when | Reason |
 |---|---|---|
@@ -390,39 +332,31 @@ individual missions. Merge existing project settings/instructions without overwr
 | `.claude/hooks/test_*`, `.claude/scripts/test_*`, excluding `test_host_routes.py` | Regression checks in the template repository. No general obligation to copy/run for project work |
 | `.claude/skills/verify-safety-guard/`, `tools/`, `docs/harness-maintenance.md`, individual missions in this repository | Consult in the template repository for harness changes, platform measurements, and historical evidence |
 
-Example: For process delegation between the two apps on Windows, copy only the
-shared requirements and Windows check. agy, local servers, native workers, and
-WSL isolation need no preparation. INFO notices about unused CLIs in installation
-checks are not installation requirements. Before trimming an existing copy, check
-references in selected hooks, agents, and recipes; do not arbitrarily delete
-shared files. Consult maintenance links in the original template if those files
-are absent from the consuming project.
-
-For step-by-step procedures (key merging, filling TODOs, trust dialogs), follow
-the install section below.
+For Windows process delegation, only shared requirements and the Windows check are
+needed; agy, local servers, native workers, and WSL need no preparation. INFO notices
+for unused CLIs are not requirements. Before trimming a copy, check selected
+hooks/agents/recipes; do not arbitrarily delete shared files. Consult absent maintenance
+files in the original template. See Installation for key merging, TODOs, and trust
+dialogs.
 
 ## Git/non-Git workspaces
 
-A Git repository is not required. The starting app orchestrates and completes
-the Mission according to the confirmed spec in either case. Distinguish general
-session operation from individual CLI requirements. Do not fix the host or
-automatically run `git init` just because the workspace is non-Git.
+Git is optional: the starting app orchestrates the confirmed Mission either way.
+Distinguish session operation from CLI requirements; do not change hosts or
+automatically run `git init` for a non-Git workspace.
 
-Run the four process launchers from the project root. For Git, this is the
-repository top level. For non-Git, walk upward from the current directory to the
-first folder with `.claude/` or installed `AGENTS.md`/`CLAUDE.md`; without a marker,
-use the current folder. Starting a new task below the root produces guidance to
-run from the root. `--status` and `--wait` read records for the same normalized
-root even from subfolders. Codex/Claude/Antigravity concurrency guards share this
-root. The local-read lane runs separately and does not measure workspace changes.
-`CHANGED: not measured` does not mean no changes occurred. The snapshot description
-below applies to the three external model launchers.
+Run all four process launchers from the project root: Git top level, or for non-Git, the
+first ancestor with `.claude/` or installed `AGENTS.md`/`CLAUDE.md`, failing that the
+current folder. New tasks below root receive root guidance. `--status`/`--wait` use the
+same normalized root from subfolders; Codex/Claude/ Antigravity share its concurrency
+guard. Local reads run separately without change measurement: `CHANGED: not measured`
+does not mean unchanged. The next snapshot contract covers the three external model
+launchers.
 
-`workspace-snapshot.py` and `workspace-evidence.sh` produce before/after evidence.
-Root/key lookup is handled together without scanning contents. The start snapshot
-combines saving and description, the end snapshot combines saving and comparison,
-and control-file hashing includes comparison/classification. This reduces process
-startup and repeated reads without changing file-detection scope.
+`workspace-snapshot.py` and `workspace-evidence.sh` collect before/after evidence.
+Root/key lookup does not scan contents. Start combines saving/description; end combines
+saving/comparison; control hashes include comparison/classification. These reduce
+startup/repeated reads without changing detection scope.
 
 - **Git**: Compare status/content hashes of non-ignored modified/untracked files
   and index blob/mode/stage. Includes further edits to already-dirty files and
@@ -449,98 +383,76 @@ startup and repeated reads without changing file-detection scope.
   tool's own timeout. Start-check failure exits 4; post-execution check failure
   exits 1. Neither justifies automatic delegation fallback; inspect the cause.
 
-Inspection scope is not write permission. It does not guarantee verification of
-all excluded files, link targets, external paths, or changes reverted during
-execution. External model launchers retain separate control-file hash checks.
-Snapshots are not backups/recovery copies. The adopting project defines non-Git
-rollback, sharing, backups, and extra inspection scope. Run independent large
-subprojects as separate roots with necessary checkers attached.
+Inspection grants no write permission and cannot guarantee verification of excluded
+files, link targets, external paths, or reverted changes. External launchers separately
+hash control files. Snapshots are not backups; the project defines non-Git rollback,
+sharing, backups, and extra inspection. Run independent large subprojects as separate
+roots with required checkers.
 
-To separately retain a diff of existing Git modifications, specify
-`HARNESS_SAVE_BASELINE=1` on the launcher call. It is not generated by default;
-change-detection snapshots always run. When selected, the log folder contains
-`baseline-<timestamp>.diff`. This references existing tracked-file modifications,
-not a backup including untracked/ignored files. This option creates no diff in
-non-Git workspaces.
+`HARNESS_SAVE_BASELINE=1` optionally saves `baseline-<timestamp>.diff` in the launcher
+log folder: tracked Git modifications only, excluding untracked/ignored files, not a
+backup. No baseline diff is generated by default or for non-Git; change-detection
+snapshots always run.
 
-Codex's [official non-interactive execution documentation](https://learn.chatgpt.com/docs/non-interactive-mode#git-repository-required)
-provides a non-Git execution option. `codex-run.sh` adds `--skip-git-repo-check`
-to new runs, resume, and Windows probes only after valid non-Git detection and
-the start snapshot. User addition of this option through raw CLI remains blocked;
-it does not relax sandbox, hook trust, or permissions.
+Codex's
+[official non-interactive execution documentation](https://learn.chatgpt.com/docs/non-interactive-mode#git-repository-required)
+provides a non-Git execution option. `codex-run.sh` adds `--skip-git-repo-check` to new
+runs, resume, and Windows probes only after valid non-Git detection and the start
+snapshot. User addition of this option through raw CLI remains blocked; it does not
+relax sandbox, hook trust, or permissions.
 
-Read-only launchers report work-file changes as failures, separately identifying
-normal updates to existing session-owned NOTICE files. Antigravity permits one
-empty-response retry only after confirming files, commits, and declared external
-artifacts are all unchanged. An unavailable response after writing partial
-results is a failure (exit 1), not exit 2 that leads to automatic fallback.
+Read-only launchers fail on work-file changes and separately identify normal existing
+session-owned NOTICE updates. Antigravity retries an empty response once only if files,
+commits, and declared external artifacts are unchanged. Unavailable responses after
+partial writes fail with exit 1, not fallback exit 2.
 
-`claude-implementer`/`opus-architect` with `isolation: worktree` are Git-only.
-For non-Git, use process launchers with the same role/binding; if isolation is
-needed, use a copy with an explicit baseline. commit/push/merge, Git history and
-worktree procedures, and `.gitattributes`/`.gitignore` installation steps apply
-only to Git projects. Bash/Python, selected CLI preparation, and platform checks
-are independent of Git usage.
+`claude-implementer`/`opus-architect` with `isolation: worktree` require Git. Non-Git
+uses process launchers with the same role/binding; isolation needs a copy with an
+explicit baseline. commit/push/merge, history, worktrees, and installing
+`.gitattributes`/`.gitignore` apply only to Git. Bash/Python, selected CLIs, and
+platform checks apply to both.
 
-Verification scope (2026-09-09): Snapshot/router regressions and Git/non-Git stub
-checks for all four launchers ran on Windows; a real read-only Claude round trip
-also passed in a temporary non-Git installation. Codex options were checked using
-installed `exec`/`exec resume` help and argument-passing checks. This is not evidence
-of real non-Git Codex/Antigravity model execution or measurements on other OSes.
+Verification scope: Windows snapshot/router and all four launchers' Git/non-Git stub
+checks, plus a real read-only Claude round trip in a temporary non-Git installation.
+Installed `exec`/`exec resume` help and argument checks validate Codex options, not
+real non-Git Codex/Antigravity execution or other OSes.
 
 ## Mission operation
 
-Keep work records in `docs/missions/<purpose>/`. Describe the objective in
-`intent.md`, specify behavior, constraints, and completion criteria in `spec.md`,
-and obtain user confirmation. If the same spec was already confirmed in the
-conversation, record the evidence and continue. Then carry detailed planning,
-implementation, verification, and fixes through completion; stage, delegation,
-or review completion alone does not require renewed approval. Clearly report
-issues needing new user judgment and actual blockers.
-
-Follow [Mission operation guide](missions/README.md) for document structure,
-splitting large tasks into stages, cross-verification/resume and Git
-management. Preserve existing spec confirmation; do not
-approve new specs arbitrarily. Do not add mandatory hook-setting changes or
-per-stage commits.
+In `docs/missions/<purpose>/`, record objectives in `intent.md` and behavior,
+constraints, and acceptance in `spec.md`; obtain user confirmation or record existing
+conversational confirmation. Continue planning, implementation, verification, and fixes
+to completion without renewed approval at stage, delegation, or review boundaries.
+Report blockers and issues requiring user judgment. Follow
+[Mission operation guide](missions/README.md) for structure, staging,
+cross-verification/resume, and Git management. Preserve confirmation; do not arbitrarily
+approve new specs or require hook changes/per-stage commits.
 
 ## Installation
 
-The starting host is Claude Code or Codex. External implementation delegation
-requires the other app's CLI; Antigravity and local inference are optional.
-Hooks require Python; shell launchers require Bash. The per-platform list of
-what to install, and what fails without each item, is
-[Dependencies](dependencies.md). Follow the procedures below to prepare the
-routes you use.
-
-For platform verification status, see [Support status](#support-status).
-Operation is not promised on unverified platforms. The procedures below put
-shared steps first, followed by platform-specific details.
+The starting host is Claude Code or Codex; external implementation needs the other CLI.
+Antigravity/local inference are optional. Hooks need Python; shell launchers need Bash.
+See [Dependencies](dependencies.md) for platform prerequisites and failure modes;
+prepare only selected routes. [Support status](#support-status) defines verified scope;
+operation on unverified platforms is not promised.
 
 **Method A — project drop-in (independent setup per project)**
-1. Copy the shared requirements and selected platform/optional bundles from
-   [Copy targets](#copy-targets). If `.claude/settings.json` exists, merge required
-   `env`, `permissions`, `hooks`, and worktree/cache settings with existing values.
-   Do not add settings for unselected features or overwrite the user's model/effort.
-   Git projects must also copy root `.gitattributes` (otherwise line-ending diff
-   noise recurs in the target project; see shared step 0-1).
-1-1. Copy `check-windows-aliases.ps1` on Windows or `check-posix.sh` on macOS/Linux
-   to the project root. Copy the script for the platform used; both are covered
-   by control-plane hashes. The former locates hooks using `$PSScriptRoot`, the
-   latter its own directory, so they must be at the root. For the full list, see
-   [Copy targets](#copy-targets).
-2. Copy `AGENTS.md.template` to root `AGENTS.md` and fill the bottom Project
-   policy with verification/completion criteria, conventions, protected paths,
-   major risks/mandatory reviews, and external-work approval criteria. Put
-   necessary model exceptions in local bindings. Copy `CLAUDE.md.template` to
-   `CLAUDE.md` (if a CLAUDE.md already exists, add the single `@AGENTS.md` line
-   to it). Claude Code loads AGENTS.md through that import and Codex reads
-   AGENTS.md directly, so both hosts see the same instructions. The file names
-   no host: the SessionStart `HARNESS PLATFORM:` line reports
-   `host: claude|codex (ORCHESTRATOR|DELEGATE)` for the session. When upgrading
-   an existing installation, merge the text that was split across the two files
-   into AGENTS.md and leave only the import line in CLAUDE.md; the installation
-   checks verify that line.
+1. Copy [shared/platform/selected optional files](#copy-targets). Merge existing
+   `.claude/settings.json` keys: `env`, `permissions`, `hooks`, worktree/cache.
+   Do not configure unselected features or overwrite user model/effort. Git
+   projects also need root `.gitattributes` (shared step 0-1).
+1-1. Put `check-windows-aliases.ps1` (Windows) or `check-posix.sh` (macOS/Linux)
+   at project root. Both are control-plane-hashed and locate hooks relative to
+   themselves (`$PSScriptRoot` on Windows).
+2. Copy `AGENTS.md.template` → `AGENTS.md`; fill Project policy with verification/
+   completion criteria, conventions, protected paths, risks/reviews, and external
+   approval criteria. Model exceptions go in local bindings. Copy `CLAUDE.md.template`
+   → `CLAUDE.md`, or add `@AGENTS.md` to an existing file. Claude imports AGENTS.md;
+   Codex reads it directly. On upgrade, consolidate formerly split instructions
+   into AGENTS.md, leaving only the checked import line in CLAUDE.md. No host is
+   named: SessionStart's `HARNESS PLATFORM:` reports
+   `host: claude|codex (ORCHESTRATOR|DELEGATE)`.
+
 2-1. **[Git project installation step]** Add these entries to project `.gitignore`.
    The repository's `.gitignore` has the same entries, ready to copy:
    ```
@@ -549,11 +461,9 @@ shared steps first, followed by platform-specific details.
    .claude/.preflight-status
    .claude/.mission-open/
    ```
-   The first line is crucial: `settings.local.json` accumulates local absolute
-   paths, usernames, scratch paths, and past session lookup traces verbatim.
-   Even if a global user gitignore blocks it, that protection does not travel
-   with the repository and disappears for clone/drop-in targets. The remaining
-   two lines are local evidence left by hooks.
+   `settings.local.json` accumulates local absolute paths, usernames, scratch
+   paths, and session lookup traces. Global gitignore protection does not travel
+   with clones/drop-ins; the other entries are local hook evidence.
 2-1a. Copy `docs/missions/README.md` to the same path. Git projects track
    `docs/missions/` and exclude only raw logs/temporary material. Non-Git projects also preserve Mission documents and exclude
    logs/local settings from sharing:
@@ -563,35 +473,24 @@ shared steps first, followed by platform-specific details.
    ```
 2-2. Copy `docs/platform-notes-macos.md` and/or `docs/platform-notes-linux.md` for
    your platforms. They live outside rules; SessionStart points to them by OS.
-2-3. If using codex, the `AGENTS.md` from step 2 is codex's entry instruction
-   file as it stands: codex automatically reads these role-specific instructions
-   each run (including no delegate commits), providing a second defense if the
-   delegation prompt omits them. Keep it short (quota cost each run). It is the
-   same file Claude Code reads, so nothing separate needs filling.
-   Note: codex reads and concatenates `AGENTS.override.md`/`AGENTS.md` in global
-   `$CODEX_HOME` (default `~/.codex`) **before** project instructions. Like global
-   `config.toml`, this can silently intervene; check for these files first if
-   persistent constraints behave strangely (combined content is truncated at
-   `project_doc_max_bytes`, default 32KiB).
+2-3. Codex reads the shared AGENTS.md each run, including the delegate commit ban;
+   keep it short. Global `AGENTS.override.md`/`AGENTS.md` in `$CODEX_HOME` (default
+   `~/.codex`) precede project instructions; combined content truncates at
+   `project_doc_max_bytes` (default 32KiB). Check these and global `config.toml`
+   first if persistent constraints behave strangely.
+
 2-4. Check [Project protection policy](runtime-boundary.md#project-protection-policy)
    for protected files and allowed external work, and reflect it in Project policy
    and host permissions. A ban on reading `.env.*` may include public examples;
    the current guard does not support force pushes.
-3. Note: project-scoped `.claude/settings.json` allow rules apply **only after
-   accepting the workspace trust dialog**. Accept the first-session trust prompt
-   for codex/agy to run without prompts. Before acceptance, startup warns
-   `Ignoring N permissions.allow entries ...` and the entire allow list is
-   ineffective. Headless-only use (`claude -p`) offers no chance for that dialog,
-   making this easy to miss; check for the warning in smoke test B-3. Conversely,
-   **hooks and `env` apply even before trust**, so prohibitions remain enforced
-   despite the warning (official documentation checked, 2026-08).
-4. Adding `.claude/settings.local.json` to project `.gitignore` is recommended.
-   Claude Code automatically accumulates rules approved with "Yes, don't ask
-   again" in this file each session. In practice it retains local absolute paths,
-   usernames, temporary scratch paths, and sometimes searches/queries, making it
-   unsuitable for committing to a shared repository. The recommended pattern
-   separates `settings.json` (shared, portable) from `settings.local.json`
-   (local only, accumulates each session).
+3. Project `.claude/settings.json` allow rules require workspace trust. Accept
+   the first-session dialog for prompt-free codex/agy; until then,
+   `Ignoring N permissions.allow entries ...` means the entire allow list is
+   ineffective. `claude -p` cannot show the dialog; check smoke test B-3 for the
+   warning. Hooks and `env` still apply before trust, preserving prohibitions.
+4. Separate shared `settings.json` from local `settings.local.json`; exclude
+   `.claude/settings.local.json` per step 2-1. Claude accumulates "Yes, don't ask again" rules each
+   session, including paths, usernames, scratch paths, and searches/queries.
 
 **Method B — user scope (shared across all projects)**
 1. `.claude/settings.json` → `~/.claude/settings.json` (Windows:
@@ -606,43 +505,36 @@ shared steps first, followed by platform-specific details.
    (user-scoped allow rules apply immediately without trust).
 
 **Shared steps (after Method A/B)**
-0-1. **[Git project line endings: no machine setting needed]** The `.gitattributes`
-   entry `* text=auto eol=lf` fixes both repository and working copy to LF, so
-   there is no need to change `core.autocrlf` (attributes take precedence over
-   any value). Check that `git ls-files --eol` has zero `w/crlf` entries; if any
-   exist, re-checkout from a clean tree with `git rm -q --cached -r . &&
-   git reset -q --hard`. See `.gitattributes` comments for evidence (measured
-   2026-09-03).
+0-1. **[Git project line endings: no machine setting needed]** `.gitattributes`
+   sets `* text=auto eol=lf` for repository/worktree, overriding `core.autocrlf`
+   without machine changes. `git ls-files --eol` must show zero `w/crlf` entries;
+   otherwise re-checkout from a clean tree with `git rm -q --cached -r . &&
+   git reset -q --hard`. See `.gitattributes` comments for evidence.
 0. **[Platform preflight]** First run
    `powershell -NoProfile -ExecutionPolicy Bypass -File check-windows-aliases.ps1`
-   on Windows (PS 5.1/7 compatible), or `bash check-posix.sh` on macOS/Linux
-   (bash 3.2 compatible). The POSIX script accepts `--launchers`, `--template-dir`.
-   Template drift compares only installed files and separately counts uninstalled
-   files; it does not check completeness of required installation files. Both are
-   read-only: exit 0 is healthy, 1 is a warning. They also assess hook liveness
-   (self-test) and agy global grants, so fix exit 1 first: a dead hook silently
-   invalidates all prohibitions. Missing codex/agy binaries and write_file grants
-   are INFO because documented fallbacks exist. Windows-specific details below
-   are authoritative for warning causes and permanent replacement. codex-delegate
-   repeats the same checks (SANDBOX HEALTH PROBE / ALIAS CHECK) each session,
-   only reporting `CODEX_UNAVAILABLE: sandbox broken` or `ALIAS_WARNING`, without
-   attempting repair.
-1. Prepare external CLIs (commands below cover installation/updates; documented
-   versions are minimum requirements. Check versions **only for symptoms such as
-   rejected flags**, not every run; agent fallback rules already specify this):
+   (Windows PS 5.1/7) or `bash check-posix.sh` (macOS/Linux, bash 3.2 compatible;
+   accepts `--launchers`, `--template-dir`). Both are read-only: exit 0 healthy,
+   1 warning. Fix exit 1 first; a dead hook invalidates prohibitions. Checks cover
+   hook self-tests and agy grants; missing codex/agy binaries/write_file grants
+   are INFO because fallbacks exist. Drift compares installed files and counts
+   uninstalled ones separately, not installation completeness. See Windows-specific
+   details for warning causes/replacement. Each session, codex-delegate repeats
+   SANDBOX HEALTH PROBE / ALIAS CHECK, reporting only
+   `CODEX_UNAVAILABLE: sandbox broken` or `ALIAS_WARNING`, never repairing.
+
+1. Prepare selected external CLIs (versions are minima; check only for symptoms
+   such as rejected flags, not every run):
    - Codex: `npm install -g @openai/codex`, then `codex login`
-     (update: `npm install -g @openai/codex@latest`).
-     Note: machines with the Codex desktop app may have `[windows] sandbox = "elevated"`
-     in global `~/.codex/config.toml`. With a stale logon session, elevated can
-     intermittently produce `CreateProcessAsUserW failed: 1312`. This harness
-     forces `-c windows.sandbox=unelevated` on every delegated call, so **no global
-     config change is needed** (the desktop app owns that file; leave it alone).
-     Add the same flag if manually running codex outside the harness hits 1312.
-   - Antigravity (only if selected): Install agy and log in (agy must be on PATH).
-     Also configure permissions for headless (`agy -p`) auto-approval in **agy's
-     own global settings**, `~/.gemini/antigravity-cli/settings.json`. This is
-     Antigravity CLI configuration; the harness `settings.json` cannot change it.
-     Minimum configuration:
+     (update: `npm install -g @openai/codex@latest`). Stale logon with desktop-owned
+     `[windows] sandbox = "elevated"` in `~/.codex/config.toml` can cause
+     `CreateProcessAsUserW failed: 1312`. Delegation always overrides with
+     `-c windows.sandbox=unelevated`; use it manually for 1312 too. Do not edit
+     global config.
+   - Antigravity (only if selected): Install/login with agy on PATH. Headless
+     `agy -p` auto-approval needs agy's own
+     `~/.gemini/antigravity-cli/settings.json` (agy global settings), not harness
+     `settings.json`. Minimum configuration:
+
      ```json
      {
        "permissions": { "allow": ["write_file(*)"] }
@@ -655,7 +547,7 @@ shared steps first, followed by platform-specific details.
      `HARNESS_ALLOW_AGY_COMMAND=1` + user approval). Recipe:
      `.claude/skills/delegate-agy/SKILL.md`.
 
-   - **agy grant conclusion** (measured 2026-08-31·09-02, agy 1.1.24): The only
+   - **agy grant conclusion** (agy 1.1.24): The only
      global grant is `write_file(*)`. Narrowing `command(<pattern>)` acts as total
      denial in this version; `agy --sandbox` blocks only commands and adds nothing
      after removing the grant. See `skills/delegate-agy` for evidence/probe methods.
@@ -664,35 +556,24 @@ shared steps first, followed by platform-specific details.
 3. If native workers were installed, check that selected workers load in a new
    session. Confirm the main model/effort match the user's choice. The template
    does not fix them or automatically switch them for budget reasons.
-4. **[Record installation provenance]** After installation/update, leave a short
-   source record in the adopting project. Three items suffice: source template
-   repository revision (commit hash or date), actually copied configuration
-   (included/excluded optional features), and project changes (Project policy,
-   local bindings, permission rules, renamed files). This distinguishes merge
-   targets from changed upstream defaults during the next update. The project
-   chooses the location, such as the bottom of installed CLAUDE.md/AGENTS.md or
-   a paragraph under `docs/`. No separate form, generator, or automatic comparison
-   check is provided.
+4. **[Record installation provenance]** After installation/update, record source
+   revision (commit hash or date), copied configuration (included/excluded
+   options), and project changes (Project policy, local bindings, permissions,
+   renamed files). Use a project-chosen location such as installed
+   CLAUDE.md/AGENTS.md or `docs/`. This identifies future merge targets; no
+   separate form, generator, or automatic comparison check is provided.
 
-### Host-specific execution (2026-09-08)
+### Host-specific execution
 
-When a person starts the conversation in Codex, Codex orchestrates; when they
-start in Claude Code, Claude orchestrates. Terminal, desktop app, and IDE are
-entry methods, not routing criteria. VS Code is one IDE example. Install
-`AGENTS.md.template` as root `AGENTS.md` and `CLAUDE.md.template` as a `CLAUDE.md`
-holding the single `@AGENTS.md` import line. Template filenames themselves do not
-auto-load. The instructions name no host: the `host:` and
-`(ORCHESTRATOR|DELEGATE)` values on the SessionStart (or explicit `start`)
-`HARNESS PLATFORM:` line are this session's host and role. Claude Code falls back
-to AGENTS.md when no CLAUDE.md exists (v2.1.277+), but a CLAUDE.md in any parent
-directory disables that fallback, hence the import stub. An agent assigned work
-by a parent or a launcher child with
-`HARNESS_DELEGATE_RUN=1` is a delegate and receives its task with its role resolved.
-Both launchers directly supply role guidance; delegates skip the Orchestrator
-section, linked onboarding reading, and rerouting. Follow task-relevant project
-rules and platform subsections, but do not reread unchanged supplied documents.
-The procedure below is for orchestrators; `session-role.md` is the shared source
-of truth the entry instructions point to.
+The starting app orchestrates, regardless of terminal/desktop/IDE (including
+VS Code). Install entry files per [Method A](#installation); template names do
+not auto-load. Claude Code falls back to AGENTS.md only when no CLAUDE.md exists
+(v2.1.277+); any parent CLAUDE.md disables it, so retain the import stub.
+SessionStart/explicit `start` reports `host:` and `(ORCHESTRATOR|DELEGATE)` on `HARNESS PLATFORM:`.
+
+Follow `session-role.md`: parent-assigned or `HARNESS_DELEGATE_RUN=1` workers have
+resolved roles; skip Orchestrator onboarding/rerouting, read task/project/platform
+guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
 
 1. If SessionStart output is absent, run
    `python .claude/scripts/harness-session.py start --host <host>` at the root
@@ -707,42 +588,33 @@ of truth the entry instructions point to.
    - When the user says the quota is back, run `python .claude/scripts/harness-session.py budget --session <id> --clear`.
 
 2. First read only "Direct work or delegation" in
-   `docs/orchestration/delegation-matrix.md` to decide direct work versus delegation.
-   For delegation, also read assignment/author-separation sections. If needed,
-   read the route with `python .claude/scripts/harness-route.py --host codex --role implement`.
-   Use `--host claude` on Claude. Use launcher, model, effort, sandbox, and shell
-   paths from the JSON. Shell lookup skips WindowsApps aliases and finds Git Bash.
-   It does not execute work or change global settings. Roles: implement, decide,
-   plan_review, review_gate, review_deep, explore, write, web. Do not call a launcher
-   when small direct work suffices. Select `--tier C` for mechanical implementation,
-   default B for ordinary implementation, `--tier A` for higher judgment needs.
-   For separated roles, `--tier` checks author separation and selects that
-   vendor's tier cell; explore prefers a reader tier with fallback.
-   Decisions, planning, and deep reviews require B or above.
-   `--step 1` is the next implementation ladder step;
-   use only for insufficient reasoning. `--tier` cannot combine with `--step`
-   greater than 0. Implementation, writing, and decide advice assume the
-   orchestrator is the designer by default. If the actual designer differs, pass
-   `--author-vendor <vendor>`. For `plan_review`, `review_gate`, and `review_deep`,
-   always specify the actual author (repeat the flag for coauthors). Select a
-   candidate from a different vendor while retaining the starting host.
-   Example: deep review of a change implemented directly by Codex selects Claude
-   with `--host codex --role review_deep --author-vendor openai`. For Claude-authored
-   code, `--author-vendor claude` selects OpenAI review. Specify the designer for
-   design gates, the implementer for code review. If separate dual reviews are
-   mandatory, verify the two outputs also come from different vendors. No suitable
-   route means unavailable; do not replace cross-verification with self-review.
-3. Put the goal, file scope, preservation of existing changes, constraints,
-   verification, and output contract in a prompt file. If launcher verification
-   is needed, write verification code to a separate file first. Replace MODEL/EFFORT
-   in examples with values just obtained from JSON. Even in PowerShell, execute
-   `.sh` with Git Bash, not the WindowsApps WSL bash alias. If Claude route effort
-   is null/unspecified, omit `-e`. Explicit `-m` without `-e` uses CLI defaults
-   without mixing in implementation defaults. The launcher cannot observe effective
-   effort and reports `unspecified`.
+   `docs/orchestration/delegation-matrix.md`;
+   also assignment/author-separation sections if delegating. Small direct work
+   needs no launcher. Get routes with
+   `python .claude/scripts/harness-route.py --host codex --role implement`
+   (`--host claude` on Claude). Use JSON launcher/model/effort/sandbox/shell paths;
+   lookup skips WindowsApps for Git Bash without executing work/changing settings.
+   Roles: implement, decide, plan_review, review_gate, review_deep, explore, write, web.
+   Use `--tier C` for mechanical work, default B for ordinary implementation,
+   `--tier A` for higher judgment; decisions/planning/deep reviews require B+.
+   Separated-role `--tier` enforces author separation and vendor tier cells;
+   explore prefers reader tiers with fallback. `--step 1` advances implementation
+   only for insufficient reasoning; `--tier` cannot combine with `--step` > 0.
+   Implement/write/decide assume the orchestrator designed the work; otherwise
+   pass `--author-vendor <vendor>`. Always specify actual authors for `plan_review`,
+   `review_gate`, `review_deep` (repeat for coauthors): designer for design gates,
+   implementer for code review. Keep the host and select a different vendor:
+   `--host codex --role review_deep --author-vendor openai` selects Claude;
+   `--author-vendor claude` selects OpenAI. Mandatory dual reviews must also use
+   different vendors. No suitable route means unavailable, never self-review.
 
-   Short prompt example for an implementation task with a closed scope. Include
-   only decisions the worker needs, without copying background or all rules.
+3. Write goal, scope, existing-change preservation, constraints, verification, and
+   output contract to a prompt file; write any launcher verifier separately first.
+   Use routed JSON values for MODEL/EFFORT. Run `.sh` with Git Bash even from
+   PowerShell, never WindowsApps WSL bash. For null/unspecified Claude effort,
+   omit `-e`; explicit `-m` without `-e` uses CLI defaults, not implementation
+   defaults. Effective effort is unobservable and reported `unspecified`.
+   Include only needed decisions, not all background/rules, for example:
 
    ~~~text
    Goal: Fix reports.py monthly totals subtracting refund (negative amount) rows twice.
@@ -762,27 +634,19 @@ bash .claude/scripts/codex-run.sh -p task.txt -m MODEL -e EFFORT -s workspace-wr
 bash .claude/scripts/claude-run.sh -p fetch-task.txt -m MODEL -e EFFORT -a web -s read-only
 ```
 
-The Claude launcher excludes Agent/Task from default implementation tools and
-explicitly supplies delegate instructions. `-a web` provides only WebFetch.
-Run read-only reviews with `-s read-only` (plan mode). `-v` is a verification
-script path, not a shell command string. The launcher keeps the verifier bytes
-read before startup in its own memory and fails verification if the original
-changed, so the worker cannot change the grader. Claude CLI JSON
-errors/empty results are FAILED. For both Codex/Claude, verification failure is
-FAILED even if the model process exits 0; the launcher returns nonzero.
+Claude implementation excludes Agent/Task and supplies delegate instructions; `-a web`
+exposes only WebFetch. Run read-only reviews with `-s read-only` (plan mode). `-v` requires a script
+path, not a command string. The launcher retains pre-start verifier bytes in memory and
+fails if the original changes. Claude JSON errors or empty results are FAILED; both
+launchers fail nonzero on verification failure even when the model exits 0.
 
-**Web reads: tool availability and permission are separate.** Claude's `-a web` leaves
-only WebFetch for the worker, but having the tool does not mean permission to
-fetch a domain. Delegated runs operate without permission prompts, so requests
-to domains without allow rules are denied immediately; workers report without
-having read the contents. Prepare as follows:
+**WebFetch availability is not domain permission.** Delegates cannot prompt:
+unallowed domains are immediately denied and workers report without reading.
 
-Claude can use the native `haiku-fetcher`; its process route carries the same
-reader rules and requests a structured summary
-and source list. The launcher reports `FAILED` for WebFetch permission denials,
-missing/malformed results or sources reported as unfetched. `WEB_FETCH` explains
-the reason; it is not a proof that every source claim or summary is correct.
-Review the reported sources against the task. This uses the host's WebFetch
+Claude's native `haiku-fetcher` and process reader share rules; the process route
+requests a structured summary/source list. Permission denials, missing/malformed
+results, and unfetched sources are `FAILED`; `WEB_FETCH` explains why, without proving
+source/summary accuracy. Check sources against the task. This uses host WebFetch
 permissions, not a general network sandbox.
 
 - Add only domains actually needed to project `.claude/settings.json`
@@ -824,43 +688,27 @@ permissions, not a general network sandbox.
 | Delegation result evidence | SubagentStop + launcher | Launcher + explicit HEAD/status/diff checks |
 | Completion verification | Stop, explicit finish if marker remains | Stop, explicit finish if marker remains (failure persists after continuation limit) |
 
-Codex AGENTS.md loading and SessionStart stdout delivery into developer context
-follow the [official instruction documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
-and [official hook documentation](https://learn.chatgpt.com/docs/hooks) (checked
-2026-09-08). Verify actual hook firing separately in each environment after
-client/engine version and trust registration checks. This is separate from role
-selection by starting app. Explicit start/finish supplements missing lifecycle
-handling but does not replace the PreToolUse guard. Do not label environments
-verified when automatic hook enforcement has not been verified.
+For Codex AGENTS.md and SessionStart developer-context delivery, see
+[official instruction documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+and [official hook documentation](https://learn.chatgpt.com/docs/hooks).
+After client/engine/trust checks, verify automatic hook firing per environment;
+this is separate from role selection. Explicit start/finish supplements missing
+lifecycle handling but does not replace the PreToolUse guard. Never label untested
+enforcement verified. Installation checks cover entry/import files and routing;
+regressions: [Maintenance guide](harness-maintenance.md).
 
-Installation checks cover the entry instructions (AGENTS.md and the import line
-in CLAUDE.md) and the relevant routing scenarios. The former norm-marker pairing
-was removed when the two files became one (2026-09-28).
-For harness regressions, follow [Maintenance guide](harness-maintenance.md).
-
-Measured (2026-09-08): In a Codex-orchestrated change task, both instructions were
-installed in an independent temporary repository and implementation delegated
-using the Claude B binding. Claude responded as DELEGATE, created only
-`greeting.py`, and exited without redelegation or commits. Both the parent
-launcher's `verify.sh` and parent re-verification passed, as did `finish`
-(launcher 46 seconds). Child Bash verification was denied because the new
-repository lacked trust registration, but parent verification confirmed results.
-This observation does not prove VS Code automatic hook firing. Scratch paths
-under `.claude/` are classified as sensitive, so run real-model smoke tests in
-independent temporary repositories outside it. Do not automatically register
-configuration trust or add permission-bypass flags.
+The measured 46-second Codex → Claude B run created only `greeting.py`, without commits/
+redelegation; parent `verify.sh`, re-verification, and `finish` passed despite
+untrusted child Bash denial. It does not prove VS Code hooks. Run model smoke
+tests outside sensitive `.claude/` in independent temporary repositories;
+never auto-register trust or add bypass flags.
 
 ### Codex host (hook mirror and trust registration)
 
-For installations using codex, complete this section to establish guards.
-`.codex/hooks.json` ships with the repository: SessionStart calls
-`session_preflight.py`, PreToolUse calls `deny_dangerous.py --host codex`, and
-Stop calls `stop_gate.py --host codex`. Decision logic uses the same files as
-Claude. The hook absorbs two PreToolUse input differences: codex file writes
-arrive as `apply_patch` patch envelopes, and `codex exec` is itself the main
-session, so payloads lack `agent_id`. For the latter, `codex-run.sh` exports
-`HARNESS_DELEGATE_RUN=1` to mark delegation (manually started codex sessions lack
-the marker and are treated like main Claude sessions).
+Establish Codex guards through `.codex/hooks.json`, sharing Claude's decision
+files: SessionStart → `session_preflight.py`, PreToolUse →
+`deny_dangerous.py --host codex`, Stop → `stop_gate.py --host codex`.
+Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
 
 1. **Trust registration (once per machine, interactive)**: Start `codex` at the
    repository root and trust all four entries (SessionStart, PreToolUse,
@@ -868,72 +716,56 @@ the marker and are treated like main Claude sessions).
    `~/.codex/config.toml` as
    `[hooks.state.'<absolute hooks.json path>:<event>:0:0'] trusted_hash`.
 2. **Detect Python during installation**: Run
-   `bash .claude/scripts/gen-codex-hooks.sh --force` on the target machine, then
-   register trust. The generator tries `python3`, then `python`, verifies that
-   Python 3 actually runs, and writes absolute interpreter and project paths.
-   An explicit `--python <exe>` is validated too. Regenerate on each machine;
-   generated paths are machine-specific. The distributed defaults use `python3`
-   on macOS/Linux and `python` via `commandWindows` on Windows.
-   Detection happens during generation, not on every hook invocation, so the
-   generated commands do not depend on the desktop app inheriting your shell's
-   PATH. If detection fails, the existing definition is left unchanged. Run the
-   generator again after moving the project or changing the Python installation
-   path, then retrust the changed hooks with `/hooks`. Keep machine-specific
-   generated paths out of the distributable template.
-   **Upgrade note:** this update changes the distributed hook definitions.
-   After upgrading, regenerate for the target machine and retrust with `/hooks`,
-   even if the hooks were trusted before the update.
+   `bash .claude/scripts/gen-codex-hooks.sh --force`, then register trust. It tries
+   `python3`, then `python`, validates Python 3 (also for `--python <exe>`), and
+   writes absolute interpreter/project paths. Failure leaves definitions unchanged.
+   Regenerate per machine, project move, Python path change, or distributed
+   definition upgrade; retrust via `/hooks` even if previously trusted. Keep
+   generated paths out of the distributable template. Defaults use `python3` on
+   macOS/Linux and `python` via `commandWindows` on Windows. Installation-time
+   detection avoids dependence on the desktop app's inherited shell PATH.
+
 3. **Three layers of checks**:
-   - `check-posix.sh` / `check-windows-aliases.ps1` read installed
-     `.codex/hooks.json` events and check that registration entries exist. They
-     do not check current definition hashes, enabled state, or actual execution,
-     so retrusting after definition changes remains separate. `test_host_routes.py`,
-     run by both installation checks, also detects missing Claude configuration
-     wiring for `UserPromptSubmit -> stop_gate.py --new-prompt`.
-   - **Before execution**, `codex-run.sh` asks the installed Codex app-server's
-     `hooks/list` API whether every configured project handler is enabled and
-     trusted for its current definition. Modified/untrusted/disabled/missing
-     handlers, a disabled hooks feature, unsupported APIs and inconclusive queries
-     are refused with exit 4. This checks effective configuration, not whether
-     each hook will run successfully. A deliberately unguarded run still requires
-     explicit authorization for `HARNESS_ALLOW_UNTRUSTED_HOOKS=1`.
-   - After execution, observe only full status lines matching
-     `hook: <Event> Completed|Blocked|Failed` (LF/CRLF). Any `Failed` produces
-     `HOOKS_FAILED:`; events with no status line produce `HOOKS_UNKNOWN:` (hook
-     state cannot be established). Document quotations/line numbers are excluded,
-     but a tool printing an old status line verbatim cannot be distinguished.
-     Thus this report is **supplementary observation**, not proof of actual hook
-     execution, guard application, or trust configuration errors. It does not
-     change exit codes or add automatic re-verification/retries. Pre-execution
-     trust checks remain separate.
-4. **Delegate identity**: Both launchers (`codex-run.sh`, `claude-run.sh`) export
-   `HARNESS_DELEGATE_RUN=1` to children. Both `codex exec` and `claude -p` are
-   their own main sessions and have no payload `agent_id`; without this marker,
-   subagent-scoped rules (no commits/pushes/control-plane writes) would not apply
-   to delegates. Manually started sessions lack the marker and are orchestrators.
-   `HARNESS_ALLOW_CONTROL_PLANE=1` (approved harness-development delegation)
-   lifts **only the control-plane prohibition**, retaining commit/push bans:
-   launcher postflight cannot undo a push already made by a delegate.
-   Files under a `template/` folder at the project root (a copy of the harness
-   kept as content, for example a public template submodule) are not this
-   project's live control plane, and delegates can edit them without approval
-   (`TEMPLATE_DIRS` in `deny_dangerous.py`). The live hooks always load from the
-   outer `.claude/`; open the outer project as root when editing such a copy.
-   Opening the copy itself as root activates its own hooks and the same
-   protection. The exception uses real disk paths (realpath) and fails
-   closed on uncertainty: it does not apply to links/junctions pointing outside,
-   relative paths after `cd` other than simple `cd <existing directory>` (`cd -`,
-   `cd ~`, failed cd, after `||`), or copies without a `template/` folder. Ignore
-   `cd` inside pipelines, roll back `cd` effects in lists ending with `&`, and
-   disable the exception after unclassified separators such as `;;`. Apply
-   control-plane patterns to both raw paths and paths resolved against cwd.
+   - `check-posix.sh` / `check-windows-aliases.ps1` check `.codex/hooks.json`
+     events/registration entries, not hashes, enabled state, or execution.
+     Retrust changed definitions separately. Both run `test_host_routes.py`,
+     which detects missing `UserPromptSubmit -> stop_gate.py --new-prompt` wiring.
+   - Before execution, `codex-run.sh` queries app-server `hooks/list`: every
+     configured handler must be enabled/trusted for its current definition.
+     Modified/untrusted/disabled/missing handlers, disabled hooks, unsupported APIs,
+     and inconclusive queries exit 4. This checks configuration, not successful
+     execution. Unguarded runs require explicit `HARNESS_ALLOW_UNTRUSTED_HOOKS=1`
+     authorization.
+   - After execution, only full `hook: <Event> Completed|Blocked|Failed` lines
+     (LF/CRLF) count: `Failed` → `HOOKS_FAILED:`, missing → `HOOKS_UNKNOWN:`.
+     Quotes/line numbers are excluded, but tools can print indistinguishable old
+     status lines. This supplementary report proves neither execution, guard
+     application, nor trust errors; it changes no exit codes or retries/checks.
+     Pre-execution trust checks remain separate.
+
+4. **Delegate identity**: `codex-run.sh` and `claude-run.sh` export
+   `HARNESS_DELEGATE_RUN=1`; `codex exec`/`claude -p` are main sessions without
+   `agent_id`, so this marker applies delegate commit/push/control-plane bans.
+   Manual sessions lack it and orchestrate. Authorized
+   `HARNESS_ALLOW_CONTROL_PLANE=1` lifts only control-plane protection, never
+   commit/push bans; postflight cannot undo pushes.
+   Root `template/` content is not live control plane (`TEMPLATE_DIRS` in
+   `deny_dangerous.py`); delegates may edit without approval. Open the outer
+   project so hooks load from its `.claude/`; opening the copy activates its own
+   protections. The realpath exception fails closed: no outside links/junctions,
+   copies without `template/`, or relative paths after anything except simple
+   `cd <existing directory>` (excluded: `cd -`, `cd ~`, failed cd, after `||`).
+   Ignore `cd` inside pipelines; roll back any `cd` effects in lists ending with `&`; and disable
+   the exception after unclassified separators such as `;;`. Check raw and
+   cwd-resolved paths against control-plane patterns.
+
 5. **Stop gate**: `.claude/.stop-gate` is removed only after verification passes.
    If the marker remains after execution, both launchers report
    `STOP_GATE_UNSATISFIED` and `STATUS: FAILED(stop-gate unsatisfied…)`. The Codex
    Stop branch requests continuation only once, then stops (avoiding infinite
    loops); launcher checks prevent interpreting an unsatisfied gate as success.
 
-Properties to note (all measured, Codex CLI 0.152.1/0.153.2 · 2026-09-04):
+Hook properties (Codex CLI 0.152.1/0.153.2):
 - **Changing definitions breaks trust, silently.** Hook lines simply disappear
   without warnings: a dead guard and absent hook look identical in output.
   Always retrust through `/hooks` after editing `.codex/hooks.json`.
@@ -977,76 +809,66 @@ in pwsh 7 (powershell 5.1 fallback garbles CJK). For intermittent 1312 from stal
 logon, restart the Codex desktop app or reboot.
 
 **python3 alias issue**: **On Windows, use `python` or `py`, not `python3`.**
-Note: **App Installer updates regenerate alias stubs** (measured 2026-08-21:
-an update restored a deleted stub and the Store popup recurred). File deletion
-is temporary and resets with updates. **Some versions show no Python entry at
-all in the Settings app execution alias list** (measured 2026-09: App Installer's
-python redirector absent from the toggle list). The durable solution is to
-**create `python3.exe` in the actual Python folder and win through PATH priority**:
+**App Installer updates regenerate alias stubs**, so deletion is temporary.
+Some versions omit Python from the Settings app execution alias list. Durable
+fix: **create `python3.exe` in the actual Python folder and prioritize its PATH**:
 `copy %LOCALAPPDATA%\Programs\Python\Python3XX\python.exe
-%LOCALAPPDATA%\Programs\Python\Python3XX\python3.exe`. Regenerated stubs then
-remain harmless at lower priority, and `python3` actually works (measured:
-3.12.10 executed normally). Diagnose recurrence with `check-windows-aliases.ps1`.
-Keep the delegation-prompt rule standardizing `python`/`py` for other machines
+%LOCALAPPDATA%\Programs\Python\Python3XX\python3.exe`. Regenerated stubs remain
+lower priority (`python3` verified with 3.12.10). Diagnose recurrence with
+`check-windows-aliases.ps1`; retain `python`/`py` in delegate prompts for machines
 without this shim.
 
-**Verification failures inside the sandbox**: In a 2026-09-15 sample experiment,
-even with normal PowerShell, Python 3.14 `TemporaryDirectory` access and Git Bash
-`CreateFileMapping` failed with permission errors inside Codex `workspace-write`.
-Changing only the temporary folder location produced the same error; the same
-checks passed in the parent environment. This is an observation for this
-environment, not a claim that all installations fail. On these errors, return
-the implementation and failed command to the parent. The parent decides whether
-it can verify with existing permissions. Workers must not expand scope by
-changing ACLs/sandbox settings or repeatedly cleaning temporary files.
+**Verification failures inside the sandbox**: Python 3.14 `TemporaryDirectory`
+access and Git Bash `CreateFileMapping` can fail with permission errors in Codex
+`workspace-write` even with normal PowerShell. Changing the temporary location
+did not help; parent checks passed. This observation is environment-specific.
+Return changes and the failed command to the parent, who decides whether existing
+permissions allow verification. Workers must not change ACLs/sandbox settings or
+repeatedly clean temporary files.
 
 ### macOS
 
-SessionStart points to `docs/platform-notes-macos.md` for reading before work.
-Launchers require bash 4 or later and GNU coreutils `timeout`; hooks require
-unversioned `python`. Launchers started under bash 3.2 re-exec into a
-Homebrew bash, so PATH order does not matter for them. Install commands and why
-a `gnubin` entry is optional are in
-[Dependencies](dependencies.md#bash--4-and-gnu-timeout). `check-posix.sh`
-detects these three items. The support table classifies macOS as partially
-verified.
+SessionStart points to `docs/platform-notes-macos.md` for reading before work. Launchers
+require bash 4 or later and GNU coreutils `timeout`; hooks require unversioned `python`. Launchers started under bash 3.2 re-exec into a Homebrew bash, so PATH order does not
+matter for them. Install commands and why a `gnubin` entry is optional are in
+[Dependencies](dependencies.md#bash--4-and-gnu-timeout). `check-posix.sh` detects these
+three items. The support table classifies macOS as partially verified.
 
 ### Linux (partial verification by environment and item)
 
-SessionStart points to `docs/platform-notes-linux.md`. Install `python-is-python3`
-for hooks and run `check-posix.sh`. Hooks/launchers have verification records on
-Ubuntu 24.04 LTS aarch64 (2026-09-04). The isolation lane is unavailable on this
-native host. This does not imply verification of other distributions/architectures;
-platform notes are authoritative for per-item observations and unverified scope.
+SessionStart points to `docs/platform-notes-linux.md`. Install `python-is-python3` for
+hooks and run `check-posix.sh`. Hooks/launchers have verification records on Ubuntu
+24.04 LTS aarch64. The isolation lane is unavailable on this native host. This does not
+imply verification of other distributions/architectures; platform notes are
+authoritative for per-item observations and unverified scope.
 
 ### WSL2
 
-Follow `## WSL2 isolation lane usage` and the lane-sensitive entry section. Clones
-under `/mnt/` need `safe.directory`; `check-posix.sh` prints the exact command.
-Enter with `wsl -u <user> bash -lc`.
+Follow `## WSL2 isolation lane usage` and the lane-sensitive entry section. Clones under
+`/mnt/` need `safe.directory`; `check-posix.sh` prints the exact command. Enter with
+`wsl -u <user> bash -lc`.
 
 ### Identifier audit before publication
 
 Before publishing or pushing a harness copy, search the tracked tree for personal
-identifiers such as usernames, machine names, home paths, IPs, and e-mail domains
-with `git grep -n -i -P -f <pattern-file>`. A pattern file containing your username
-or domain must not be tracked; keep it in a local gitignored file. Run the same
-check in acceptance scripts. This is a procedure, not a script included in the
-template.
+identifiers such as usernames, machine names, home paths, IPs, and e-mail domains with
+`git grep -n -i -P -f <pattern-file>`. A pattern file containing your username or
+domain must not be tracked; keep it in a local gitignored file. Run the same check in
+acceptance scripts. This is a procedure, not a script included in the template.
 
 ### Local endpoint connection procedure (optional)
 
-Declare base_url, model (a fixed model id or `auto`), and wire: chat in local bindings' vendors.local.endpoint.
-Specify max_tokens and max_input_chars when needed. Keep addresses/models in
-untracked local project settings and check where data is sent. Set the request
-timeout with `local-run.sh -t seconds` (default 300, range 1~570);
-`endpoint.timeout_ms` is unsupported. `-n` (default 40) is the target summary
-line count, passed in requests and applied when saving responses. Model-specific
-`max_tokens` remains a separate ceiling.
+Declare base_url, model (a fixed model id or `auto`), and wire: chat in local bindings'
+vendors.local.endpoint. Specify max_tokens and max_input_chars when needed. Keep
+addresses/models in untracked local project settings and check where data is sent. Set
+the request timeout with `local-run.sh -t seconds` (default 300, range 1~570);
+`endpoint.timeout_ms` is unsupported. `-n` (default 40) is the target summary line
+count, passed in requests and applied when saving responses. Model-specific `max_tokens`
+remains a separate ceiling.
 
-Do not connect at session startup. Send one chat request when actually selecting
-local reads; `auto` first queries the declared endpoint's models list. Input is a
-project file list with optional line ranges/literal searches.
+Do not connect at session startup. Send one chat request when actually selecting local
+reads; `auto` first queries the declared endpoint's models list. Input is a project file
+list with optional line ranges/literal searches.
 
 ```sh
 bash .claude/scripts/local-run.sh -i inputs.json -p prompt.txt
@@ -1070,42 +892,36 @@ limits, and failure categories, follow
 - If actual costs/delays repeatedly miss expectations, inspect existing execution
   records and `TIMING`. Do not treat older measurements as current performance.
 
-Personal settings such as subscription plans and global output preferences are
-optional. Adopting the template does not require copying another user's global
-`CLAUDE.md` or account settings. When changing model routes, use existing
-`model-bindings.local.json` and check support in the current CLI.
+Personal settings such as subscription plans and global output preferences are optional.
+Adopting the template does not require copying another user's global `CLAUDE.md` or
+account settings. When changing model routes, use existing `model-bindings.local.json`
+and check support in the current CLI.
 
 ## Checks after CLI updates
 
-Check installation with `check-windows-aliases.ps1` on Windows or `check-posix.sh`
-on POSIX. Normal project work uses that project's verification commands. If
-changing the harness itself or CLI integration, select affected checks from the
-template repository's [Maintenance guide](harness-maintenance.md). A CLI update
-alone does not require full regressions/paid delegation every time.
+Check installation with `check-windows-aliases.ps1` on Windows or `check-posix.sh` on
+POSIX. Normal project work uses that project's verification commands. If changing the
+harness itself or CLI integration, select affected checks from the template repository's
+[Maintenance guide](harness-maintenance.md). A CLI update alone does not require full
+regressions/paid delegation every time.
 
-For Codex shell execution failures, the optional `check-codex-sandbox.sh` tool
-can diagnose the issue. This diagnostic calls a real model. After hook definition
-changes, the user retrusts through `/hooks`. Necessary real delegation checks
-must also inspect file changes and verification results.
+For Codex shell execution failures, the optional `check-codex-sandbox.sh` tool can
+diagnose the issue. This diagnostic calls a real model. After hook definition changes,
+the user retrusts through `/hooks`. Necessary real delegation checks must also inspect
+file changes and verification results.
 
 ## Verification and reconsideration
 
-Current verification conditions are authoritative in
-`.claude/rules/verification-tiering.md`, plan-review conditions in
-`plan-check-gate.md`, and guard-change procedures in
-`skills/verify-safety-guard/SKILL.md`. For ordinary work, start with affected
-behavior checks and diff inspection; add independent review according to failure
-consequences or project requirements. Review defaults to once, at most twice
-including checking fixes for unresolved blockers.
+Follow `.claude/rules/verification-tiering.md`, `plan-check-gate.md`, and
+`skills/verify-safety-guard/SKILL.md` for verification, plan reviews, and guard changes.
+Start with affected behavior checks/diff inspection; add independent review by
+consequences/project requirements. Default once, maximum twice including
+unresolved-blocker fixes.
 
-When changing execution routes/evidence collection, compare real artifacts and
-reports for that route. Use real delegation for CLI integration issues not
-resolved by existing fixtures/reproductions. Do not mandate paid delegation
-drills, full checks, or LLM reviews for document edits or every commit. Reuse
-existing verification evidence when relevant inputs are unchanged.
-
-Pair each acceptance item with observable evidence. Below is an example for a
-project with import/report CLIs; the correspondence matters, not the format.
+For route/evidence changes, compare actual artifacts/reports. Use real delegation for
+CLI integration questions unresolved by fixtures/reproductions; do not require paid
+drills, full checks, or LLM reviews for document edits/every commit. Reuse evidence with
+unchanged relevant inputs. Pair acceptance with observable evidence, for example:
 
 | Acceptance item | Evidence to check |
 |---|---|
@@ -1113,33 +929,29 @@ project with import/report CLIs; the correspondence matters, not the format.
 | Reimporting the same file does not store duplicates | Row-count query result after running twice |
 | Monthly report totals reflect only valid rows even with invalid rows present | Compare actual output from import → report execution against expected totals |
 
-If changes affect cross-module behavior, select a check of that connection as in
-the last row. Individual module passes do not prove combined results. Evidence
-is the command run and its result, not a summary like "passed." If worker reports
-conflict with actual files/check results, follow actual results. Leave work
-incomplete if mandatory checks cannot run.
+Check cross-module connections: individual passes do not prove combined results. Report
+commands/results, not just "passed"; actual files/checks override conflicting worker
+reports. Mandatory checks that cannot run leave work incomplete.
 
-Review input composition and effort selection also follow `verification-tiering.md`.
-Provide changed sections, surrounding code needed for judgment, applicable
-contracts, and verification summaries; choose settings matching the question.
-For example, consider `plan_review --tier B` for a closed-scope planning question.
-Retain minimum required capability and independence; do not select full context
-or high effort solely because many files exist.
+For reviews, follow `verification-tiering.md`: provide changed sections, necessary
+surrounding code, contracts, and verification summaries. Match effort to the question
+(e.g. `plan_review --tier B` for closed-scope planning), preserving
+capability/independence floors. File count alone does not justify full context or high
+effort.
 
-Reconsider affected policies when repeated failures/delays or shared-contract
-defects are observed. Evidence includes artifact mismatches, rework, and user
-intervention, not only guard-denial logs. Do not defer fixing clear defects until
-an incident in a consuming project. Conversely, do not endlessly explore
-hypothetical bypasses or add one project's domain constraints to the shared template.
+Reconsider affected policies for repeated failures/delays or shared-contract defects,
+including artifact mismatches, rework, and user intervention—not just guard denials. Fix
+clear defects without waiting for a consuming-project incident; do not endlessly explore
+hypothetical bypasses or add project domain constraints.
 
 ## Features not enabled by default
 
-Broad shell-bypass analysis, automatic command rewriting, time-limited approval
-files, startup usage/server detection, full memory inspection for every native
-delegation, and log deletion at delegation startup are outside the default
-contract. The adopting project chooses additional isolation and auditing.
+Broad shell-bypass analysis, automatic command rewriting, time-limited approval files,
+startup usage/server detection, full memory inspection for every native delegation, and
+log deletion at delegation startup are outside the default contract. The adopting
+project chooses additional isolation and auditing.
 
-## Known limitations (candid disclosure)
+## Known limitations
 
 - Usage limits/credit/billing errors do not trigger the fallbackModel chain.
   This harness handles exhausted credits through a "protocol" (manual switching
@@ -1179,48 +991,30 @@ contract. The adopting project chooses additional isolation and auditing.
   silently fail. `--dangerously-skip-permissions` is also a NO-OP in `-p` mode
   and does not help.
 
-## WSL2 isolation lane — two-layer defense demonstration (2026-09-01 end-to-end test)
-
-Defenses were measured in a practical scenario: summarizing a fake external
-document containing injection in the lane. Results:
-- **Layer 1 (model judgment)**: The model detected/rejected embedded injection
-  (read an outside file and expose it at the top of the summary + POST to an
-  attacker webhook). It refused again when commanded directly with a fake
-  "authorized escape test" authorization.
-- **Layer 2 (OS sandbox, independent of model judgment)**: Direct measurement
-  with neutral framing showed external networking **deny-all** (both neutral
-  api.github.com and attacker domain blocked) and **writes outside the workspace
-  blocked**.
-- **Important nuance**: Outside-file **reads are allowed by default** (the canary
-  was read). Network deny-all, not read restrictions, actually prevents exfiltration.
-  If real secrets (such as `.credentials.json` in the same WSL user's home) and
-  untrusted content coexist in this lane, opening even one network allowlist
-  route can allow leakage through it. Mitigation: keep
-  `sandbox.network.allowedDomains` empty for sensitive work (retain deny-all),
-  or restrict reads with `sandbox.filesystem`/credential masking. The first
-  defense is to keep unnecessary secrets out of the lane user's home.
-
 ## WSL2 isolation lane usage (optional execution environment for untrusted content)
 
-For configuration and demonstration details, see the sandboxing section above
-(2026-09-01 experiment). In brief: Claude Code runs with `sandbox.enabled` in
-the `~/harness-sbx-exp` clone (lane user's home), blocking writes outside the
-workspace and external networking at the OS level (bubblewrap). Use optionally
-only for high-risk work with untrusted content, such as bulk external-document
-analysis; ordinary work runs on the Windows host.
+Claude Code uses `sandbox.enabled` in the lane user's `~/harness-sbx-exp` clone.
+Use optionally only for high-risk untrusted content, such as bulk document
+analysis; ordinary work runs on Windows.
+
+**Observed defense layers**: Model judgment refused disclosure/exfiltration;
+bubblewrap independently denied networking (including api.github.com) and
+outside-workspace writes. Reads remain allowed: one network allowlist route can
+leak secrets such as `.credentials.json`. Keep unnecessary secrets out of the
+lane user's home; for sensitive work keep `sandbox.network.allowedDomains`
+empty or restrict reads with `sandbox.filesystem`/credential masking.
 
 - **Entry**: From a Windows terminal,
   `wsl -u <lane user> bash -lc "cd ~/harness-sbx-exp && claude"`
 - **Sync before work** (lane ← Windows): The local clone receives **only committed
   state** from Windows, so commit on Windows first. Then run
   `wsl -u <lane user> bash -lc "cd ~/harness-sbx-exp && git pull origin main"`
-  (origin = `/mnt/d/...` local path; no remote authentication needed. Measured
-  2026-09-01).
+  (origin = `/mnt/d/...` local path; no remote authentication needed).
 - **Retrieve after work** (Windows ← lane): Commit artifacts in the lane, then
   on Windows (Git Bash), run
   `git fetch //wsl.localhost/<distribution>/home/<lane user>/harness-sbx-exp main`
-  (UNC **must use forward slashes**; MSYS consumes backslashes. Measured
-  2026-09-01). Review FETCH_HEAD, then merge/cherry-pick. These artifacts come from
+  (UNC **must use forward slashes**; MSYS consumes backslashes). Review FETCH_HEAD,
+  then merge/cherry-pick. These artifacts come from
   untrusted content; review and merge retrieval diffs under verification-tiering
   just like delegated artifacts. Do not push from the lane to origin (standard
   git behavior rejects pushes to a checked-out branch in a non-bare repository).
@@ -1231,7 +1025,7 @@ analysis; ordinary work runs on the Windows host.
   This helper forcibly injects `.claude/sandbox-sensitive.json` via `--settings`:
   network `allowedDomains: []` + `strictAllowlist: true`,
   `failIfUnavailable: true` (refuse startup on sandbox initialization failure
-  instead of falling back to unsandboxed execution; confirmed by measurement),
+  instead of falling back to unsandboxed execution),
   `allowUnsandboxedCommands: false`, `excludedCommands: []`,
   `filesystem.denyRead` (`~/.claude`, `~/.ssh`, `~/.aws`, `~/.codex`, `~/.gemini`,
   `~/.config/gh`, `~/.netrc`) + `credentials` (deny the same files and
@@ -1247,20 +1041,22 @@ analysis; ordinary work runs on the Windows host.
   inconclusive and refuse entry. Unknown runtime output also refuses entry.
   These two probes do **not** prove every egress path is closed. The response
   marker follows [Anthropic's proxy implementation](https://github.com/anthropics/sandbox-runtime/blob/main/src/sandbox/http-proxy.ts).
-  Historical 2026-09-01/02 results used the old probe and do not validate this
-  parser. On 2026-09-23, fixtures and a real WSL2 Ubuntu / Claude Code 2.1.252
-  run passed both probes. The existing lane's network/write settings matched the
-  template. This does not validate all read/credential rules or every egress path.
+  Old-probe results do not validate this parser. Fixtures and real WSL2 Ubuntu /
+  Claude Code 2.1.252 passed both probes with template-matching network/write
+  settings; this does not validate all read/credential rules or every egress path.
+
 - **Lane maintenance**: A lane unused for a while only needs pre-work sync. For
-  rebuilding on another machine, see the sandboxing section for four setup
+  rebuilding on another machine, see §5 Sandboxing in
+  [Linux notes](platform-notes-linux.md) for four setup
   requirements (regular user, socat, python-is-python3, safe.directory). Install
   with `curl -fsSL https://claude.ai/install.sh | bash` + `/login`.
 
-> These measurements describe the tested configuration, not current default hook
-> costs. Guard scope and check procedures from other configurations are not current
+> Measurements describe tested configurations, not current hook costs or
 > instructions. Follow [Runtime boundary](runtime-boundary.md) for current behavior.
 
-## Appendix: Measured route profiles (measurement date per tag; update tags when remeasuring)
+## Appendix: Measured route profiles
+
+Keep a measurement date per tag; update tags when remeasuring.
 
 Follow [runtime-boundary.md](runtime-boundary.md) for the current execution boundary,
 and the [bindings JSON](../.claude/model-bindings.json) for current model-selection
@@ -1268,11 +1064,10 @@ figures, sources, and measurement dates.
 
 ## Appendix: direct codex exec recipes (outside the launcher)
 
-Launcher `codex-run.sh` handles all of the following deterministically, so these
-recipes are unnecessary for routine delegation. Consult only when modifying the
-launcher, experimenting with unsupported flags, or manually running codex on
-another machine. `codex exec` is absent from `permissions.allow`, so direct calls
-go through permission prompts/classification.
+`codex-run.sh` handles these recipes. Consult only for launcher changes,
+unsupported-flag experiments, or manual execution elsewhere, not routine delegation.
+Direct `codex exec` is absent from `permissions.allow` and requires permission
+prompts/classification.
 
 - **Minimum version**: codex-cli ≥ 0.144 (`<stdin>` blocks/sandbox flags).
   Current measured version: 0.152.1.
@@ -1288,31 +1083,26 @@ go through permission prompts/classification.
   - SHELL-SAFETY: Never interpolate task text into shell arguments: `$()`,
     backticks, and quotes execute in the shell before codex runs. stdin also
     bypasses the Windows 32K command-line limit.
-  - STDIN RULE: stdin must be redirected from a **real file** or closed with
-    `</dev/null`. An open pipe (nested `bash -c`, some harness shells) hangs
-    forever after "Reading additional input from stdin..." before model execution
-    (CPU 0%, no session log). This message also appears in normal runs and is not
-    itself a failure signal; only the endless wait is a problem. The launcher
-    turns this trap into `codex_exit=124` with `-t` (default 570 seconds).
-- **Model/effort**: `-c model_reasoning_effort=` is required on every call; do not
-  leave it to global `~/.codex/config.toml`. Delegate values are
-  `low|medium|high|xhigh|max`; Max requires `-b`, and Ultra is rejected. For the
-  distinction between official support, app modes, and installed CLI verification,
-  follow "Applying the GPT-6 Astra official guide" above. Implementation defaults to the first active OpenAI `implement` worker in `workers`; when `-m`/`-e`
-  are omitted, the launcher reads it and records the source in `BINDINGS:`.
-  Escalation conditions are in `docs/orchestration/retry-policy.md`; advisory calls
-  explicitly set router-selected model/effort and `--sandbox read-only`.
-- **Always inline advisory input**: Put the review target in the prompt file.
-  codex has no native file reads, so reads also use the shell; on a machine with
-  a broken sandbox, even read-only produces READ_FAILED. This also matches the
+  - STDIN RULE: redirect a **real file** or close with `</dev/null`. Open pipes
+    (nested `bash -c`, some harness shells) hang forever after "Reading additional
+    input from stdin...", before execution (CPU 0%, no session log). The message
+    alone is normal; endless waiting is not. Launcher `-t` (default 570 seconds)
+    converts this to `codex_exit=124`.
+- **Model/effort**: Always set `-c model_reasoning_effort=`, never inherit global
+  `~/.codex/config.toml`. Delegate values: `low|medium|high|xhigh|max`; Max needs `-b`,
+  Ultra is rejected (see [Astra guide](#applying-the-gpt-6-astra-official-guide)).
+  Omitted `-m`/`-e` use the first active OpenAI `implement` in `workers`, recorded
+  in `BINDINGS:`. Follow `docs/orchestration/retry-policy.md` for escalation;
+  advisory calls explicitly set routed model/effort and `--sandbox read-only`.
+- **Advisory input**: Inline the target in the prompt file. Codex file reads use
+  shell, so a broken sandbox yields READ_FAILED even read-only; follow the
   security boundary.
-- `-c windows.sandbox=unelevated`: Per-call override because a desktop app setting
-  of `[windows] sandbox = "elevated"` in global config can cause 1312 (do not edit
-  global config).
-- **Git/non-Git execution**: `codex-run.sh` internally applies
-  `--skip-git-repo-check` only after confirming non-Git. Hooks still deny raw CLI
-  calls adding this option directly. Workspace checks, sandbox, and trust
-  requirements remain.
+- `-c windows.sandbox=unelevated`: Apply per call; see installation step 1 for
+  `[windows] sandbox = "elevated"`, error 1312, and the global-config edit ban.
+- **Git/non-Git execution**: Follow [workspace checks](#gitnon-git-workspaces):
+  `--skip-git-repo-check` is launcher-only after confirmed non-Git; raw CLI use
+  remains denied. Sandbox/trust requirements remain.
+
 - **Network blocking** (workspace-write): `pip/npm install` is unavailable;
   install dependencies before delegation. Classify missing-dependency failures
   as infrastructure failures.
@@ -1325,9 +1115,9 @@ go through permission prompts/classification.
   argument is **`-`**, and stdin is a file that joins the role sentence and the
   correction body. A fresh `codex exec` appends piped stdin to a positional prompt
   as a `<stdin>` block, but `codex exec resume` drops stdin when a positional
-  prompt is present and reads it only for `-` (stated in its help; measured
-  2026-09-28 on 0.157.1: with the old form the correction never arrived and the
-  model answered `NEEDS_INPUT`). Launcher `-r` assembles a temp file in the order
+  prompt is present and reads it only for `-` (help and 0.157.1 execution
+  confirmed; the old form lost corrections and returned `NEEDS_INPUT`). Launcher
+  `-r` assembles a temp file in the order
   `$DELEGATE_INSTRUCTION Follow the correction provided in the <stdin> block.` +
   blank line + `<stdin>` … `</stdin>`, reproducing the fresh-run shape while task
   text still never enters a shell argument. Resume has no `--sandbox`/`--profile`,
