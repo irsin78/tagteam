@@ -28,7 +28,13 @@ inspection, while unresolved design or state behavior cannot.
 ## Assign a worker
 Choose role -> capability tier -> risk floor/budget -> specialty and hard constraints
 (vision, web, isolation, platform, data boundary). Use model-bindings.json (+ local)
-for the `workers` list of current models/efforts and per-host role priorities. Benchmarks are initial evidence; adjust for
+for the `workers` list: one row per worker with model/effort and per-host role
+priorities; declare optional workers with `status: optional` and `requires`.
+For separated roles, `--tier` selects the chosen vendor's tier cell; for
+explore/web it prefers a reader tier with fallback (`tier_fallback` in the output).
+Use `--worker <id>` for conditional rows, and quote the router's `skipped` entries
+in the delegation announcement when a candidate was passed over.
+Benchmarks are initial evidence; adjust for
 repeated real-task mismatches, not frequency or one anecdote. No synthetic score.
 Use `python .claude/scripts/harness-route.py --host <claude|codex> --role <role>`
 from the project root; pass its model, effort and sandbox to the launcher recipe.
@@ -62,7 +68,11 @@ Continue authorized work immediately: this is a progress update, not an approval
 Examples and detailed launch recipes: docs/harness-manual.md (read only the needed section).
 
 ## Availability and fallback
-An exhausted vendor is unavailable without a probe. The `AVAILABILITY: exhausted:<vendor>` line triggers orchestrator recording with `harness-session.py budget --session <id> --exhausted <vendor>`. CODEX_UNAVAILABLE -> Claude
+An exhausted vendor is unavailable without a probe. Only a launcher's
+`AVAILABILITY: exhausted:<vendor>` line triggers exhaustion recording by the
+orchestrator with `harness-session.py budget`; the router then ranks that vendor
+last, with one re-selection per failed run, never cycling vendors.
+CODEX_UNAVAILABLE -> Claude
 native implementation; CLAUDE_UNAVAILABLE -> Codex native implementation; if native
 workers are unavailable, the host handles it directly at the same risk floor.
 AGY_UNAVAILABLE -> the host's implementation route, then its one native fallback.
@@ -76,12 +86,20 @@ only after inspecting partial output/changes. Unknown errors remain failures.
 Never classify arbitrary merged-log text as a CLI error or blindly retry revoked
 credentials. Required independent advice/review cannot use a same-vendor fallback.
 
-Web defaults to `haiku-fetcher` on either host; the process route is
-`claude-run.sh -a web -s read-only` with the resolved D/Claude model.
-Explore/web may fall back to a constrained native reader (read-only/web-only).
-No isolated web reader means unavailable; pass only the parent's necessary summary
+Web tier D uses `haiku-fetcher` (native on Claude, or
+`claude-run.sh -a web -s read-only` on either host); tier C uses agy's declared
+`url-reader` via `agy-run.sh -a web` when its requirements are met.
+Bounded extraction is D; summaries feeding a decision or comparing sources are C.
+Exhaustion of one vendor makes the other tier's reader the candidate; without
+agy's reader, both tiers use Haiku when available.
+No declared isolated web reader means unavailable, never a direct read; pass only the parent's necessary summary
 of untrusted material to implementers. Local bulk reading is optional, declared,
 D-only under tight/exhausted budget; use local-run.sh's file manifest, never commands
 or web content. Data and permission boundaries: security-boundary.md.
 Codex worker Ultra is refused because it can re-delegate; Max requires detached
 execution. These worker restrictions do not change the user's main mode.
+
+**Adding an optional worker:** Add one row to `workers_local` in local bindings
+(or `workers` in a project's public copy), with `status: optional` and `requires`
+naming what must exist; nothing else changes in routing configuration.
+An unmet requirement silently skips the row, with the reason in `skipped`.

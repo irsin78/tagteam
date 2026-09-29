@@ -36,12 +36,15 @@ and weak cells. They are recorded here rather than closed with new hooks.
 - Preserving existing work: only Claude native workers are prevented up front by
   a worktree cut from HEAD. Both launcher workers edit the live tree; an ordinary
   `rm -rf` or overwrite is only detected afterwards through the snapshot's CHANGED.
-- Isolating untrusted web text: every isolated reader is a Claude implementation
-  (native haiku-fetcher, or the process route `claude-run.sh -a web` read-only).
-  The bindings' web route points both hosts at that process route, so a Codex
-  orchestrator can use it, but when the Claude vendor is unavailable the Codex
-  host has no substitute reader and "no isolated reader" means unavailable.
+- Isolating untrusted web text: with agy's `url-reader` declared and its
+  requirements met, a Claude-exhausted session still has a tier C isolated
+  reader via `agy-run.sh -a web`; a Google-exhausted session still has tier D
+  Haiku (native on Claude, or `claude-run.sh -a web` on either host).
+  The reader contract in `security-boundary.md` still excludes file/shell tools;
+  without any declared isolated reader, the lane is unavailable.
   Launcher workers never start a reader on either host.
+- Optional workers are explicit in the bindings' `workers` list; `requires`
+  checks local files/declarations and PATH only, never probes a CLI or endpoint.
 - A worker relaunching a model CLI: Claude native workers are stopped by the tool
   list and spawn depth; for Codex launcher workers only `ultra` is refused and the
   `codex` invocation itself rests on the entry instructions' prose.

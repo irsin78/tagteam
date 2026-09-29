@@ -22,6 +22,8 @@ Projects that do not use Git run the same way.
 | Claude Code | Claude Code | Codex |
 | Codex | Codex | Claude Code |
 
+Optional workers are declared in the bindings' `workers` list or local `workers_local` overrides and selected only when their requirements are met.
+
 A single model that designs, implements and verifies can wave its own
 assumptions and mistakes through. To reduce that, roles are split and the
 result is cross-checked from another model's perspective.
