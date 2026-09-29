@@ -26,7 +26,7 @@ LAUNCH_CLOCK=${EPOCHREALTIME:-$SECONDS}
 MODEL=
 EFFORT=
 # The fallback when the bindings file is missing or unusable. Kept equal
-# to `roles.implement.ladder[0]` (Sol/high — the entry
+# to the first active OpenAI implement worker (Sol/high — the entry
 # 44 of 52 real runs used), so a broken bindings file does not silently
 # drop implementation to a tier the matrix reserves for explicit `-m`.
 BUILTIN_IMPL_MODEL=gpt-5.6-sol
@@ -117,9 +117,9 @@ done
 
 # Bindings resolution: an -m/-e not given on the command line comes from
 # the public bindings merged with the local file (dicts merge key-by-key,
-# local wins; arrays and scalars are replaced whole). The role is picked
-# by -i: image_verify → roles.image_verify.default, otherwise
-# roles.implement.ladder[0]. Bindings CONTENT never reaches a shell
+# workers_local merges by id; other arrays and scalars replace whole).
+# -i selects the first active OpenAI image_verify worker; otherwise the
+# first active OpenAI implement worker. Bindings CONTENT never reaches a shell
 # argument — python receives file paths and prints three plain tokens,
 # validated in python AND re-validated here in bash. Any failure (no
 # file, bad JSON, bad shape, garbage from the interpreter) falls back to
@@ -144,39 +144,7 @@ if [ -z "$MODEL" ] || [ -z "$EFFORT" ]; then
     elif [ ! -f "$BINDINGS_PUBLIC" ]; then
         BIND_SOURCE="builtin (no $BINDINGS_PUBLIC)"
     else
-        BIND_OUT=$("$BIND_PY" - "$BINDINGS_PUBLIC" "$BINDINGS_LOCAL" "$BIND_ROLE" <<'PY' 2>/dev/null
-import json, re, sys
-pub, loc, role = sys.argv[1], sys.argv[2], sys.argv[3]
-def merge(a, b):
-    if isinstance(a, dict) and isinstance(b, dict):
-        out = dict(a)
-        for k, v in b.items():
-            out[k] = merge(a[k], v) if k in a else v
-        return out
-    return b
-try:
-    with open(pub, encoding="utf-8") as f:
-        data = json.load(f)
-    src = "public"
-    try:
-        with open(loc, encoding="utf-8") as f:
-            data = merge(data, json.load(f))
-        src = "public+local"
-    except FileNotFoundError:
-        pass
-    roles = data["roles"]
-    cell = roles["implement"]["ladder"][0] if role == "implement" else roles["image_verify"]["default"]
-    model, effort = cell["model"], cell["effort"]
-    token = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-    if not (isinstance(model, str) and token.fullmatch(model)):
-        raise ValueError("model")
-    if effort not in ("low", "medium", "high", "xhigh", "max", "ultra"):
-        raise ValueError("effort")
-    print(src, model, effort)
-except Exception as e:
-    print("ERR", type(e).__name__, str(e).replace("\n", " ")[:60])
-PY
-)
+        BIND_OUT=$("$BIND_PY" "$SCRIPT_DIR/harness-route.py" --launcher-default --vendor openai --role "$BIND_ROLE" 2>/dev/null)
         case "$BIND_OUT" in
             ""|ERR*) BIND_SOURCE="builtin (bindings unusable: ${BIND_OUT:-no output})" ;;
             *)

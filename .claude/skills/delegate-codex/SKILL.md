@@ -33,8 +33,8 @@ harness-route.py; use its model/effort, not an assumed maximum model.
 
    Defaults: `workspace-write` / `-t 570`; `-m`/`-e` default from
    `.claude/model-bindings.json` (+ `.claude/model-bindings.local.json`,
-   local wins key-by-key): without `-i` → `roles.implement.ladder[0]`
-   (Sol/high), with `-i` → `roles.image_verify.default` (Terra/medium);
+   local workers merge by id): without `-i` → first active OpenAI `implement` worker
+   (Sol/high), with `-i` → first active OpenAI `image_verify` worker (Terra/medium);
    the report's `BINDINGS:` line names the source (`public`,
    `public+local`, `builtin` when no file/python, `explicit` for a given
    flag). Worker efforts: low|medium|high|xhigh|max; `max` requires `-b`.
@@ -47,7 +47,7 @@ harness-route.py; use its model/effort, not an assumed maximum model.
    The launcher is the ONLY unprompted codex path: `codex exec` is not on
    `permissions.allow`, so a direct call goes through the
    permission prompt / auto-mode classifier — use the launcher for every
-   lane, including advisory (`-s read-only -m <bindings.A.openai.model>
+   lane, including advisory (`-s read-only -m <A-tier OpenAI worker model>
    -e high` — the second-opinion binding; pass `-m`/`-e` explicitly,
    because without them the launcher defaults to the implementation entry,
    not the selected advisory binding) and

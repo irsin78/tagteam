@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "Role -> tier -> binding. The rules (rules/) speak only of tiers and roles; the concrete model and effort are set here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole). harness-route.py selects a route from host_routes, the role, the bindings and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
   "updated": "2026-09-29",
@@ -107,542 +107,6 @@
       "note": "Model, hardware and endpoint live in model-bindings.local.json. vendors.local.endpoint requires base_url and model; wire, max_tokens and max_input_chars are optional. The request timeout is local-run.sh -t seconds (default 300, max 570). Requests happen only through local-run.sh; SessionStart never queries the server. Input format, access limits and failure handling: docs/runtime-boundary.md. Addresses, model names and measured figures stay in local settings only."
     }
   },
-  "bindings": {
-    "A": {
-      "claude": {
-        "role": [
-          "orchestrate",
-          "decide"
-        ],
-        "tier": "A",
-        "vendor": "claude",
-        "model": "claude-opus-5-5",
-        "effort": "xhigh",
-        "ttft_s": 160,
-        "endpoint": "claude-code",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "note": "2026-09-23 Fable 5.1 xhigh -> Opus 5.5 xhigh. AA 9-23: Opus 5.5 xhigh 56 / $3.46 / 160s is the top of the board (max 58 / $5.98); Fable 5.1 xhigh is 53 / $5.98 / 126s. DeepSWE has no Opus 5.5 row yet, but its prior for the two lines already points the same way (Opus 5 max 74% vs Fable 5 xhigh 70%). Opus 5.5 high (54 / $1.82 / 40s) matches Fable 5.1 xhigh at a third of the cost — the fast A. This cell does not change the main session's model (roles.orchestrate); it drives the Codex-host decide/plan_review route and claude_ladder step 1. Recheck when DeepSWE lists claude-opus-5.5.",
-        "intelligence_index": 56,
-        "effective_cost": 3.46,
-        "deepswe_pass1": {
-          "_status": "not listed as of 2026-09-22",
-          "_line_prior": "claude-opus-5 max 74% / claude-fable-5 xhigh 70%"
-        },
-        "alternatives": [
-          {
-            "model": "claude-opus-5-5",
-            "effort": "high",
-            "intelligence_index": 54,
-            "effective_cost": 1.82,
-            "ttft_s": 40,
-            "condition": "A-tier judgment when latency matters (same score as Fable 5.1 xhigh)",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis"
-            ]
-          },
-          {
-            "model": "claude-fable-5-1",
-            "effort": "xhigh",
-            "intelligence_index": 53,
-            "effective_cost": 5.98,
-            "ttft_s": 126,
-            "deepswe_pass1": {
-              "_model": "claude-fable-5 (5.1 not listed)",
-              "high": 0.69,
-              "xhigh": 0.7,
-              "max": 0.7
-            },
-            "condition": "Only when the user has selected Fable as the main model; AA 9-23 max 53 / $7.63 / 312s, medium 49, low 47",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis",
-              "deepswe"
-            ]
-          },
-          {
-            "model": "claude-sonnet-5-5",
-            "effort": null,
-            "intelligence_index": 56,
-            "effective_cost": 7.6,
-            "ttft_s": 353,
-            "condition": "Not adopted (2026-09-29): AA lists one row only (effort not shown) with the same index as Opus 5.5 xhigh at 2.2x the cost per task and latency, and AA notes it is very verbose. Released 2026-09-28, $2/$10 per M tokens, efforts low..max. Recheck when AA posts the per-effort grid or DeepSWE lists it.",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis"
-            ],
-            "updated": "2026-09-29"
-          }
-        ]
-      },
-      "openai": {
-        "role": [
-          "decide"
-        ],
-        "tier": "A",
-        "vendor": "openai",
-        "model": "gpt-6-astra",
-        "effort": "high",
-        "ttft_s": 79,
-        "endpoint": "codex-cli",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis",
-          "deepswe",
-          "llm_stats"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "note": "AA 9-23 GPT-6 Astra: max 53 / $3.26 / 342s, xhigh 52 / $2.31 / 210s, high 51 / $1.73 / 79s, medium 50 / $1.54 / 6.2s, low 46 / $0.82 / 2.8s. DeepSWE 9-22 (cost per task fell since 9-03): xhigh 74% $4.43, high 73% $3.92, medium 73% $3.08, low 67% $1.60. Effort-insensitive from medium up on both sources. Opus 5.5 xhigh (56) now sits above Astra at every effort on AA; Astra stays the A/openai cell because this column is the cross-vendor second opinion for a Claude host. List price $10/$50.",
-        "intelligence_index": 51,
-        "effective_cost": 1.73,
-        "deepswe_pass1": {
-          "low": 0.67,
-          "medium": 0.73,
-          "high": 0.73,
-          "xhigh": 0.74,
-          "max": 0.73
-        }
-      }
-    },
-    "B": {
-      "claude": {
-        "role": [
-          "orchestrate",
-          "decide",
-          "review",
-          "image_verify"
-        ],
-        "tier": "B",
-        "vendor": "claude",
-        "model": "claude-opus-5-5",
-        "effort": "high",
-        "ttft_s": 40,
-        "endpoint": "claude-code",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis",
-          "deepswe",
-          "llm_stats"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "note": "Tier B judgment, verification (review_deep), image hard cases and the Codex-host implementation entry. Does not pin the main session's model. 2026-09-23 Opus 5 high -> Opus 5.5 high: AA 54 / $1.82 / 40s vs Opus 5 high 52 / $2.44 / 21s on the 9-06 scale (Opus 5 is deprecated on AA; only max=51 remains on the 9-23 scale). Cheaper per task and per token ($4/$20 vs $5/$25); TTFT roughly doubles. Opus 5.5 medium (51 / $1.34 / 24s) is the latency alternative. Recheck when DeepSWE lists claude-opus-5.5.",
-        "intelligence_index": 54,
-        "effective_cost": 1.82,
-        "deepswe_pass1": {
-          "_status": "not listed as of 2026-09-22",
-          "_line_prior": "claude-opus-5 high 73% ($6.08)"
-        },
-        "alternatives": [
-          {
-            "model": "claude-opus-5-5",
-            "effort": "medium",
-            "intelligence_index": 51,
-            "effective_cost": 1.34,
-            "ttft_s": 24,
-            "condition": "B work where 40s first-token latency hurts",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis"
-            ]
-          },
-          {
-            "model": "claude-opus-5",
-            "effort": "high",
-            "intelligence_index": null,
-            "effective_cost": null,
-            "ttft_s": 21,
-            "deepswe_pass1": {
-              "low": 0.58,
-              "medium": 0.69,
-              "high": 0.73,
-              "xhigh": 0.73,
-              "max": 0.74
-            },
-            "condition": "Previous binding; AA deprecated (9-06 scale: 52 / $2.44), DeepSWE-verified. Fallback if Opus 5.5 misbehaves on a task",
-            "evidence": "leaderboard",
-            "sources": [
-              "deepswe"
-            ]
-          }
-        ]
-      },
-      "openai": {
-        "role": [
-          "decide",
-          "review",
-          "implement"
-        ],
-        "tier": "B",
-        "vendor": "openai",
-        "model": "gpt-6-astra",
-        "effort": "medium",
-        "ttft_s": 6.2,
-        "endpoint": "codex-cli",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis",
-          "deepswe",
-          "llm_stats"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "deepswe_pass1": {
-          "low": 0.67,
-          "medium": 0.73,
-          "high": 0.73,
-          "xhigh": 0.74,
-          "max": 0.73
-        },
-        "intelligence_index": 50,
-        "effective_cost": 1.54,
-        "note": "B default for decide/review on the OpenAI side and implementation ladder step 1. AA 9-23: Astra medium 50 / $1.54 / 6.2s = Fable 5.1 medium (49) band; DeepSWE 73% $3.08 (Opus 5 high 73% $6.08). Implementation entry remains roles.implement.ladder[0] = gpt-5.6-sol high (measured, 44/52 runs).",
-        "alternatives": [
-          {
-            "model": "gpt-5.6-sol",
-            "effort": "high",
-            "intelligence_index": null,
-            "effective_cost": null,
-            "ttft_s": 19,
-            "deepswe_pass1": {
-              "low": 0.45,
-              "medium": 0.61,
-              "high": 0.69,
-              "xhigh": 0.71,
-              "max": 0.73
-            },
-            "condition": "Implementation ladder entry (ladder[0]). AA deprecated it on 9-23 (only max=47 / $1.99 remains); the 9-06-scale row was 48 / $0.61 / 19s. DeepSWE-verified: high 69% $2.66. Successor gpt-6-sol is in the codex catalog but not on DeepSWE yet — see roles.implement.pending_replacement",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis",
-              "deepswe"
-            ]
-          },
-          {
-            "model": "gpt-6-sol",
-            "effort": "high",
-            "intelligence_index": 43,
-            "effective_cost": 0.37,
-            "ttft_s": 9.9,
-            "condition": "Candidate ladder[0] once DeepSWE lists it. AA 9-23: max 48 / $1.06 / 150s, xhigh 44 / $0.53 / 47s, high 43 / $0.37 / 9.9s, medium 40 / $0.25 / 2s; 872k context. Roughly GPT-5.6 Sol's band at ~60% of the cost per task and half the first-token latency",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis"
-            ]
-          }
-        ]
-      },
-      "local": {
-        "role": [],
-        "tier": "B",
-        "vendor": "local",
-        "evidence": "unrecorded",
-        "sources": [],
-        "updated": "2026-09-03",
-        "catalog_checked": "2026-09-03",
-        "status": "unverified",
-        "note": "spare"
-      }
-    },
-    "C": {
-      "claude": {
-        "role": [
-          "implement",
-          "write",
-          "review"
-        ],
-        "tier": "C",
-        "vendor": "claude",
-        "model": "claude-opus-5-5",
-        "effort": "medium",
-        "intelligence_index": 51,
-        "effective_cost": 1.34,
-        "ttft_s": 24,
-        "endpoint": "claude-code",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "excluded": [
-          {
-            "model": "claude-sonnet-5",
-            "reason": "AA 9-23: Sonnet 5 max 38 / $5.09 / 150s, high 32 / $1.79 / 9.5s vs Opus 5.5 medium 51 / $1.34 / 24s; DeepSWE Sonnet 5 max 54% ($26.40) vs Opus 5 medium 69% ($3.29) — behind on score and effective cost at every effort"
-          },
-          {
-            "model": "claude-opus-5-5",
-            "effort": "low",
-            "reason": "AA 42 / $0.55 / 7s — below the C band (Astra low 46); listed as a D alternative instead"
-          },
-          {
-            "model": "claude-sonnet-5-5",
-            "reason": "AA 9-29: single row 56 / $7.60 / 353s with no per-effort grid, so it cannot be placed at C; kept as an A/claude alternative until AA or DeepSWE give effort-level data"
-          }
-        ],
-        "deepswe_pass1": {
-          "_status": "not listed as of 2026-09-22",
-          "_line_prior": "claude-opus-5 medium 69% ($3.29)"
-        },
-        "note": "Tier C standard route on the Claude side (Codex-host review_gate / write / explicit --tier C implementation). 2026-09-23 Opus 5 medium -> Opus 5.5 medium: AA 51 / $1.34 / 24s vs Opus 5 medium 50 / $1.36 / 6.1s (9-06 scale). Same cost per task, higher index on a lowered scale, but first-token latency 6s -> 24s. Opus 5.5 low (42 / $0.55 / 7s) is too weak for C (peer C/openai Astra low is 46)."
-      },
-      "openai": {
-        "role": [
-          "implement",
-          "write",
-          "review"
-        ],
-        "tier": "C",
-        "vendor": "openai",
-        "model": "gpt-6-astra",
-        "effort": "low",
-        "ttft_s": 2.8,
-        "endpoint": "codex-cli",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis",
-          "deepswe"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "note": "Tier C standard route on the OpenAI side (Claude-host review_gate / write / explicit --tier C implementation). AA 9-23: Astra low 46 / $0.82 / 2.8s; DeepSWE low 67% $1.60. Terra high fell to 34 / $0.34 / 3.5s on the new scale — mechanical, spec-closed work via explicit -m only. GPT-6 Sol high (43 / $0.37 / 9.9s) is the cheaper C candidate pending DeepSWE.",
-        "alternatives": [
-          {
-            "model": "gpt-5.6-terra",
-            "effort": "high",
-            "intelligence_index": 34,
-            "effective_cost": 0.34,
-            "ttft_s": 3.5,
-            "condition": "when a mechanical, closed-spec task is selected explicitly with -m (not listed on DeepSWE)",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis"
-            ]
-          },
-          {
-            "model": "gpt-5.6-luna",
-            "effort": "max",
-            "intelligence_index": null,
-            "effective_cost": null,
-            "ttft_s": 150,
-            "deepswe_pass1": {
-              "low": 0.02,
-              "medium": 0.11,
-              "high": 0.44,
-              "xhigh": 0.57,
-              "max": 0.67
-            },
-            "condition": "Long spec-closed implementation on a budget, detached only (cheap_entry). DeepSWE max 67% $0.61. AA 9-23 shows only its successor gpt-6-luna; 9-06-scale row was 43 / $0.10",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis",
-              "deepswe"
-            ]
-          }
-        ],
-        "intelligence_index": 46,
-        "effective_cost": 0.82,
-        "deepswe_pass1": {
-          "low": 0.67
-        }
-      },
-      "google": {
-        "role": [
-          "write"
-        ],
-        "tier": "C",
-        "vendor": "google",
-        "model": "gemini-3.8-flash",
-        "effort": "medium",
-        "ttft_s": null,
-        "output_speed_tps": null,
-        "endpoint": "agy-cli",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "note": "HTML/CSS and static-prototype specialty. AA 9-23: 3.8 Flash medium 40 / $0.93 (speed and latency not shown), high 41 / $1.24 / 14s / 287 t/s, low 33. DeepSWE 9-22 unchanged: medium 71% $1.97, high 74% $2.36 (still tied for first at the lowest cost). agy has no command grant, so it cannot run tests — implementation via agy needs codex-side verification. Recheck item.",
-        "intelligence_index": 40,
-        "effective_cost": 0.93,
-        "deepswe_pass1": {
-          "medium": 0.71,
-          "high": 0.74
-        },
-        "alternatives": [
-          {
-            "model": "gemini-3.8-flash",
-            "effort": "high",
-            "intelligence_index": 41,
-            "effective_cost": 1.24,
-            "ttft_s": 14,
-            "output_speed_tps": 287,
-            "deepswe_pass1": {
-              "high": 0.74
-            },
-            "condition": "long writing or implementation (DeepSWE 74% $2.36; AA ties with medium)",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis",
-              "deepswe"
-            ]
-          }
-        ]
-      },
-      "local": {
-        "role": [],
-        "tier": "C",
-        "vendor": "local",
-        "evidence": "unrecorded",
-        "sources": [],
-        "updated": "2026-09-03",
-        "catalog_checked": "2026-09-03",
-        "status": "unverified",
-        "note": "spare, unverified"
-      }
-    },
-    "D": {
-      "claude": {
-        "role": [
-          "explore_fetch"
-        ],
-        "tier": "D",
-        "vendor": "claude",
-        "model": "claude-haiku-4-5",
-        "ttft_s": 23,
-        "endpoint": "claude-code",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "note": "Non-reasoning isolation worker (explore / web). AA 9-23: 17 / $0.21 / first chunk 23.1s (non-reasoning variant 15* / 0.63s). Opus 5.5 low (42 / $0.55 / 7s) is 2.5x the cost per task for 2.5x the index and a faster first token — use it when a D read needs judgment.",
-        "intelligence_index": 17,
-        "effective_cost": 0.21,
-        "alternatives": [
-          {
-            "model": "claude-opus-5-5",
-            "effort": "low",
-            "intelligence_index": 42,
-            "effective_cost": 0.55,
-            "ttft_s": 7,
-            "condition": "D reads that need some judgment (summaries feeding a decision)",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis"
-            ]
-          }
-        ]
-      },
-      "openai": {
-        "role": [
-          "explore_fetch"
-        ],
-        "tier": "D",
-        "vendor": "openai",
-        "model": "gpt-6-luna",
-        "effort": "high",
-        "intelligence_index": 32,
-        "ttft_s": 8,
-        "endpoint": "codex-cli",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "alternatives": [
-          {
-            "model": "gpt-5.6-terra",
-            "effort": "medium",
-            "intelligence_index": 30,
-            "effective_cost": 0.18,
-            "ttft_s": 2.1,
-            "condition": "Image verification default (codex -i)",
-            "evidence": "leaderboard",
-            "sources": [
-              "artificial_analysis"
-            ]
-          },
-          {
-            "model": "gpt-5.6-luna",
-            "effort": "high",
-            "intelligence_index": null,
-            "ttft_s": 22,
-            "deepswe_pass1": {
-              "high": 0.44,
-              "xhigh": 0.57,
-              "max": 0.67
-            },
-            "condition": "Previous D binding (AA 9-06 scale 37*); still the DeepSWE-verified cheap_entry model at max",
-            "evidence": "leaderboard",
-            "sources": [
-              "deepswe"
-            ]
-          }
-        ],
-        "effective_cost": 0.03,
-        "deepswe_pass1": {
-          "_status": "not listed as of 2026-09-22",
-          "_line_prior": "gpt-5.6-luna high 44%"
-        },
-        "note": "Isolation reads when Claude is exhausted (explore_fetch.claude_exhausted). 2026-09-23 gpt-5.6-luna high -> gpt-6-luna high: AA 32 / $0.03 / 8s (xhigh 34 / $0.04 / 22s, max 37 / $0.07 / 148s, medium 29 / $0.02 / 5.3s) vs GPT-5.6 Luna high 37* / 22s on the 9-06 scale. D is cost-first and needs no DeepSWE row; cheap_entry stays on gpt-5.6-luna max until DeepSWE lists gpt-6-luna."
-      },
-      "google": {
-        "role": [
-          "write"
-        ],
-        "tier": "D",
-        "vendor": "google",
-        "model": "gemini-3.8-flash",
-        "effort": "low",
-        "ttft_s": null,
-        "endpoint": "agy-cli",
-        "evidence": "leaderboard",
-        "sources": [
-          "artificial_analysis"
-        ],
-        "updated": "2026-09-23",
-        "catalog_checked": "2026-09-23",
-        "status": "active",
-        "note": "HTML/CSS bulk writing at low effort. AA 9-23: 3.8 Flash low 33 (cost, speed and latency not shown; 9-06 scale was 42* / 0.8s / 265 t/s).",
-        "intelligence_index": 33,
-        "output_speed_tps": null,
-        "effective_cost": null
-      },
-      "local": {
-        "role": [
-          "bulk_local_read"
-        ],
-        "tier": "D",
-        "vendor": "local",
-        "endpoint": "local-run.sh",
-        "evidence": "measured",
-        "sources": [],
-        "updated": "2026-09-04",
-        "catalog_checked": "2026-09-04",
-        "status": "conditional",
-        "note": "Optional route for tier-D bulk local reads (local-run.sh). Call it when needed, after confirming the endpoint declaration and the project's data boundary. There is no readiness check at start-up; availability failures are told apart by the actual call result. Model, address and figures stay in local settings only."
-      }
-    }
-  },
   "roles": {
     "orchestrate": {
       "tier": [
@@ -677,30 +141,7 @@
         "B",
         "A"
       ],
-      "ladder": [
-        {
-          "vendor": "openai",
-          "model": "gpt-5.6-sol",
-          "effort": "high"
-        },
-        {
-          "vendor": "openai",
-          "model": "gpt-6-astra",
-          "effort": "medium"
-        },
-        {
-          "vendor": "openai",
-          "model": "gpt-6-astra",
-          "effort": "high"
-        }
-      ],
       "escalate_when": "one step, only when a reasoning shortfall is diagnosed",
-      "cheap_entry": {
-        "vendor": "openai",
-        "model": "gpt-5.6-luna",
-        "effort": "max",
-        "condition": "only for long closed-spec work where a completion cost/time gain is expected, detached runs only. The existing key name is kept for compatibility; this is not a cheapest-first policy."
-      },
       "ladder_note": "Current model/effort values are the ladder entries above; older xhigh comparisons are measurements, not execution settings.",
       "excluded_steps": [
         {
@@ -712,14 +153,6 @@
           "model": "gpt-5.6-sol",
           "effort": "max",
           "reason": "DeepSWE 73% $6.46 TTFT 163s — Astra medium reaches the same score at 2/3 the cost and 1/15 the latency"
-        }
-      ],
-      "claude_ladder": [
-        {
-          "binding": "B/claude"
-        },
-        {
-          "binding": "A/claude"
         }
       ],
       "claude_ladder_note": "Default implementation under Codex orchestration is B/claude (Opus 5.5 high). One step up to A/claude (Opus 5.5 xhigh) when a reasoning shortfall is diagnosed. Since 2026-09-23 both rungs are the same model, so the step costs $1.82 -> $3.46 per AA task and 40s -> 160s first token instead of the old Opus 5 -> Fable 5.1 jump (2.2x on DeepSWE). Explicitly mechanical work: C/claude (Opus 5.5 medium). Initial policy before tuning on real runs.",
@@ -756,34 +189,11 @@
       "tier": [
         "D"
       ],
-      "default": {
-        "vendor": "openai",
-        "model": "gpt-5.6-terra",
-        "effort": "medium",
-        "route": "codex -i"
-      },
-      "hard_cases": {
-        "vendor": "claude",
-        "tier": "B",
-        "model": "claude-opus-5-5",
-        "effort": "high"
-      },
       "excluded": [
         "gpt-5.6-luna",
         "claude-haiku-4-5",
         "gpt-6-luna"
       ]
-    },
-    "explore_fetch": {
-      "tier": [
-        "D"
-      ],
-      "claude_exhausted": {
-        "vendor": "openai",
-        "model": "gpt-6-luna",
-        "sandbox": "read-only"
-      },
-      "local_when": "Bulk local reads only; declared endpoint ready and tight/exhausted budget, subject to project data boundary. Never web content."
     }
   },
   "vendor_precedence": {
@@ -900,117 +310,639 @@
     }
   },
   "scale_note": "2026-09-23 recheck: the AA Intelligence Index was rescaled AGAIN (9-06 -> 9-23: GPT-6 Astra xhigh 54 -> 52, Gemini 3.8 Flash high 47 -> 41, Opus 5 max 54 -> 51, Haiku 4.5 22 -> 17). Every intelligence_index / effective_cost / ttft_s in this file is on the 9-23 scale unless a cell says 'frozen at 9-06 scale'. AA now marks Claude Opus 5 and GPT-5.6 Sol as deprecated (only their max row is still benchmarked), so their per-effort grids cannot be rebased. Trigger for this recheck: Claude Opus 5.5 released 2026-09-22 (claude-opus-5-5, $4/$20, verified live in Claude Code 2.1.280); the codex catalog also listed gpt-6-sol and gpt-6-luna. DeepSWE (updated 2026-09-22) does not yet list Opus 5.5, GPT-6 Sol or GPT-6 Luna.",
-  "host_routes": {
-    "claude": {
-      "implement": {
-        "vendor": "openai",
-        "launcher": ".claude/scripts/codex-run.sh",
-        "ladder": "ladder",
-        "sandbox": "workspace-write",
-        "fallback": "host-native worker; see docs/orchestration/delegation-matrix.md"
-      },
-      "decide": {
-        "vendor": "openai",
-        "launcher": ".claude/scripts/codex-run.sh",
-        "binding": "A/openai",
-        "sandbox": "read-only"
-      },
-      "plan_review": {
-        "vendor": "openai",
-        "launcher": ".claude/scripts/codex-run.sh",
-        "binding": "A/openai",
-        "sandbox": "read-only"
-      },
-      "review_gate": {
-        "vendor": "openai",
-        "launcher": ".claude/scripts/codex-run.sh",
-        "binding": "C/openai",
-        "sandbox": "read-only"
-      },
-      "review_deep": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "B/claude",
-        "sandbox": "read-only"
-      },
-      "explore": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "D/claude",
-        "sandbox": "read-only"
-      },
-      "web": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "D/claude",
-        "sandbox": "read-only",
-        "claude_role": "web"
-      },
-      "write": {
-        "vendor": "openai",
-        "launcher": ".claude/scripts/codex-run.sh",
-        "binding": "C/openai",
-        "sandbox": "workspace-write"
-      }
-    },
-    "codex": {
-      "implement": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "ladder": "claude_ladder",
-        "sandbox": "workspace-write",
-        "fallback": "host-native worker; see docs/orchestration/delegation-matrix.md"
-      },
-      "decide": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "A/claude",
-        "sandbox": "read-only"
-      },
-      "plan_review": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "A/claude",
-        "sandbox": "read-only"
-      },
-      "review_gate": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "C/claude",
-        "sandbox": "read-only"
-      },
-      "review_deep": {
-        "vendor": "openai",
-        "launcher": ".claude/scripts/codex-run.sh",
-        "binding": "B/openai",
-        "sandbox": "read-only"
-      },
-      "explore": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "D/claude",
-        "sandbox": "read-only"
-      },
-      "web": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "D/claude",
-        "sandbox": "read-only",
-        "claude_role": "web"
-      },
-      "write": {
-        "vendor": "claude",
-        "launcher": ".claude/scripts/claude-run.sh",
-        "binding": "C/claude",
-        "sandbox": "workspace-write"
-      }
-    }
-  },
   "selection_policy": {
     "basis": "Benchmarks (capability, cost, latency, source, date) set initial bindings. Preserve measured scores and distinguish unmeasured cells.",
     "objective": "Sufficient task capability at efficient total completion cost/time, including handoff, verification and retries.",
     "adjust_when": "Repeated real-task mismatch; inspect existing run evidence and use local overrides for project-specific differences.",
     "scope": "No new composite score, obligatory telemetry or global policy review merely for a model release.",
     "cross_review": "Host chooses the orchestrator; actual artifact authors choose eligible implementers/reviewers. Pass all authors using --author-vendor. Reviews require explicit provenance and a fresh worker; different vendors do not guarantee correctness."
-  }
+  },
+  "workers": [
+    {
+      "vendor": "openai",
+      "model": "gpt-5.6-sol",
+      "effort": "high",
+      "id": "sol-high",
+      "tier": "C",
+      "tier_cell": false,
+      "roles": {
+        "implement": {
+          "claude": 1,
+          "codex": 3
+        }
+      },
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh"
+    },
+    {
+      "role": [
+        "decide",
+        "review",
+        "implement"
+      ],
+      "tier": "B",
+      "vendor": "openai",
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "ttft_s": 6.2,
+      "endpoint": "codex-cli",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis",
+        "deepswe",
+        "llm_stats"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "deepswe_pass1": {
+        "low": 0.67,
+        "medium": 0.73,
+        "high": 0.73,
+        "xhigh": 0.74,
+        "max": 0.73
+      },
+      "intelligence_index": 50,
+      "effective_cost": 1.54,
+      "note": "B default for decide/review on the OpenAI side and implementation ladder step 1. AA 9-23: Astra medium 50 / $1.54 / 6.2s = Fable 5.1 medium (49) band; DeepSWE 73% $3.08 (Opus 5 high 73% $6.08). Implementation entry remains roles.implement.ladder[0] = gpt-5.6-sol high (measured, 44/52 runs).",
+      "alternatives": [
+        {
+          "model": "gpt-5.6-sol",
+          "effort": "high",
+          "intelligence_index": null,
+          "effective_cost": null,
+          "ttft_s": 19,
+          "deepswe_pass1": {
+            "low": 0.45,
+            "medium": 0.61,
+            "high": 0.69,
+            "xhigh": 0.71,
+            "max": 0.73
+          },
+          "condition": "Implementation ladder entry (ladder[0]). AA deprecated it on 9-23 (only max=47 / $1.99 remains); the 9-06-scale row was 48 / $0.61 / 19s. DeepSWE-verified: high 69% $2.66. Successor gpt-6-sol is in the codex catalog but not on DeepSWE yet — see roles.implement.pending_replacement",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis",
+            "deepswe"
+          ]
+        },
+        {
+          "model": "gpt-6-sol",
+          "effort": "high",
+          "intelligence_index": 43,
+          "effective_cost": 0.37,
+          "ttft_s": 9.9,
+          "condition": "Candidate ladder[0] once DeepSWE lists it. AA 9-23: max 48 / $1.06 / 150s, xhigh 44 / $0.53 / 47s, high 43 / $0.37 / 9.9s, medium 40 / $0.25 / 2s; 872k context. Roughly GPT-5.6 Sol's band at ~60% of the cost per task and half the first-token latency",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis"
+          ]
+        }
+      ],
+      "id": "astra-medium",
+      "tier_cell": true,
+      "roles": {
+        "implement": {
+          "claude": 2,
+          "codex": 4
+        },
+        "review_deep": {
+          "claude": 2,
+          "codex": 1
+        }
+      },
+      "launcher": ".claude/scripts/codex-run.sh"
+    },
+    {
+      "role": [
+        "decide"
+      ],
+      "tier": "A",
+      "vendor": "openai",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "ttft_s": 79,
+      "endpoint": "codex-cli",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis",
+        "deepswe",
+        "llm_stats"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "note": "AA 9-23 GPT-6 Astra: max 53 / $3.26 / 342s, xhigh 52 / $2.31 / 210s, high 51 / $1.73 / 79s, medium 50 / $1.54 / 6.2s, low 46 / $0.82 / 2.8s. DeepSWE 9-22 (cost per task fell since 9-03): xhigh 74% $4.43, high 73% $3.92, medium 73% $3.08, low 67% $1.60. Effort-insensitive from medium up on both sources. Opus 5.5 xhigh (56) now sits above Astra at every effort on AA; Astra stays the A/openai cell because this column is the cross-vendor second opinion for a Claude host. List price $10/$50.",
+      "intelligence_index": 51,
+      "effective_cost": 1.73,
+      "deepswe_pass1": {
+        "low": 0.67,
+        "medium": 0.73,
+        "high": 0.73,
+        "xhigh": 0.74,
+        "max": 0.73
+      },
+      "id": "astra-high",
+      "tier_cell": true,
+      "roles": {
+        "implement": {
+          "claude": 3,
+          "codex": 5
+        },
+        "decide": {
+          "claude": 1,
+          "codex": 2
+        },
+        "plan_review": {
+          "claude": 1,
+          "codex": 2
+        }
+      },
+      "launcher": ".claude/scripts/codex-run.sh"
+    },
+    {
+      "role": [
+        "implement",
+        "write",
+        "review"
+      ],
+      "tier": "C",
+      "vendor": "openai",
+      "model": "gpt-6-astra",
+      "effort": "low",
+      "ttft_s": 2.8,
+      "endpoint": "codex-cli",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis",
+        "deepswe"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "note": "Tier C standard route on the OpenAI side (Claude-host review_gate / write / explicit --tier C implementation). AA 9-23: Astra low 46 / $0.82 / 2.8s; DeepSWE low 67% $1.60. Terra high fell to 34 / $0.34 / 3.5s on the new scale — mechanical, spec-closed work via explicit -m only. GPT-6 Sol high (43 / $0.37 / 9.9s) is the cheaper C candidate pending DeepSWE.",
+      "alternatives": [
+        {
+          "model": "gpt-5.6-terra",
+          "effort": "high",
+          "intelligence_index": 34,
+          "effective_cost": 0.34,
+          "ttft_s": 3.5,
+          "condition": "when a mechanical, closed-spec task is selected explicitly with -m (not listed on DeepSWE)",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis"
+          ]
+        },
+        {
+          "model": "gpt-5.6-luna",
+          "effort": "max",
+          "intelligence_index": null,
+          "effective_cost": null,
+          "ttft_s": 150,
+          "deepswe_pass1": {
+            "low": 0.02,
+            "medium": 0.11,
+            "high": 0.44,
+            "xhigh": 0.57,
+            "max": 0.67
+          },
+          "condition": "Long spec-closed implementation on a budget, detached only (cheap_entry). DeepSWE max 67% $0.61. AA 9-23 shows only its successor gpt-6-luna; 9-06-scale row was 43 / $0.10",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis",
+            "deepswe"
+          ]
+        }
+      ],
+      "intelligence_index": 46,
+      "effective_cost": 0.82,
+      "deepswe_pass1": {
+        "low": 0.67
+      },
+      "id": "astra-low",
+      "tier_cell": true,
+      "roles": {
+        "review_gate": {
+          "claude": 2,
+          "codex": 1
+        },
+        "write": {
+          "claude": 1,
+          "codex": 2
+        }
+      },
+      "launcher": ".claude/scripts/codex-run.sh"
+    },
+    {
+      "role": [
+        "orchestrate",
+        "decide",
+        "review",
+        "image_verify"
+      ],
+      "tier": "B",
+      "vendor": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "ttft_s": 40,
+      "endpoint": "claude-code",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis",
+        "deepswe",
+        "llm_stats"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "note": "Tier B judgment, verification (review_deep), image hard cases and the Codex-host implementation entry. Does not pin the main session's model. 2026-09-23 Opus 5 high -> Opus 5.5 high: AA 54 / $1.82 / 40s vs Opus 5 high 52 / $2.44 / 21s on the 9-06 scale (Opus 5 is deprecated on AA; only max=51 remains on the 9-23 scale). Cheaper per task and per token ($4/$20 vs $5/$25); TTFT roughly doubles. Opus 5.5 medium (51 / $1.34 / 24s) is the latency alternative. Recheck when DeepSWE lists claude-opus-5.5.",
+      "intelligence_index": 54,
+      "effective_cost": 1.82,
+      "deepswe_pass1": {
+        "_status": "not listed as of 2026-09-22",
+        "_line_prior": "claude-opus-5 high 73% ($6.08)"
+      },
+      "alternatives": [
+        {
+          "model": "claude-opus-5-5",
+          "effort": "medium",
+          "intelligence_index": 51,
+          "effective_cost": 1.34,
+          "ttft_s": 24,
+          "condition": "B work where 40s first-token latency hurts",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis"
+          ]
+        },
+        {
+          "model": "claude-opus-5",
+          "effort": "high",
+          "intelligence_index": null,
+          "effective_cost": null,
+          "ttft_s": 21,
+          "deepswe_pass1": {
+            "low": 0.58,
+            "medium": 0.69,
+            "high": 0.73,
+            "xhigh": 0.73,
+            "max": 0.74
+          },
+          "condition": "Previous binding; AA deprecated (9-06 scale: 52 / $2.44), DeepSWE-verified. Fallback if Opus 5.5 misbehaves on a task",
+          "evidence": "leaderboard",
+          "sources": [
+            "deepswe"
+          ]
+        }
+      ],
+      "id": "opus55-high",
+      "tier_cell": true,
+      "roles": {
+        "implement": {
+          "claude": 4,
+          "codex": 1
+        },
+        "review_deep": {
+          "claude": 1,
+          "codex": 2
+        },
+        "image_verify": 2
+      },
+      "launcher": ".claude/scripts/claude-run.sh"
+    },
+    {
+      "role": [
+        "orchestrate",
+        "decide"
+      ],
+      "tier": "A",
+      "vendor": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "xhigh",
+      "ttft_s": 160,
+      "endpoint": "claude-code",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "note": "2026-09-23 Fable 5.1 xhigh -> Opus 5.5 xhigh. AA 9-23: Opus 5.5 xhigh 56 / $3.46 / 160s is the top of the board (max 58 / $5.98); Fable 5.1 xhigh is 53 / $5.98 / 126s. DeepSWE has no Opus 5.5 row yet, but its prior for the two lines already points the same way (Opus 5 max 74% vs Fable 5 xhigh 70%). Opus 5.5 high (54 / $1.82 / 40s) matches Fable 5.1 xhigh at a third of the cost — the fast A. This cell does not change the main session's model (roles.orchestrate); it drives the Codex-host decide/plan_review route and claude_ladder step 1. Recheck when DeepSWE lists claude-opus-5.5.",
+      "intelligence_index": 56,
+      "effective_cost": 3.46,
+      "deepswe_pass1": {
+        "_status": "not listed as of 2026-09-22",
+        "_line_prior": "claude-opus-5 max 74% / claude-fable-5 xhigh 70%"
+      },
+      "alternatives": [
+        {
+          "model": "claude-opus-5-5",
+          "effort": "high",
+          "intelligence_index": 54,
+          "effective_cost": 1.82,
+          "ttft_s": 40,
+          "condition": "A-tier judgment when latency matters (same score as Fable 5.1 xhigh)",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis"
+          ]
+        },
+        {
+          "model": "claude-fable-5-1",
+          "effort": "xhigh",
+          "intelligence_index": 53,
+          "effective_cost": 5.98,
+          "ttft_s": 126,
+          "deepswe_pass1": {
+            "_model": "claude-fable-5 (5.1 not listed)",
+            "high": 0.69,
+            "xhigh": 0.7,
+            "max": 0.7
+          },
+          "condition": "Only when the user has selected Fable as the main model; AA 9-23 max 53 / $7.63 / 312s, medium 49, low 47",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis",
+            "deepswe"
+          ]
+        },
+        {
+          "model": "claude-sonnet-5-5",
+          "effort": null,
+          "intelligence_index": 56,
+          "effective_cost": 7.6,
+          "ttft_s": 353,
+          "condition": "Not adopted (2026-09-29): AA lists one row only (effort not shown) with the same index as Opus 5.5 xhigh at 2.2x the cost per task and latency, and AA notes it is very verbose. Released 2026-09-28, $2/$10 per M tokens, efforts low..max. Recheck when AA posts the per-effort grid or DeepSWE lists it.",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis"
+          ],
+          "updated": "2026-09-29"
+        }
+      ],
+      "id": "opus55-xhigh",
+      "tier_cell": true,
+      "roles": {
+        "implement": {
+          "claude": 5,
+          "codex": 2
+        },
+        "decide": {
+          "claude": 2,
+          "codex": 1
+        },
+        "plan_review": {
+          "claude": 2,
+          "codex": 1
+        }
+      },
+      "launcher": ".claude/scripts/claude-run.sh"
+    },
+    {
+      "role": [
+        "implement",
+        "write",
+        "review"
+      ],
+      "tier": "C",
+      "vendor": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "intelligence_index": 51,
+      "effective_cost": 1.34,
+      "ttft_s": 24,
+      "endpoint": "claude-code",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "excluded": [
+        {
+          "model": "claude-sonnet-5",
+          "reason": "AA 9-23: Sonnet 5 max 38 / $5.09 / 150s, high 32 / $1.79 / 9.5s vs Opus 5.5 medium 51 / $1.34 / 24s; DeepSWE Sonnet 5 max 54% ($26.40) vs Opus 5 medium 69% ($3.29) — behind on score and effective cost at every effort"
+        },
+        {
+          "model": "claude-opus-5-5",
+          "effort": "low",
+          "reason": "AA 42 / $0.55 / 7s — below the C band (Astra low 46); listed as a D alternative instead"
+        },
+        {
+          "model": "claude-sonnet-5-5",
+          "reason": "AA 9-29: single row 56 / $7.60 / 353s with no per-effort grid, so it cannot be placed at C; kept as an A/claude alternative until AA or DeepSWE give effort-level data"
+        }
+      ],
+      "deepswe_pass1": {
+        "_status": "not listed as of 2026-09-22",
+        "_line_prior": "claude-opus-5 medium 69% ($3.29)"
+      },
+      "note": "Tier C standard route on the Claude side (Codex-host review_gate / write / explicit --tier C implementation). 2026-09-23 Opus 5 medium -> Opus 5.5 medium: AA 51 / $1.34 / 24s vs Opus 5 medium 50 / $1.36 / 6.1s (9-06 scale). Same cost per task, higher index on a lowered scale, but first-token latency 6s -> 24s. Opus 5.5 low (42 / $0.55 / 7s) is too weak for C (peer C/openai Astra low is 46).",
+      "id": "opus55-medium",
+      "tier_cell": true,
+      "roles": {
+        "review_gate": {
+          "claude": 1,
+          "codex": 2
+        },
+        "write": {
+          "claude": 2,
+          "codex": 1
+        }
+      },
+      "launcher": ".claude/scripts/claude-run.sh"
+    },
+    {
+      "role": [
+        "explore_fetch"
+      ],
+      "tier": "D",
+      "vendor": "claude",
+      "model": "claude-haiku-4-5",
+      "ttft_s": 23,
+      "endpoint": "claude-code",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "note": "Non-reasoning isolation worker (explore / web). AA 9-23: 17 / $0.21 / first chunk 23.1s (non-reasoning variant 15* / 0.63s). Opus 5.5 low (42 / $0.55 / 7s) is 2.5x the cost per task for 2.5x the index and a faster first token — use it when a D read needs judgment.",
+      "intelligence_index": 17,
+      "effective_cost": 0.21,
+      "alternatives": [
+        {
+          "model": "claude-opus-5-5",
+          "effort": "low",
+          "intelligence_index": 42,
+          "effective_cost": 0.55,
+          "ttft_s": 7,
+          "condition": "D reads that need some judgment (summaries feeding a decision)",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis"
+          ]
+        }
+      ],
+      "id": "haiku45",
+      "tier_cell": true,
+      "roles": {
+        "explore": 1,
+        "web": 1
+      },
+      "effort": null,
+      "launcher": ".claude/scripts/claude-run.sh"
+    },
+    {
+      "role": [
+        "write"
+      ],
+      "tier": "C",
+      "vendor": "google",
+      "model": "gemini-3.8-flash",
+      "effort": "medium",
+      "ttft_s": null,
+      "output_speed_tps": null,
+      "endpoint": "agy-cli",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "note": "HTML/CSS and static-prototype specialty. AA 9-23: 3.8 Flash medium 40 / $0.93 (speed and latency not shown), high 41 / $1.24 / 14s / 287 t/s, low 33. DeepSWE 9-22 unchanged: medium 71% $1.97, high 74% $2.36 (still tied for first at the lowest cost). agy has no command grant, so it cannot run tests — implementation via agy needs codex-side verification. Recheck item.",
+      "intelligence_index": 40,
+      "effective_cost": 0.93,
+      "deepswe_pass1": {
+        "medium": 0.71,
+        "high": 0.74
+      },
+      "alternatives": [
+        {
+          "model": "gemini-3.8-flash",
+          "effort": "high",
+          "intelligence_index": 41,
+          "effective_cost": 1.24,
+          "ttft_s": 14,
+          "output_speed_tps": 287,
+          "deepswe_pass1": {
+            "high": 0.74
+          },
+          "condition": "long writing or implementation (DeepSWE 74% $2.36; AA ties with medium)",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis",
+            "deepswe"
+          ]
+        }
+      ],
+      "id": "flash-medium",
+      "tier_cell": true,
+      "roles": {
+        "write": 3,
+        "web": {
+          "priority": 1,
+          "requires": {
+            "agy_grant": "read_url",
+            "agent_file": ".agents/agents/url-reader.md"
+          }
+        }
+      },
+      "launcher": ".claude/scripts/agy-run.sh"
+    },
+    {
+      "role": [
+        "write"
+      ],
+      "tier": "D",
+      "vendor": "google",
+      "model": "gemini-3.8-flash",
+      "effort": "low",
+      "ttft_s": null,
+      "endpoint": "agy-cli",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "note": "HTML/CSS bulk writing at low effort. AA 9-23: 3.8 Flash low 33 (cost, speed and latency not shown; 9-06 scale was 42* / 0.8s / 265 t/s).",
+      "intelligence_index": 33,
+      "output_speed_tps": null,
+      "effective_cost": null,
+      "id": "flash-low",
+      "tier_cell": true,
+      "roles": {
+        "write": 4
+      },
+      "launcher": ".claude/scripts/agy-run.sh"
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "intelligence_index": 30,
+      "effective_cost": 0.18,
+      "ttft_s": 2.1,
+      "condition": "Image verification default (codex -i)",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis"
+      ],
+      "vendor": "openai",
+      "route": "codex -i",
+      "id": "terra-medium",
+      "tier": "D",
+      "tier_cell": true,
+      "roles": {
+        "image_verify": 1
+      },
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh"
+    },
+    {
+      "vendor": "openai",
+      "model": "gpt-5.6-luna",
+      "effort": "max",
+      "condition": "only for long closed-spec work where a completion cost/time gain is expected, detached runs only. The existing key name is kept for compatibility; this is not a cheapest-first policy.",
+      "id": "luna56-max",
+      "tier": "C",
+      "tier_cell": false,
+      "roles": {
+        "implement": 6
+      },
+      "status": "conditional",
+      "launcher": ".claude/scripts/codex-run.sh"
+    },
+    {
+      "role": [
+        "bulk_local_read"
+      ],
+      "tier": "D",
+      "vendor": "local",
+      "endpoint": "local-run.sh",
+      "evidence": "measured",
+      "sources": [],
+      "updated": "2026-09-04",
+      "catalog_checked": "2026-09-04",
+      "status": "optional",
+      "note": "Optional route for tier-D bulk local reads (local-run.sh). Call it when needed, after confirming the endpoint declaration and the project's data boundary. There is no readiness check at start-up; availability failures are told apart by the actual call result. Model, address and figures stay in local settings only.",
+      "id": "local-reader",
+      "tier_cell": true,
+      "roles": {
+        "explore": 2
+      },
+      "effort": null,
+      "launcher": ".claude/scripts/local-run.sh",
+      "model": "auto",
+      "requires": {
+        "local_endpoint": true
+      }
+    }
+  ]
 }

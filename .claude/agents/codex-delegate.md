@@ -55,7 +55,7 @@ task text into shell arguments. The prompt must state that `git commit`
    - Wrong output with healthy infrastructure → implementation failure.
 2. ONE corrective resume per task: `-r <SESSION_ID|last>` with the same
    -m/-e/-s and the correction as the prompt file. Move one rung up the
-   ladder (`roles.implement.ladder` in model-bindings.json;
+   ladder (the OpenAI `implement` priorities in the `workers` list in model-bindings.json;
    `max` only with `-b`, worker `ultra` denied) ONLY
    when the diagnosis shows reasoning quality was the blocker — never
    because a run was slow.

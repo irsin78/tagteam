@@ -45,7 +45,7 @@ docs/                       Manual, runtime-boundary.md, platform notes
 The baseline rationale and scope of practical adjustments belong in
 [Design principles](design-principles.md#basis-for-model-selection).
 The [bindings JSON](../.claude/model-bindings.json) is authoritative for specific
-models, effort, benchmarks, sources, and measurement dates. Follow `host_routes`
+models, effort, benchmarks, sources, and measurement dates. Follow the `workers` list and its per-host role priorities
 for host routing and this manual's host-specific execution section for procedures.
 
 | Role | Default route and selection criteria |
@@ -1262,7 +1262,7 @@ go through permission prompts/classification.
   leave it to global `~/.codex/config.toml`. Delegate values are
   `low|medium|high|xhigh|max`; Max requires `-b`, and Ultra is rejected. For the
   distinction between official support, app modes, and installed CLI verification,
-  follow "Applying the GPT-6 Astra official guide" above. Implementation defaults to `roles.implement.ladder[0]`; when `-m`/`-e`
+  follow "Applying the GPT-6 Astra official guide" above. Implementation defaults to the first active OpenAI `implement` worker in `workers`; when `-m`/`-e`
   are omitted, the launcher reads it and records the source in `BINDINGS:`.
   Escalation conditions are in `docs/orchestration/retry-policy.md`; advisory calls
   explicitly set router-selected model/effort and `--sandbox read-only`.
