@@ -2,8 +2,8 @@
   "schema_version": 1,
   "description": "Role -> tier -> binding. The rules (rules/) speak only of tiers and roles; the concrete model and effort are set here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole). harness-route.py selects a route from host_routes, the role, the bindings and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-09-23",
-  "catalog_checked": "2026-09-23",
+  "updated": "2026-09-29",
+  "catalog_checked": "2026-09-29",
   "tiers": {
     "A": {
       "name": "Top-level judgment",
@@ -39,10 +39,11 @@
       "host": "Claude Code",
       "quota": "Claude plan",
       "catalog": {
-        "checked": "2026-09-23",
+        "checked": "2026-09-29",
         "probed": [
           "claude-opus-5-5 (claude -p --model claude-opus-5-5: OK, modelUsage=claude-opus-5-5)",
-          "opus alias (claude -p --model opus: resolves to claude-opus-5-5)"
+          "opus alias (claude -p --model opus: resolves to claude-opus-5-5)",
+          "claude-sonnet-5-5 (claude -p --model claude-sonnet-5-5: OK on Claude Code 2.1.283; the CLI logs unrecognized_model and disables the advisor for it)"
         ],
         "from_model_table": [
           "claude-fable-5-1",
@@ -164,6 +165,19 @@
               "artificial_analysis",
               "deepswe"
             ]
+          },
+          {
+            "model": "claude-sonnet-5-5",
+            "effort": null,
+            "intelligence_index": 56,
+            "effective_cost": 7.6,
+            "ttft_s": 353,
+            "condition": "Not adopted (2026-09-29): AA lists one row only (effort not shown) with the same index as Opus 5.5 xhigh at 2.2x the cost per task and latency, and AA notes it is very verbose. Released 2026-09-28, $2/$10 per M tokens, efforts low..max. Recheck when AA posts the per-effort grid or DeepSWE lists it.",
+            "evidence": "leaderboard",
+            "sources": [
+              "artificial_analysis"
+            ],
+            "updated": "2026-09-29"
           }
         ]
       },
@@ -371,6 +385,10 @@
             "model": "claude-opus-5-5",
             "effort": "low",
             "reason": "AA 42 / $0.55 / 7s — below the C band (Astra low 46); listed as a D alternative instead"
+          },
+          {
+            "model": "claude-sonnet-5-5",
+            "reason": "AA 9-29: single row 56 / $7.60 / 353s with no per-effort grid, so it cannot be placed at C; kept as an A/claude alternative until AA or DeepSWE give effort-level data"
           }
         ],
         "deepswe_pass1": {
@@ -872,10 +890,11 @@
       "rules": "Fill a slot from the primary; confirm when the secondary lands in the same band, and when they disagree follow the secondary for long implementations only and record it in the evidence column. Items on neither source are filled from own measurements or experience, with the evidence type marked.",
       "recheck_trigger": "Actual model adoption, repeated task failure or observed performance change; reassess only affected bindings/policies.",
       "last_recheck": {
-        "date": "2026-09-23",
-        "trigger": "Claude Opus 5.5 release (2026-09-22) + AA effort grid posted; codex catalog listed gpt-6-sol / gpt-6-luna during the same check",
+        "date": "2026-09-29",
+        "trigger": "Claude Sonnet 5.5 release (2026-09-28); previous: Opus 5.5 release (2026-09-22) + AA effort grid",
         "open": [
-          "DeepSWE rows for claude-opus-5.5, gpt-6-sol, gpt-6-luna (A/B/C claude cells and pending_replacement are AA-only until then)"
+          "DeepSWE rows for claude-opus-5.5, gpt-6-sol, gpt-6-luna (A/B/C claude cells and pending_replacement are AA-only until then)",
+          "AA per-effort grid and DeepSWE row for claude-sonnet-5-5 (recorded as an A/claude alternative, not adopted)"
         ]
       }
     }
