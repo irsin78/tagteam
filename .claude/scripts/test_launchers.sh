@@ -141,6 +141,9 @@ cat > "$FIXTURE_ROOT/codex-stdin.log"
 echo "stub codex running"
 printf '%s\n' "stub final message" > "${out:-$FIXTURE_ROOT/codex-last-message.log}"
 case "${STUB_ACTION:-none}" in
+    quota-status) echo 'ERROR: HTTP 429 Too Many Requests'; exit 1 ;;
+    usage-status) echo "ERROR: You've hit your usage limit. Try again later."; exit 1 ;;
+    quota-prose) printf '%s\n' 'The model quotes "HTTP 429 Too Many Requests".' '12: ERROR: usage limit exceeded' '> ERROR: HTTP 429 Too Many Requests'; exit 1 ;;
     notice) printf '{}\n' > .claude/.preflight-status ;;
     none) ;;
     remove:*) rm -f -- "${STUB_ACTION#remove:}" ;;
@@ -260,6 +263,10 @@ case "${STUB_ACTION:-none}" in
     write:*) echo 'stub-output' > "${STUB_ACTION#write:}" ;;
     commit) git -c user.name=Stub -c user.email=stub@example.invalid commit --allow-empty -m stub >/dev/null ;;
     nojson) echo 'not json'; exit 0 ;;
+    quota-status) echo '{"is_error":true,"result":"HTTP 429 Too Many Requests"}'; exit 0 ;;
+    usage-status) echo '{"is_error":true,"result":"Usage limit exceeded"}'; exit 0 ;;
+    quota-prose) echo '{"is_error":false,"result":"HTTP 429 Too Many Requests"}'; exit 0 ;;
+    quota-quoted-error) echo '{"is_error":true,"result":"> HTTP 429 Too Many Requests"}'; exit 0 ;;
     errorjson) echo '{"is_error":true,"result":"quota exhausted"}'; exit 0 ;;
     rewind) git update-ref HEAD HEAD~1 ;;
     delete-head) git update-ref -d HEAD ;;
@@ -567,6 +574,30 @@ expect_case "agy rejects prompt over 30 KB" "$ok" "exit=$LAST_RC"
 fi
 
 if selected codex; then
+fresh_case
+run_capture codex-availability-quota-status env STUB_ACTION=quota-status bash "$CODEX_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED' && has "$LAST_OUT" '^AVAILABILITY: exhausted:openai' && ok=1
+expect_case "codex availability quota-status" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture codex-availability-usage-status env STUB_ACTION=usage-status bash "$CODEX_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED' && has "$LAST_OUT" '^AVAILABILITY: exhausted:openai' && ok=1
+expect_case "codex availability usage-status" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture codex-availability-none env STUB_ACTION=none bash "$CODEX_RUN" -p prompt.txt
+ok=0
+! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+expect_case "codex availability none" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture codex-availability-quota-prose env STUB_ACTION=quota-prose bash "$CODEX_RUN" -p prompt.txt
+ok=0
+! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+expect_case "codex availability quota-prose" "$ok" "exit=$LAST_RC"
+
 # Successful paths and persisted state.
 fresh_case
 : > "$TEST_ROOT/codex-args.log"
@@ -708,6 +739,36 @@ expect_case "agy unsatisfied stop-gate is not DONE" "$ok" "exit=$LAST_RC"
 fi
 
 if selected claude; then
+fresh_case
+run_capture claude-availability-quota-status env STUB_ACTION=quota-status bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED' && has "$LAST_OUT" '^AVAILABILITY: exhausted:claude' && ok=1
+expect_case "claude availability quota-status" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-availability-usage-status env STUB_ACTION=usage-status bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED' && has "$LAST_OUT" '^AVAILABILITY: exhausted:claude' && ok=1
+expect_case "claude availability usage-status" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-availability-none env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+expect_case "claude availability none" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-availability-quota-prose env STUB_ACTION=quota-prose bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+expect_case "claude availability quota-prose" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-availability-quota-quoted-error env STUB_ACTION=quota-quoted-error bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+expect_case "claude availability quota-quoted-error" "$ok" "exit=$LAST_RC"
+
 # claude-run.sh: the Claude twin of codex-run.sh, so a
 # Codex-orchestrated session can delegate here under the same contract.
 fresh_case

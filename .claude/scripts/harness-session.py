@@ -14,7 +14,7 @@ import time
 
 HOOKS = Path(__file__).resolve().parent.parent / 'hooks'
 sys.path.insert(0, str(HOOKS))
-from stop_gate import evaluate, evaluate_mission, update_mission  # noqa: E402
+from stop_gate import evaluate, evaluate_mission, update_mission, mission_marker  # noqa: E402
 
 
 def check_codex_hooks(root, timeout=20):
@@ -97,6 +97,34 @@ def check_codex_hooks(root, timeout=20):
         process.stdout.close()
 
 
+def update_budget(cwd, session, exhausted=None, clear=False):
+    """Orchestrator-only availability bookkeeping; preserve mission fields."""
+    marker = mission_marker(cwd, session)
+    if marker is None or os.environ.get('HARNESS_DELEGATE_RUN') == '1':
+        raise ValueError('a current orchestrator session id is required')
+    record = json.loads(marker.read_text(encoding='utf-8')) if marker.exists() else {}
+    if not isinstance(record, dict):
+        raise ValueError('invalid session record')
+    if clear:
+        record.pop('exhausted', None)
+        message = 'cleared'
+    else:
+        vendors = exhausted.split(',') if isinstance(exhausted, str) else []
+        previous = record.get('exhausted', [])
+        if (not vendors or not isinstance(previous, list)
+                or any(not isinstance(v, str) or v not in ('openai', 'claude', 'google', 'local')
+                       for v in vendors + previous)):
+            raise ValueError('exhausted must be a comma-separated vendor list')
+        record['exhausted'] = sorted(set(previous + vendors))
+        message = 'exhausted:' + ','.join(record['exhausted'])
+    if record:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(record, ensure_ascii=True), encoding='utf-8')
+    else:
+        marker.unlink(missing_ok=True)
+    return 'HARNESS BUDGET: ' + message
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -111,7 +139,18 @@ def main():
                          choices=('active', 'complete', 'paused', 'needs-input', 'switched'))
     mission.add_argument('--mission', help='project-relative mission folder containing spec.md')
     mission.add_argument('--reason', help='required for pause, decision/authorization wait, or changed request')
+    budget = commands.add_parser('budget', help='record confirmed session vendor exhaustion')
+    budget.add_argument('--session', required=True)
+    action = budget.add_mutually_exclusive_group(required=True)
+    action.add_argument('--exhausted', help='comma-separated vendors')
+    action.add_argument('--clear', action='store_true')
     args = parser.parse_args()
+    if args.command == 'budget':
+        try:
+            print(update_budget(os.getcwd(), args.session, args.exhausted, args.clear))
+        except (OSError, ValueError, TypeError) as exc:
+            parser.error(str(exc))
+        return 0
     if args.command == 'check-codex-hooks':
         try:
             count = check_codex_hooks(os.getcwd())

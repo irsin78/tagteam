@@ -674,7 +674,7 @@ of truth the entry instructions point to.
    `python .claude/scripts/harness-session.py start --host <host>` at the root
    (`codex` or `claude`). It prints the same single `HARNESS PLATFORM:` line as the
    hook, carrying host, role and the platform note, and does not wait for stdin.
-   Declare budgets; check server connections when using the corresponding route.
+   Declare budgets; record confirmed exhaustion with `python .claude/scripts/harness-session.py budget --session <id> --exhausted <vendor>[,<vendor>]` and clear it with `python .claude/scripts/harness-session.py budget --session <id> --clear`; set `HARNESS_SESSION_ID` to that id when calling the router (precedence: `HARNESS_BUDGET` > session record > local bindings > normal). Check server connections when using the corresponding route.
 2. First read only "Direct work or delegation" in
    `docs/orchestration/delegation-matrix.md` to decide direct work versus delegation.
    For delegation, also read assignment/author-separation sections. If needed,

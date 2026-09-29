@@ -7,6 +7,7 @@ Orchestrator-only reference outside automatic rules loading; the starting host s
    Confirmed authentication/quota failures are availability conditions even
    when a CLI returns exit 1. Inspect partial changes first; use the matrix
    fallback or request reauthentication, never repeat a revoked-token call.
+   Record confirmed exhaustion with `python .claude/scripts/harness-session.py budget --session <id> --exhausted <vendor>`; with `HARNESS_SESSION_ID=<id>` the router skips that vendor.
    Do not infer CLI errors from quoted task/tool output in merged logs.
    Sandbox, dependencies, quoting and unreachable MCP are infrastructure failures. Repair
    the environment and rerun at the same model/effort; do not promote.

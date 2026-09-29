@@ -9,7 +9,7 @@ import sys
 import shutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'hooks'))
-from stop_gate import find_bash  # noqa: E402
+from stop_gate import find_bash, mission_marker  # noqa: E402
 
 REVIEW_ROLES = ('plan_review', 'review_gate', 'review_deep')
 
@@ -141,7 +141,18 @@ def load_bindings(root):
 
 
 def session_budget(env):
-    """Reserved for the session availability record (U4)."""
+    """Read only the session selected by orchestrator-set HARNESS_SESSION_ID."""
+    marker = mission_marker(Path.cwd(), env.get('HARNESS_SESSION_ID'))
+    if marker is None:
+        return None
+    try:
+        record = json.loads(marker.read_text(encoding='utf-8'))
+        exhausted = record.get('exhausted')
+        if (isinstance(exhausted, list) and exhausted
+                and all(isinstance(v, str) and v in VENDORS for v in exhausted)):
+            return 'exhausted:' + ','.join(sorted(set(exhausted)))
+    except (OSError, ValueError, AttributeError):
+        pass
     return None
 
 

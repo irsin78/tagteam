@@ -48,7 +48,7 @@ def update_mission(cwd, session_id, state, mission=None, reason=None):
             raise ValueError('mission must name a project folder containing the confirmed spec.md')
         previous.update(mission=target.relative_to(root).as_posix(), state=state, reason='')
     elif state in ('paused', 'needs-input', 'switched'):
-        if not reason or not reason.strip() or not previous:
+        if not reason or not reason.strip() or not previous.get('mission'):
             raise ValueError('an armed mission and a concrete pause/wait/switch reason are required')
         previous.update(state=state, reason=reason.strip())
     else:
@@ -68,7 +68,13 @@ def mission_prompt(cwd, data):
     marker = mission_marker(cwd, session)
     if marker is None:
         return 'HARNESS MISSION: session id unavailable; automatic continuation is inactive.'
-    marker.unlink(missing_ok=True)
+    record = json.loads(marker.read_text(encoding='utf-8')) if marker.exists() else {}
+    if not isinstance(record, dict):
+        raise ValueError('invalid session record')
+    if record.get('exhausted'):
+        marker.write_text(json.dumps({'exhausted': record['exhausted']}), encoding='utf-8')
+    else:
+        marker.unlink(missing_ok=True)
     return ('HARNESS MISSION SESSION: %s. Previous mission guard released for this prompt. '
             'If executing/continuing a confirmed multi-step mission, arm it with '
             'harness-session.py mission --session <this-id> --state active --mission <folder>. '
@@ -84,6 +90,8 @@ def evaluate_mission(cwd, data):
         return 0, ''
     try:
         record = json.loads(marker.read_text(encoding='utf-8'))
+        if isinstance(record, dict) and set(record) == {'exhausted'}:
+            return 0, ''
         state, mission = record['state'], record['mission']
         if not isinstance(mission, str) or not mission:
             raise ValueError('missing mission path')
