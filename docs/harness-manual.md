@@ -381,7 +381,6 @@ individual missions. Merge existing project settings/instructions without overwr
 |---|---|---|
 | Claude native workers | `claude-implementer.md`, `opus-architect.md`, `haiku-scout.md`, `haiku-fetcher.md`, `codex-delegate.md` in `.claude/agents/` | Native delegation/CLI controllers. Worktree roles require Git |
 | Antigravity | `.claude/scripts/agy-run.sh`, `.claude/agents/antigravity-delegate.md`, `.claude/skills/delegate-agy/SKILL.md` | Configure CLI/permissions only when selecting agy. Shared launcher dependencies also required |
-| Antigravity web reader | `.agents/agents/url-reader.md` | Optional isolated tier C reader; requires the Antigravity bundle and its read_url grant |
 | Local reads | `.claude/scripts/local-run.sh`, `local-read.py` | Declare only when using a local endpoint |
 | Enhanced WSL isolation | `.claude/scripts/lane-sensitive.sh`, `.claude/sandbox-sensitive.json` | When selecting a separate isolation lane |
 | Statistics, cleanup, Codex diagnostics | Needed files among `.claude/scripts/harness-stats.sh`, `harness-clean.py`, `check-codex-sandbox.sh` | Explicitly invoked tools. Diagnostics require shared `workspace-snapshot.py` |
@@ -655,13 +654,6 @@ shared steps first, followed by platform-specific details.
      `command(...)` grant enforces HARNESS_DENIED (passes only with task-specific
      `HARNESS_ALLOW_AGY_COMMAND=1` + user approval). Recipe:
      `.claude/skills/delegate-agy/SKILL.md`.
-     For the optional web reader (agy 1.2.12), copy
-     `.agents/agents/url-reader.md` into the project's same path and add
-     `read_url(*)` to `permissions.allow` in the global settings above.
-     Project `.agents/settings.json` does not grant this tool. This is a
-     per-machine user installation step, like Codex hook trust. `agy-run.sh
-     -a web` uses only the reader's `read_url_content` tool and requires
-     `read_url`, never `write_file`; keep the existing command-grant refusal.
 
    - **agy grant conclusion** (measured 2026-08-31·09-02, agy 1.1.24): The only
      global grant is `write_file(*)`. Narrowing `command(<pattern>)` acts as total
@@ -785,8 +777,7 @@ fetch a domain. Delegated runs operate without permission prompts, so requests
 to domains without allow rules are denied immediately; workers report without
 having read the contents. Prepare as follows:
 
-Web tier D (the default) uses Haiku; tier C uses agy's `url-reader` when declared
-and its requirements are met, via `agy-run.sh -a web` with the resolved model/effort.
+Web tiers D (the default) and C both resolve to Haiku.
 Bounded extraction is D; summaries feeding a decision or comparing sources are C.
 Select C with `python .claude/scripts/harness-route.py --host <claude|codex> --role web --tier C`.
 Reader fallback and exhaustion follow [Availability and fallback](orchestration/delegation-matrix.md#availability-and-fallback).

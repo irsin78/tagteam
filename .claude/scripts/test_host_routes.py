@@ -35,6 +35,14 @@ class HostRoutes(unittest.TestCase):
     def override(self, ident, **fields):
         return routes.merge_bindings(self.data, {'workers_local': [dict(id=ident, **fields)]})
 
+    def with_test_reader(self):
+        return self.override('test-reader', vendor='google', model='test-model',
+                             effort='medium', tier='C', status='optional',
+                             launcher='.claude/scripts/agy-run.sh',
+                             roles={'web': {'priority': 1, 'requires': {
+                                 'agy_grant': 'read_url',
+                                 'agent_file': '.agents/agents/project-agent.md'}}})
+
     def test_tier_prefers_nonexhausted_vendor(self):
         for role, tier, exhausted, fallback, normal in (
                 ('review_deep', 'A', 'claude', 'astra-high', 'opus55-xhigh'),
@@ -57,9 +65,11 @@ class HostRoutes(unittest.TestCase):
     def test_agy_command_grant_requires_authorization(self):
         with tempfile.TemporaryDirectory() as temp:
             settings = Path(temp) / 'settings.json'
-            settings.write_text(json.dumps({'permissions': {'allow': ['read_url(*)', 'command(*)']}}))
             env = {'HARNESS_AGY_SETTINGS': str(settings)}
-            requires = {'agy_grant': 'read_url'}
+            data = self.with_test_reader()
+            reader = next(w for w in data['workers'] if w['id'] == 'test-reader')
+            requires = {'agy_grant': reader['roles']['web']['requires']['agy_grant']}
+            settings.write_text(json.dumps({'permissions': {'allow': [requires['agy_grant'] + '(*)', 'command(*)']}}))
             self.assertEqual(routes.unmet_requires(requires, self.data, temp, env),
                              'requires agy_grant: command grant present')
             env['HARNESS_ALLOW_AGY_COMMAND'] = '1'
@@ -106,27 +116,33 @@ class HostRoutes(unittest.TestCase):
 
     def test_requires_and_reader_tiers(self):
         with tempfile.TemporaryDirectory() as temp:
+            reader_data = self.with_test_reader()
             root = Path(temp)
             settings = root / 'agy.json'
-            agent = root / '.agents/agents/url-reader.md'
+            agent = root / '.agents/agents/project-agent.md'
             env = {'HARNESS_AGY_SETTINGS': str(settings), 'PATH': ''}
             def web(data=None, **kw):
-                return routes.resolve(data or self.data, 'codex', 'web', root=root, env=env, **kw)
+                return routes.resolve(data or reader_data, 'codex', 'web', root=root, env=env, **kw)
+            public = web(self.data, tier='C')
+            self.assertEqual(public['worker_id'], 'haiku45')
+            self.assertTrue(public['tier_fallback'])
             missing = web(tier='C')
             self.assertEqual(missing['worker_id'], 'haiku45')
             self.assertTrue(missing['tier_fallback'])
             self.assertTrue(any('agy_grant' in x['reason'] for x in missing['skipped']))
-            settings.write_text(json.dumps({'permissions': {'allow': ['read_url(*)']}}))
+            reader = next(w for w in reader_data['workers'] if w['id'] == 'test-reader')
+            grant = reader['roles']['web']['requires']['agy_grant']
+            settings.write_text(json.dumps({'permissions': {'allow': [grant + '(*)']}}))
             self.assertTrue(any('agent_file' in x['reason'] for x in web(tier='C')['skipped']))
             agent.parent.mkdir(parents=True)
             agent.write_text('reader')
-            self.assertEqual(web(tier='C')['worker_id'], 'flash-medium')
+            self.assertEqual(web(tier='C')['worker_id'], 'test-reader')
             self.assertFalse(web(tier='C')['tier_fallback'])
             self.assertEqual(web()['worker_id'], 'haiku45')
             fallback = web(tier='C', budget='exhausted:google')
             self.assertEqual(fallback['worker_id'], 'haiku45')
             self.assertTrue(fallback['tier_fallback'])
-            self.assertEqual(web(budget='exhausted:claude')['worker_id'], 'flash-medium')
+            self.assertEqual(web(budget='exhausted:claude')['worker_id'], 'test-reader')
             settings.write_text(json.dumps({'permissions': {'allow': ['read_url_other(*)']}}))
             self.assertEqual(web(tier='C')['worker_id'], 'haiku45')
             with self.assertRaises(IndexError):
@@ -143,13 +159,13 @@ class HostRoutes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp) / '.claude'
             folder.mkdir()
-            (folder / 'model-bindings.json').write_text(json.dumps(self.data), encoding='utf-8')
-            override = {'workers_local': [{'id': 'flash-medium', 'roles': {'web': {'priority': 7}}}]}
+            (folder / 'model-bindings.json').write_text(json.dumps(self.with_test_reader()), encoding='utf-8')
+            override = {'workers_local': [{'id': 'test-reader', 'roles': {'web': {'priority': 7}}}]}
             (folder / 'model-bindings.local.json').write_text(json.dumps(override))
             merged = routes.load_bindings(temp)
-            flash = next(w for w in merged['workers'] if w['id'] == 'flash-medium')
-            self.assertEqual(flash['roles']['web']['priority'], 7)
-            self.assertEqual(flash['roles']['web']['requires']['agy_grant'], 'read_url')
+            reader = next(w for w in merged['workers'] if w['id'] == 'test-reader')
+            self.assertEqual(reader['roles']['web']['priority'], 7)
+            self.assertEqual(reader['roles']['web']['requires']['agy_grant'], 'read_url')
             base = self.cell('D', 'claude')
             added = dict(base, id='other-reader', tier_cell=False, roles={'explore': 3})
             override = {'workers': [base], 'workers_local': [added]}
@@ -402,12 +418,15 @@ for line in sys.stdin:
 
     def test_web_uses_haiku_on_both_hosts(self):
         for host in ('codex', 'claude'):
-            route = routes.resolve(self.data, host, 'web')
-            self.assertEqual(route['vendor'], 'claude')
-            self.assertTrue(route['launcher'].endswith('claude-run.sh'))
-            self.assertEqual(route['claude_role'], 'web')
-            self.assertEqual(route['model'], self.cell('D', 'claude')['model'])
-            self.assertEqual(route['sandbox'], 'read-only')
+            for tier in (None, 'D', 'C'):
+                route = routes.resolve(self.data, host, 'web', tier=tier)
+                self.assertEqual(route['vendor'], 'claude')
+                self.assertTrue(route['launcher'].endswith('claude-run.sh'))
+                self.assertEqual(route['claude_role'], 'web')
+                self.assertEqual(route['model'], self.cell('D', 'claude')['model'])
+                self.assertEqual(route['sandbox'], 'read-only')
+                self.assertEqual(route['worker_id'], 'haiku45')
+                self.assertEqual(route['tier_fallback'], tier == 'C')
 
     def test_advisory_is_other_vendor_and_readonly(self):
         for host, vendor in [('codex', 'claude'), ('claude', 'openai')]:

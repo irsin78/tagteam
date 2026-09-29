@@ -810,14 +810,7 @@
       "id": "flash-medium",
       "tier_cell": true,
       "roles": {
-        "write": 3,
-        "web": {
-          "priority": 1,
-          "requires": {
-            "agy_grant": "read_url",
-            "agent_file": ".agents/agents/url-reader.md"
-          }
-        }
+        "write": 3
       },
       "launcher": ".claude/scripts/agy-run.sh"
     },

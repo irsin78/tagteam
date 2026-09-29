@@ -27,12 +27,10 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     exit 2
 fi
 EFFORT=medium
-LANE=
 MODEL=
 LOG_DIR=.claude/agy-logs
 PROMPT_FILE=
 EXPECTED=
-EXPECTED_SET=0
 TIMEOUT=570
 DETACH=0
 TOOL=agy
@@ -47,7 +45,7 @@ timing_init "$LAUNCH_CLOCK"
 . "$SCRIPT_DIR/run-state.sh" || exit 4
 
 usage() {
-    echo 'Usage: agy-run.sh -p <prompt-file> [-a web] [-m MODEL] [-e low|medium|high] [-x <expected-output-file>[,...]] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b]' >&2
+    echo 'Usage: agy-run.sh -p <prompt-file> [-m MODEL] [-e low|medium|high] [-x <expected-output-file>[,...]] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b]' >&2
     echo '       agy-run.sh --status <RUN_ID>' >&2
     echo '       agy-run.sh --wait <RUN_ID> [-t SECONDS<=570]' >&2
     echo 'HARNESS_DENIED: bad invocation (a typo is a policy error, not an availability failure)' >&2
@@ -57,13 +55,12 @@ usage() {
 # Read-back commands: no delegation, no quota — only the state record.
 launcher_readback "$@"
 
-while getopts ":p:e:x:l:t:ba:m:" opt; do
+while getopts ":p:e:x:l:t:bm:" opt; do
     case "$opt" in
-        a) [ "$OPTARG" = web ] || usage; LANE=$OPTARG ;;
         m) MODEL=$OPTARG ;;
         p) PROMPT_FILE=$OPTARG ;;
         e) EFFORT=$OPTARG ;;
-        x) EXPECTED=$OPTARG; EXPECTED_SET=1 ;;
+        x) EXPECTED=$OPTARG ;;
         l) LOG_DIR=$OPTARG ;;
         t) TIMEOUT=$OPTARG ;;
         b) DETACH=1 ;;
@@ -72,14 +69,6 @@ while getopts ":p:e:x:l:t:ba:m:" opt; do
 done
 
 # ---- policy checks (exit 4 = HARNESS_DENIED, never a fallback trigger) ----
-case "$LANE" in
-    ""|web) ;;
-    *) echo "HARNESS_DENIED: unknown lane '$LANE' (web)" >&2; exit 4 ;;
-esac
-if [ "$LANE" = web ] && [ "$EXPECTED_SET" -eq 1 ]; then
-    echo "HARNESS_DENIED: -x is invalid with -a web" >&2
-    exit 4
-fi
 case "$EFFORT" in
     low|medium|high) ;;
     *) echo "HARNESS_DENIED: unknown effort '$EFFORT' (low|medium|high)" >&2; exit 4 ;;
@@ -105,7 +94,7 @@ if [ "$PROMPT_BYTES" -gt "$PROMPT_MAX_BYTES" ]; then
     exit 4
 fi
 # Grant sanity (security-boundary.md): headless agy auto-approves only what
-# its GLOBAL settings allow. Writes need write_file; web needs read_url. A
+# its GLOBAL settings allow. Writes need write_file. A
 # `command` grant turns any injection into command execution, so it needs
 # the same per-task user approval as codex full access.
 PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
@@ -118,9 +107,8 @@ if [ ! -f "$AGY_SETTINGS" ]; then
     exit 2
 fi
 # Parse permissions.allow structurally (a grep would confuse deny entries,
-# escaped keys and comments). Output: "<has_command> <has_lane_grant>".
+# escaped keys and comments). Output: "<has_command> <has_write_grant>".
 REQUIRED_GRANT=write_file
-[ "$LANE" != web ] || REQUIRED_GRANT=read_url
 GRANTS=$("$PY" - "$AGY_SETTINGS" "$REQUIRED_GRANT" <<'PY'
 import json, sys
 try:
@@ -140,11 +128,7 @@ if [ "${GRANTS%% *}" = 1 ] && [ "${HARNESS_ALLOW_AGY_COMMAND:-}" != "1" ]; then
     exit 4
 fi
 if [ "${GRANTS##* }" != 1 ]; then
-    echo "AGY_UNAVAILABLE: no $REQUIRED_GRANT grant in permissions.allow of $AGY_SETTINGS — configure the lane grant (docs/harness-manual.md, install section)" >&2
-    exit 2
-fi
-if [ "$LANE" = web ] && [ ! -f .agents/agents/url-reader.md ]; then
-    echo "AGY_UNAVAILABLE: reader agent .agents/agents/url-reader.md not installed (docs/harness-manual.md, install section)" >&2
+    echo "AGY_UNAVAILABLE: no $REQUIRED_GRANT grant in permissions.allow of $AGY_SETTINGS — configure the write_file grant (docs/harness-manual.md, install section)" >&2
     exit 2
 fi
 if ! command -v agy >/dev/null 2>&1; then
@@ -279,15 +263,12 @@ if timeout --version 2>/dev/null | grep -qi coreutils; then
 fi
 # The CLI runs as a background child so its PID is recorded and a signal
 # to the launcher can be forwarded; `wait` keeps the call synchronous.
-WEB_SCHEMA='{"type":"object","additionalProperties":false,"required":["status","summary","sources"],"properties":{"status":{"type":"string","enum":["ok","unavailable"]},"summary":{"type":"string"},"sources":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["url","fetched"],"properties":{"url":{"type":"string"},"fetched":{"type":"boolean"}}}}}}'
-LANE_ARGS=()
 MODEL_ARGS=()
 [ -z "$MODEL" ] || MODEL_ARGS=(--model "$MODEL")
-[ "$LANE" != web ] || LANE_ARGS=(--agent url-reader --sandbox --json-schema "$WEB_SCHEMA")
 run_agy() {
     timing_enter cli
     set -m   # own process group, so a signal reaches agy and its children
-    "${RUNNER[@]}" agy --log-file "$AGY_LOG" --effort "$EFFORT" "${MODEL_ARGS[@]}" "${LANE_ARGS[@]}" --output-format json \
+    "${RUNNER[@]}" agy --log-file "$AGY_LOG" --effort "$EFFORT" "${MODEL_ARGS[@]}" --output-format json \
         --print-timeout "${TIMEOUT}s" -p "$(cat "$PROMPT_FILE")" > "$RUN_JSON" 2> "$RUN_ERR" < /dev/null &
     CHILD_PID=$!
     set +m
@@ -301,14 +282,14 @@ run_agy() {
 # Parse the JSON result: last JSON line of stdout (agy may print banners
 # first); the auto-denied banner is looked for on BOTH streams and the
 # matching line itself is reported. Output: status, turns, tokens,
-# response line count, denied line, error, web verdict, quota signal —
+# response line count, denied line, error, quota signal —
 # tab separated; "invalid" when no
 # JSON line parses.
 parse_result() {
-    "$PY" - "$RUN_JSON" "$RUN_ERR" "$RESPONSE_FILE" "$LANE" "$AGY_EXIT" <<'PY'
+    "$PY" - "$RUN_JSON" "$RUN_ERR" "$RESPONSE_FILE" "$AGY_EXIT" <<'PY'
 import json, re, sys
 src, err, out = sys.argv[1], sys.argv[2], sys.argv[3]
-web = "missing"; exhausted = False; d = {}; signals = []
+exhausted = False; d = {}; signals = []
 status = "invalid"; response = ""; turns = "?"; tokens = "?"; denied = ""; error = ""
 try:
     lines = [l for l in open(src, encoding="utf-8", errors="replace").read().splitlines() if l.strip()]
@@ -340,53 +321,16 @@ exhausted = bool(re.search(r"quota|rate[ -]limit|\b429\b", str(d.get("error") or
 # Accepted: HTTP 429[ Too Many Requests], usage/rate-limit[ exceeded/reached],
 # quota[ exceeded/exhausted], 429 Too Many Requests; optional ERROR: prefix.
 status_line = r"(?:ERROR: )?(?:HTTP 429(?: Too Many Requests)?|(?:usage|rate)[ -]limit(?: exceeded| reached)?[.!]?|quota(?: exceeded| exhausted)?[.!]?|429 Too Many Requests)"
-if sys.argv[5] != "0" or status != "SUCCESS":
+if sys.argv[4] != "0" or status != "SUCCESS":
     exhausted = exhausted or any(re.fullmatch(status_line, line.strip(), re.I) for line in signals)
     # Existing login/auth failure messages are unavailable, not quota exhaustion.
     if not error:
         error = next((line.strip()[:200] for line in signals
                       if re.fullmatch(r"(?:ERROR: )?(?:not logged(?: in)?|unauthenticated|auth(?:entication)?(?: failed|required)?)[.!]?", line.strip(), re.I)), "")
-if sys.argv[4] == "web":
-    struct = d.get("structured_output") if isinstance(d, dict) else None
-    if struct is None and response:
-        # agy 1.2.12 returns the --json-schema object inside a ```json fence in
-        # `response` (measured 2026-09-29), sometimes the same object twice
-        # without fences. Take the first JSON object; leading fence markers
-        # are skipped, trailing repeats are ignored.
-        text = response.strip() if isinstance(response, str) else response
-        if isinstance(text, str) and text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text)
-        try:
-            if isinstance(text, str):
-                struct, _end = json.JSONDecoder().raw_decode(text)
-            else:
-                struct = text
-        except (ValueError, TypeError):
-            web = "malformed"
-    if struct is not None:
-        if not isinstance(struct, dict):
-            web = "malformed"
-        else:
-            verdict, summary, sources = struct.get("status"), struct.get("summary"), struct.get("sources")
-            if (verdict not in ("ok", "unavailable") or not isinstance(summary, str)
-                    or not summary.strip() or not isinstance(sources, list)
-                    or not all(isinstance(x, dict) and isinstance(x.get("url"), str)
-                               and isinstance(x.get("fetched"), bool) for x in sources)):
-                web = "malformed"
-            else:
-                web = "unavailable" if verdict != "ok" else "ok" if sources and all(x["fetched"] for x in sources) else "nofetch"
-                response = "SUMMARY: " + summary + "\nSOURCES:\n" + "\n".join(
-                    x["url"] + (" (fetched)" if x["fetched"] else " (not fetched)") for x in sources)
-    if denied:
-        web = "denied"
 if not isinstance(response, str):
     response = json.dumps(response, ensure_ascii=False)
-if sys.argv[4] == "web" and isinstance(struct, dict) and isinstance(struct.get("summary"), str):
-    summary = struct["summary"]
-    if "INJECTION_NOTICE:" in summary and not any(line.startswith("INJECTION_NOTICE:") for line in response.splitlines()):
-        response += "\nINJECTION_NOTICE:" + summary.split("INJECTION_NOTICE:", 1)[1].split("\n", 1)[0]
 open(out, "w", encoding="utf-8").write(response)
-print("\t".join([status, turns, tokens, str(response.count("\n") + 1 if response else 0), denied, error, web, str(int(exhausted))]))
+print("\t".join([status, turns, tokens, str(response.count("\n") + 1 if response else 0), denied, error, str(int(exhausted))]))
 PY
 }
 run_agy
@@ -397,16 +341,14 @@ PARSED=$(parse_result)
 # known intermittent failure mode: ONE retry, and only when the first
 # attempt changed nothing in the tree (a retry on top of a half-written
 # result would double the writes and the quota).
-if [ "$(printf '%s' "$PARSED" | cut -f8)" != 1 ] && [ "$AGY_EXIT" -eq 0 ] && { [ ! -s "$RUN_JSON" ] || [ "$(printf '%s' "$PARSED" | cut -f4)" = 0 ]; } \
-   && { [ "$LANE" != web ] || [ -z "$(printf '%s' "$PARSED" | cut -f5)" ]; } \
+if [ "$(printf '%s' "$PARSED" | cut -f7)" != 1 ] && [ "$AGY_EXIT" -eq 0 ] && { [ ! -s "$RUN_JSON" ] || [ "$(printf '%s' "$PARSED" | cut -f4)" = 0 ]; } \
    && retry_is_clean; then
     ATTEMPTS=2
     run_agy
     AGY_EXIT=$?
     PARSED=$(parse_result)
 fi
-EXHAUSTED=$(printf '%s' "$PARSED" | cut -f8)
-WEB_STATE=$(printf '%s' "$PARSED" | cut -f7)
+EXHAUSTED=$(printf '%s' "$PARSED" | cut -f7)
 AGY_STATUS=$(printf '%s' "$PARSED" | cut -f1)
 TURNS=$(printf '%s' "$PARSED" | cut -f2)
 TOKENS=$(printf '%s' "$PARSED" | cut -f3)
@@ -468,16 +410,6 @@ elif printf '%s' "$AGY_ERROR" | grep -qiE 'quota|rate[ -]limit|429|not logged|un
 else
     STATUS=FAILED
 fi
-if [ "$LANE" = web ] && [ "$EXHAUSTED" != 1 ]; then
-    case "$WEB_STATE" in
-        ok) ;;
-        denied) STATUS="FAILED(web fetch permission denied, was $STATUS)" ;;
-        missing) STATUS="FAILED(web structured_output missing, was $STATUS)" ;;
-        malformed) STATUS="FAILED(web structured_output malformed, was $STATUS)" ;;
-        unavailable) STATUS="FAILED(web fetch unavailable, was $STATUS)" ;;
-        *) STATUS="FAILED(web fetch produced no fetched source, was $STATUS)" ;;
-    esac
-fi
 if [ "$STATUS" = AGY_UNAVAILABLE ] && { [ -s "$CHANGED_FILE" ] || [ -n "$PRODUCED" ]; }; then
     STATUS="FAILED(unusable result after workspace changes)"
 fi
@@ -497,10 +429,6 @@ if [ "$SCOPE_WARNING" -eq 1 ]; then
 fi
 if [ "$CP_BLOCK" -eq 1 ]; then
     STATUS="BLOCKED(control-plane, was $STATUS)"
-fi
-
-if [ "$LANE" = web ] && [ "$DIRTY_EDITS" -eq 1 ]; then
-    STATUS="FAILED(read-only lane changed the workspace, was $STATUS)"
 fi
 
 case "$STATUS" in

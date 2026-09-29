@@ -36,9 +36,9 @@ class GuardTests(unittest.TestCase):
                 self.assertIsNone(guard.evaluate_host(data,host,
                     {'HARNESS_DELEGATE_RUN':'1','HARNESS_ALLOW_CONTROL_PLANE':'1'}))
                 self.assertIsNone(guard.evaluate_host(data,host,{}))
-    def test_url_reader_definition_is_control_plane(self):
+    def test_project_agent_definition_is_control_plane(self):
         for host in ('claude', 'codex'):
-            data = {'tool_name': 'Write', 'tool_input': {'file_path': '.agents/agents/url-reader.md'}}
+            data = {'tool_name': 'Write', 'tool_input': {'file_path': '.agents/agents/project-agent.md'}}
             self.assertIsNotNone(guard.evaluate_host(data, host, {'HARNESS_DELEGATE_RUN': '1'}))
             self.assertIsNone(guard.evaluate_host(data, host, {}))
 
