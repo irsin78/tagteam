@@ -350,14 +350,17 @@ if sys.argv[4] == "web":
     struct = d.get("structured_output") if isinstance(d, dict) else None
     if struct is None and response:
         # agy 1.2.12 returns the --json-schema object inside a ```json fence in
-        # `response` (measured 2026-09-29, sometimes repeated); take the first
-        # fenced object, otherwise the whole text.
+        # `response` (measured 2026-09-29), sometimes the same object twice
+        # without fences. Take the first JSON object; leading fence markers
+        # are skipped, trailing repeats are ignored.
         text = response.strip() if isinstance(response, str) else response
         if isinstance(text, str) and text.startswith("```"):
-            fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
-            text = fence.group(1) if fence else text
+            text = re.sub(r"^```(?:json)?\s*", "", text)
         try:
-            struct = json.loads(text) if isinstance(text, str) else text
+            if isinstance(text, str):
+                struct, _end = json.JSONDecoder().raw_decode(text)
+            else:
+                struct = text
         except (ValueError, TypeError):
             web = "malformed"
     if struct is not None:
