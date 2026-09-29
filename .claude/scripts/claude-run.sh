@@ -81,7 +81,7 @@ while getopts ":p:m:e:a:s:v:l:t:b" opt; do
 done
 
 # ---- bindings (same resolution as codex-run.sh: public + local, local
-# wins key-by-key; roles.implement.claude_ladder[0] references the Claude
+# wins key-by-key; the first active Claude implement worker supplies the Claude
 # implementation entry, B by default). Bindings CONTENT never reaches a shell argument.
 MODEL_EXPLICIT=${MODEL:+1}
 EFFORT_EXPLICIT=${EFFORT:+1}
@@ -96,44 +96,7 @@ if [ -z "$MODEL" ]; then
     elif [ ! -f "$BINDINGS_PUBLIC" ]; then
         BIND_SOURCE="builtin (no $BINDINGS_PUBLIC)"
     else
-        BIND_OUT=$("$BIND_PY" - "$BINDINGS_PUBLIC" "$BINDINGS_LOCAL" <<'PY' 2>/dev/null
-import json, re, sys
-pub, loc = sys.argv[1], sys.argv[2]
-def merge(a, b):
-    if isinstance(a, dict) and isinstance(b, dict):
-        out = dict(a)
-        for k, v in b.items():
-            out[k] = merge(a[k], v) if k in a else v
-        return out
-    return b
-try:
-    with open(pub, encoding="utf-8") as f:
-        data = json.load(f)
-    src = "public"
-    try:
-        with open(loc, encoding="utf-8") as f:
-            data = merge(data, json.load(f))
-        src = "public+local"
-    except FileNotFoundError:
-        pass
-    ref = data["roles"]["implement"]["claude_ladder"][0]["binding"]
-    tier, vendor = ref.split("/")
-    if vendor != "claude":
-        raise ValueError("Claude launcher requires a Claude binding")
-    cell = data["bindings"][tier][vendor]
-    model, effort = cell["model"], cell.get("effort")
-    token = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-    if not (isinstance(model, str) and token.fullmatch(model)):
-        raise ValueError("model")
-    if effort is None:
-        effort = "unspecified"
-    elif effort not in ("low", "medium", "high", "xhigh", "max"):
-        raise ValueError("effort")
-    print(src, model, effort)
-except Exception as e:
-    print("ERR", type(e).__name__, str(e).replace("\n", " ")[:60])
-PY
-)
+        BIND_OUT=$("$BIND_PY" "$SCRIPT_DIR/harness-route.py" --launcher-default --vendor claude --role implement 2>/dev/null)
         case "$BIND_OUT" in
             ""|ERR*) BIND_SOURCE="builtin (bindings unusable: ${BIND_OUT:-no output})" ;;
             *)

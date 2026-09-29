@@ -28,7 +28,7 @@ inspection, while unresolved design or state behavior cannot.
 ## Assign a worker
 Choose role -> capability tier -> risk floor/budget -> specialty and hard constraints
 (vision, web, isolation, platform, data boundary). Use model-bindings.json (+ local)
-for current models/efforts and routes. Benchmarks are initial evidence; adjust for
+for the `workers` list of current models/efforts and per-host role priorities. Benchmarks are initial evidence; adjust for
 repeated real-task mismatches, not frequency or one anecdote. No synthetic score.
 Use `python .claude/scripts/harness-route.py --host <claude|codex> --role <role>`
 from the project root; pass its model, effort and sandbox to the launcher recipe.

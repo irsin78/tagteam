@@ -961,11 +961,11 @@ for scenario in default-high default-null default-missing local-null explicit-mo
         default-null|explicit-effort) bind_effort=',"effort":null' ;;
         default-missing) bind_effort= ;;
     esac
-    printf '%s\n' "{\"bindings\":{\"B\":{\"claude\":{\"model\":\"bound-model\"$bind_effort}}},\"roles\":{\"implement\":{\"claude_ladder\":[{\"binding\":\"B/claude\"}]}}}" > "$CASE_REPO/.claude/model-bindings.json"
+    printf '%s\n' "{\"schema_version\":2,\"workers\":[{\"id\":\"bound-claude\",\"vendor\":\"claude\",\"tier\":\"B\",\"launcher\":\".claude/scripts/claude-run.sh\",\"status\":\"active\",\"roles\":{\"implement\":1},\"model\":\"bound-model\"$bind_effort}]}" > "$CASE_REPO/.claude/model-bindings.json"
     args=(); expected_model=bound-model; expected_effort=; expected_role=implement
     case "$scenario" in
         default-high) expected_effort=high ;;
-        local-null) printf '%s\n' '{"bindings":{"B":{"claude":{"effort":null}}}}' > "$CASE_REPO/.claude/model-bindings.local.json" ;;
+        local-null) printf '%s\n' '{"workers_local":[{"id":"bound-claude","effort":null}]}' > "$CASE_REPO/.claude/model-bindings.local.json" ;;
         explicit-model) args=(-m selected-model); expected_model=selected-model ;;
         explicit-both) args=(-m selected-model -e low); expected_model=selected-model; expected_effort=low ;;
         explicit-effort) args=(-e medium); expected_effort=medium ;;
@@ -1249,7 +1249,7 @@ if selected codex; then
 # write_bindings <path> <ladder0-model-json> <ladder0-effort-json>: a
 # minimal bindings file with the two role entry points the launcher reads.
 write_bindings() {
-    printf '%s\n' "{\"roles\":{\"implement\":{\"ladder\":[{\"vendor\":\"openai\",\"model\":$2,\"effort\":$3}]},\"image_verify\":{\"default\":{\"vendor\":\"openai\",\"model\":\"gpt-5.6-terra\",\"effort\":\"medium\"}}}}" > "$1"
+    printf '%s\n' "{\"schema_version\":2,\"workers\":[{\"id\":\"bound-impl\",\"vendor\":\"openai\",\"tier\":\"C\",\"launcher\":\".claude/scripts/codex-run.sh\",\"status\":\"active\",\"roles\":{\"implement\":1},\"model\":$2,\"effort\":$3},{\"id\":\"bound-image\",\"vendor\":\"openai\",\"tier\":\"D\",\"launcher\":\".claude/scripts/codex-run.sh\",\"status\":\"active\",\"roles\":{\"image_verify\":1},\"model\":\"gpt-5.6-terra\",\"effort\":\"medium\"}]}" > "$1"
 }
 codex_args() { cat "$TEST_ROOT/codex-args.log" 2>/dev/null; }
 
@@ -1262,7 +1262,7 @@ expect_case "codex bindings: no file falls back to builtin Terra/high" "$ok" "ex
 fresh_case
 rm -f "$TEST_ROOT/codex-args.log"
 write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-5.6-terra"' '"high"'
-printf '%s\n' '{"roles":{"implement":{"ladder":[{"vendor":"openai","model":"gpt-5.6-terra","effort":"low"}]}}}' > "$CASE_REPO/.claude/model-bindings.local.json"
+printf '%s\n' '{"workers_local":[{"id":"bound-impl","effort":"low"}]}' > "$CASE_REPO/.claude/model-bindings.local.json"
 run_capture bindings-local env HARNESS_RUN_ID=bindlocal bash "$CODEX_RUN" -p prompt.txt
 ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: public\+local role=implement model=gpt-5.6-terra effort=low$' && codex_args | grep -q 'model_reasoning_effort=low' && ok=1
 expect_case "codex bindings: local ladder overrides public" "$ok" "exit=$LAST_RC"
@@ -1340,7 +1340,7 @@ for source in public local image; do
         write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-6-astra"' '"medium"'
         write_bindings "$CASE_REPO/.claude/model-bindings.local.json" '"gpt-6-astra"' '"ultra"'
     elif [ "$source" = image ]; then
-        printf '%s\n' '{"roles":{"image_verify":{"default":{"model":"gpt-6-astra","effort":"ultra"}}}}' > "$CASE_REPO/.claude/model-bindings.local.json"
+        printf '%s\n' '{"workers_local":[{"id":"bound-image","model":"gpt-6-astra","effort":"ultra"}]}' > "$CASE_REPO/.claude/model-bindings.local.json"
         printf 'stub image\n' > "$CASE_REPO/shot.png"
         args+=(-i shot.png)
     fi
