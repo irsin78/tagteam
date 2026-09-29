@@ -18,14 +18,26 @@ reader=importlib.util.module_from_spec(spec);spec.loader.exec_module(reader)
 
 class Handler(BaseHTTPRequestHandler):
     requests=[]
+    model_requests=[]
+    models=['fixture']
+    chat_error=None
     result='summary only'
     finish_reason='stop'
+    def do_GET(self):
+        self.model_requests.append(self.path)
+        if self.path.startswith('/redirect/'):
+            self.send_response(307);self.send_header('Location','/v1/models');self.end_headers();return
+        data=json.dumps({'data':[{'id':model} for model in self.models]}).encode()
+        self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.requests.append(body)
+        if self.chat_error is not None:
+            data=json.dumps({'error':self.chat_error}).encode()
+            self.send_response(400);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
         if self.path.startswith('/redirect/'):
             self.send_response(307);self.send_header('Location','/v1/chat/completions');self.end_headers();return
-        data=json.dumps({'model':'fixture','choices':[{'finish_reason':self.finish_reason,'message':{'content':self.result}}]}).encode()
+        data=json.dumps({'model':body['model'],'choices':[{'finish_reason':self.finish_reason,'message':{'content':self.result}}]}).encode()
         self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def log_message(self,*args): pass
 
@@ -47,6 +59,11 @@ class LocalTests(unittest.TestCase):
         (self.root/'prompt.txt').write_text('Summarize',encoding='utf-8')
         (self.root/'inputs.json').write_text(json.dumps([{'path':'source.txt','start':2,'end':2}]))
         Handler.requests.clear();Handler.result='summary only';Handler.finish_reason='stop'
+        Handler.model_requests.clear();Handler.models=['fixture'];Handler.chat_error=None
+    def set_auto(self):
+        path=self.root/'.claude/model-bindings.local.json'
+        data=json.loads(path.read_text());data['vendors']['local']['endpoint']['model']='auto'
+        path.write_text(json.dumps(data))
     def run_reader(self,*extra):
         return subprocess.run([sys.executable,str(SCRIPT),'-i','inputs.json','-p','prompt.txt',*extra],
             cwd=self.root,capture_output=True,text=True,
@@ -63,6 +80,53 @@ class LocalTests(unittest.TestCase):
         (self.root/'inputs.json').write_text(json.dumps([{'path':'source.txt','contains':'last'}]))
         self.assertEqual(self.run_reader().returncode,0)
         self.assertIn('source.txt:3: last',Handler.requests[-1]['messages'][-1]['content'])
+    def test_auto_one_loaded_chat_model_ignores_embeddings(self):
+        self.set_auto()
+        Handler.models=['text-embedding-nomic-embed-text-v1.5','qwen3.6-35b-a3b-mlx']
+        result=self.run_reader()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(Handler.model_requests,['/v1/models'])
+        self.assertEqual(Handler.requests[0]['model'],'qwen3.6-35b-a3b-mlx')
+        self.assertIn('MODEL: qwen3.6-35b-a3b-mlx\nMODEL_SOURCE: auto\n',result.stdout)
+    def test_auto_no_loaded_chat_model(self):
+        self.set_auto()
+        for models in ([],['text-embedding-nomic-embed-text-v1.5']):
+            with self.subTest(models=models):
+                Handler.models=models
+                result=self.run_reader()
+                self.assertEqual(result.returncode,2,result.stderr)
+                self.assertIn('LOCAL_UNAVAILABLE:',result.stderr)
+                self.assertIn('loaded ids: '+json.dumps(models),result.stderr)
+                self.assertEqual(Handler.requests,[])
+    def test_auto_multiple_loaded_chat_models(self):
+        self.set_auto()
+        Handler.models=['first-chat','second-chat','EMBED-model']
+        result=self.run_reader()
+        self.assertEqual(result.returncode,2,result.stderr)
+        self.assertIn('LOCAL_UNAVAILABLE:',result.stderr)
+        self.assertIn('loaded ids: '+json.dumps(Handler.models),result.stderr)
+        self.assertEqual(Handler.requests,[])
+    def test_declared_model_does_not_query_models(self):
+        Handler.models=[]
+        result=self.run_reader()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(Handler.model_requests,[])
+        self.assertIn('MODEL: fixture\nMODEL_SOURCE: declared\n',result.stdout)
+    def test_declared_model_failed_to_load_is_unavailable(self):
+        Handler.chat_error='Failed to load model fixture: insufficient system resources'
+        result=self.run_reader()
+        self.assertEqual(result.returncode,2,result.stderr)
+        self.assertIn('LOCAL_UNAVAILABLE: Failed to load model fixture',result.stderr)
+        self.assertEqual(Handler.model_requests,[])
+    def test_auto_models_redirect_is_not_followed(self):
+        self.set_auto()
+        path=self.root/'.claude/model-bindings.local.json'
+        data=json.loads(path.read_text());data['vendors']['local']['endpoint']['base_url']=f'http://127.0.0.1:{self.server.server_port}/redirect'
+        path.write_text(json.dumps(data))
+        result=self.run_reader()
+        self.assertEqual(result.returncode,2,result.stderr)
+        self.assertEqual(Handler.model_requests,['/redirect/models'])
+        self.assertEqual(Handler.requests,[])
     def test_sensitive_and_outside_inputs_never_sent(self):
         (self.root/'.env').write_text('credential')
         (self.root/'private').mkdir();(self.root/'private/key').write_text('credential')

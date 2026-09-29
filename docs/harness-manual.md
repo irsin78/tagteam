@@ -1009,7 +1009,7 @@ template.
 
 ### Local endpoint connection procedure (optional)
 
-Declare base_url, model, and wire: chat in local bindings' vendors.local.endpoint.
+Declare base_url, model (a fixed model id or `auto`), and wire: chat in local bindings' vendors.local.endpoint.
 Specify max_tokens and max_input_chars when needed. Keep addresses/models in
 untracked local project settings and check where data is sent. Set the request
 timeout with `local-run.sh -t seconds` (default 300, range 1~570);
@@ -1017,8 +1017,9 @@ timeout with `local-run.sh -t seconds` (default 300, range 1~570);
 line count, passed in requests and applied when saving responses. Model-specific
 `max_tokens` remains a separate ceiling.
 
-Do not connect at session startup. Send one request when actually selecting local
-reads. Input is a project file list with optional line ranges/literal searches.
+Do not connect at session startup. Send one chat request when actually selecting
+local reads; `auto` first queries the declared endpoint's models list. Input is a
+project file list with optional line ranges/literal searches.
 
 ```sh
 bash .claude/scripts/local-run.sh -i inputs.json -p prompt.txt

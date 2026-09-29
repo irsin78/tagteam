@@ -153,6 +153,14 @@ change" or as success.
 
 ## Restricted file reads by a local model
 
+Set `vendors.local.endpoint.model` to `auto` for a server that holds one loaded
+chat model at a time. Only during a local-run invocation, the reader queries
+`<base_url>/models` with the chat timeout and no redirects or credentials, ignores
+ids containing `embed`, and uses the sole remaining model. Zero or multiple
+candidates return `LOCAL_UNAVAILABLE` with the loaded ids. Fixed model ids skip
+discovery; HTTP 400 errors mentioning "Failed to load model" also return
+`LOCAL_UNAVAILABLE`. Reports show the actual `MODEL` and `MODEL_SOURCE: auto|declared`.
+
 Invoke it as follows from the selected project root. Git is not required.
 
 ~~~json

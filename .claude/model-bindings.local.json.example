@@ -12,7 +12,7 @@
       "endpoint": null
     }
   },
-  "local_endpoint_comment": "When used, set vendors.local.endpoint to {base_url, model, wire, timeout_ms}; base_url/model required. Confirm the project data boundary before sending content.",
+  "local_endpoint_comment": "When used, set vendors.local.endpoint to {\"base_url\": \"http://localhost:1234/v1\", \"model\": \"auto\", \"wire\": \"chat\"}; base_url/model required. auto selects the single loaded non-embedding model. Confirm the project data boundary before sending content.",
   "roles": {},
   "override_comment": "workers_local recursively merges an existing id or appends a new worker. A workers array replaces the entire public list. Do not put empty specialties here: arrays replace the public list.",
   "measurements": [],
