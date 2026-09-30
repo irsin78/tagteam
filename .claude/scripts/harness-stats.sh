@@ -50,11 +50,26 @@ if not groups:
     print('no run reports in this window')
 for key, rows in sorted(groups.items()):
     counts = Counter()
+    models = defaultdict(Counter)
+    bands, retries = Counter(), Counter()
+    retry_reasons = ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning')
     elapsed, phases = [], []
     for fields, local in rows:
         status = fields.get('STATUS', '')
         result = next((s for s in ('DONE', 'FAILED', 'BLOCKED') if status.startswith(s)), 'other')
         counts[result] += 1
+        settings = dict(re.findall(r'(?:\(|,\s*)(model|effort)=([^,()\s]+)', status))
+        model = settings['model'] + '/' + settings.get('effort', 'unrecorded') if 'model' in settings else 'unrecorded'
+        models[model][result] += 1
+        band = fields.get('BAND', 'unrecorded')
+        bands[band if band in ('S', 'A', 'B', 'C', 'D', 'E') else 'unrecorded'] += 1
+        counts['band-S-done'] += int(band == 'S' and result == 'DONE')
+        if 'RETRY_OF' in fields:
+            retry = re.fullmatch(r'[^\s()]+ \(([^()]+)\)', fields['RETRY_OF'])
+            reason = retry[1] if retry and retry[1] in retry_reasons else 'unrecorded'
+            retries[reason] += 1
+            counts['retry-total'] += 1
+            counts['retry-done'] += int(result == 'DONE')
         host = 'local' if local else next((h for h in ('codex', 'claude', 'agy') if h + '_exit=' in status), 'local' if 'cmd_exit=' in status else 'unknown')
         counts[host] += 1
         mode = next((label for token, label in (
@@ -87,4 +102,12 @@ for key, rows in sorted(groups.items()):
     if phases:
         labels = ('preflight', 'request' if key == 'checkout-local' else 'cli', 'postflight', 'verify', 'total')
         print(f'    timed-runs={len(phases)} mean-ms: ' + ' '.join(f'{label}={sum(p[i] for p in phases) / len(phases):.0f}' for i, label in enumerate(labels)))
+    for model, results in sorted(models.items()):
+        print(f"    models: {model}: done={results['DONE']} failed={results['FAILED']} blocked={results['BLOCKED']}")
+    print('    bands: ' + ' '.join(f'{band}={bands[band]}' for band in ('S', 'A', 'B', 'C', 'D', 'E', 'unrecorded')))
+    reasons = ' '.join(f'{reason}={retries[reason]}' for reason in retry_reasons)
+    if retries['unrecorded']:
+        reasons += f" unrecorded={retries['unrecorded']}"
+    print(f"    retries: total={counts['retry-total']} by-reason: {reasons}; done-after-retry={counts['retry-done']}/{counts['retry-total']}")
+    print(f"    band-S-done={counts['band-S-done']}/{bands['S']}")
 PY_STATS

@@ -140,6 +140,7 @@ mkdir -p "$LOG_DIR" || exit 2
 # Timestamp + pid: unique even for two launchers started in the same second.
 RUN_ID=${HARNESS_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}
 case "$RUN_ID" in *[!A-Za-z0-9TZ_-]*) echo "HARNESS_DENIED: bad HARNESS_RUN_ID" >&2; exit 4 ;; esac
+retry_header_check || exit 4
 TIMESTAMP=$RUN_ID
 # Never start on top of a run that is still executing in this tree.
 LAUNCHER_PID=$$
@@ -440,6 +441,7 @@ esac
 # ---- report ----
 report() {
 echo "STATUS: $STATUS (agy_exit=$AGY_EXIT, agy_status=$AGY_STATUS, attempts=$ATTEMPTS, effort=$EFFORT, turns=$TURNS)"
+retry_header_echo
 [ "$EXHAUSTED" != 1 ] || echo "AVAILABILITY: exhausted:google"
 echo "RUN_ID: $RUN_ID (state: $(state_file "$RUN_ID"), report: $REPORT_FILE)"
 if [ -n "$STALE_CLEANED" ]; then

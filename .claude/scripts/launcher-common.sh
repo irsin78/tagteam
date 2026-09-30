@@ -129,3 +129,25 @@ timing_report() {
     echo "ELAPSED: $((total / 1000))s"
     echo "TIMING: preflight_ms=$TIMING_PREFLIGHT_MS cli_ms=$TIMING_CLI_MS postflight_ms=$TIMING_POSTFLIGHT_MS verify_ms=$TIMING_VERIFY_MS total_ms=$total attempts=$TIMING_ATTEMPTS resolution=$TIMING_RESOLUTION"
 }
+
+# Optional retry/band telemetry (retry-policy.md, harness-stats.sh). The orchestrator
+# sets HARNESS_BAND / HARNESS_RETRY_OF + HARNESS_RETRY_REASON; malformed values are a
+# policy refusal before the CLI starts, so a report never carries an unparseable header.
+retry_header_check() {
+    case "${HARNESS_BAND:-}" in ""|E|D|C|B|A|S) ;; *)
+        echo "HARNESS_DENIED: HARNESS_BAND must be one of E|D|C|B|A|S (got '$HARNESS_BAND')" >&2; return 4 ;; esac
+    case "${HARNESS_RETRY_OF:-}" in "") ;; *[!A-Za-z0-9TZ_-]*)
+        echo "HARNESS_DENIED: HARNESS_RETRY_OF must be a run id (got '$HARNESS_RETRY_OF')" >&2; return 4 ;; esac
+    case "${HARNESS_RETRY_REASON:-}" in ""|infra|availability|spec|scope|knowledge|reasoning) ;; *)
+        echo "HARNESS_DENIED: HARNESS_RETRY_REASON must be infra|availability|spec|scope|knowledge|reasoning (got '$HARNESS_RETRY_REASON')" >&2; return 4 ;; esac
+    if { [ -n "${HARNESS_RETRY_OF:-}" ] && [ -z "${HARNESS_RETRY_REASON:-}" ]; } || { [ -z "${HARNESS_RETRY_OF:-}" ] && [ -n "${HARNESS_RETRY_REASON:-}" ]; }; then
+        echo "HARNESS_DENIED: HARNESS_RETRY_OF and HARNESS_RETRY_REASON must be set together" >&2; return 4
+    fi
+    return 0
+}
+
+retry_header_echo() {
+    [ -n "${HARNESS_BAND:-}" ] && echo "BAND: $HARNESS_BAND"
+    [ -n "${HARNESS_RETRY_OF:-}" ] && echo "RETRY_OF: $HARNESS_RETRY_OF ($HARNESS_RETRY_REASON)"
+    return 0
+}

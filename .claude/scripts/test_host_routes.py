@@ -28,6 +28,10 @@ class HostRoutes(unittest.TestCase):
         # endpoint, budget) must not change these expectations.
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
         self.data = routes.merge_bindings(public, {})
+        self.environment = patch.dict(os.environ)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        os.environ.pop('HARNESS_DELEGATE_RUN', None)
 
     def cell(self, tier, vendor):
         return next(w for w in self.data['workers'] if w.get('tier_cell') and w['tier'] == tier and w['vendor'] == vendor)
@@ -38,25 +42,131 @@ class HostRoutes(unittest.TestCase):
     def with_test_reader(self):
         return self.override('test-reader', vendor='google', model='test-model',
                              effort='medium', tier='C', status='optional',
+                             metrics=dict(index=40, cost=.5, ttft_s=2, tps=None, provisional=True),
                              launcher='.claude/scripts/agy-run.sh',
                              roles={'explore': {'priority': 1, 'requires': {
                                  'agy_grant': 'write_file',
                                  'agent_file': '.agents/agents/project-agent.md'}}})
 
+    def test_band_floor_and_s_lane_are_distinct(self):
+        for band in ('A', 'B', 'C'):
+            result = routes.resolve(self.data, 'codex', 'implement', tier=band)
+            rows = [w for w in self.data['workers'] if w['id'] in result['eligible']]
+            self.assertTrue(all(w['tier'] != 'S' for w in rows))
+            self.assertTrue(all(self.data['bands']['order'].index(w['tier']) >=
+                                self.data['bands']['order'].index(band) for w in rows))
+        for host, model in [('codex', 'claude-fable-5-1'), ('claude', 'gpt-6-astra')]:
+            for latency, effort in [('foreground', 'high'), ('detached', 'xhigh')]:
+                result = routes.resolve(self.data, host, 'implement', tier='S', latency=latency)
+                self.assertEqual((result['model'], result['effort']), (model, effort))
+                self.assertTrue(result['floor_met'])
+
+    def test_latency_and_cost_tie(self):
+        for latency in ('foreground', 'interactive'):
+            result = routes.resolve(self.data, 'codex', 'implement', tier='C', latency=latency)
+            self.assertEqual(result['worker_id'], 'sonnet55-medium')
+            self.assertEqual('opus55-low' in result['eligible'], latency == 'foreground')
+        result = routes.resolve(self.data, 'codex', 'implement', tier='C')
+        self.assertIn('ties: sonnet55-medium, opus55-low', result['reason'])
+        result = routes.resolve(self.data, 'claude', 'implement', latency='detached')
+        self.assertIn('sol6-max', result['eligible'])
+        self.assertTrue(result['floor_met'])
+
+    def test_unverified_and_unscored_never_enter_fallback(self):
+        result = routes.resolve(self.data, 'claude', 'implement')
+        self.assertEqual(result['worker_id'], 'sol6-xhigh')
+        self.assertFalse(result['floor_met'])
+        self.assertIn('no row meets band B in foreground', result['reason'])
+        self.assertFalse(any(ident.startswith('sol61-') for ident in result['eligible']))
+        self.assertNotIn('sol-high', result['eligible'])
+        explicit = routes.resolve(self.data, 'claude', 'implement', worker='sol-high')
+        self.assertEqual(explicit['worker_id'], 'sol-high')
+        self.assertFalse(explicit['floor_met'])
+
+    def test_reasoning_retries_promote_then_choose_s(self):
+        for previous, attempt, expected in [('opus55-medium', 1, 'opus55-high'),
+                                             ('opus55-high', 2, 'fable-high')]:
+            result = routes.resolve(self.data, 'codex', 'implement', retry_from=previous,
+                                    retry_reason='reasoning', attempt=attempt)
+            self.assertEqual(result['worker_id'], expected)
+        detached = routes.resolve(self.data, 'claude', 'implement', retry_from='sol6-xhigh',
+                                  retry_reason='reasoning', attempt=1)
+        self.assertEqual(detached['worker_id'], 'sol6-max')
+        self.assertTrue(detached['needs_detached'])
+        flat = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-xhigh',
+                              retry_reason='reasoning', attempt=1)
+        self.assertEqual(flat['worker_id'], 'astra-high')
+        self.assertEqual(flat['band'], 'S')
+        with self.assertRaisesRegex(ValueError, 'attempt cap reached'):
+            routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
+                           retry_reason='reasoning', attempt=3)
+
+    def test_nonreasoning_retries_keep_settings_and_availability_reselects(self):
+        for reason in ('infra', 'availability', 'spec', 'scope', 'knowledge'):
+            result = routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
+                                    retry_reason=reason, attempt=1)
+            self.assertEqual(result['worker_id'], 'opus55-high')
+            self.assertIn('retry keeps settings; fix ' + reason, result['reason'])
+        result = routes.resolve(self.data, 'codex', 'implement', retry_from='sol6-high',
+                                author_vendors=['google'], retry_reason='availability',
+                                attempt=1, budget='exhausted:openai', tier='C')
+        self.assertEqual(result['vendor'], 'claude')
+        self.assertTrue(result['available'])
+
+    def test_v3_schema_rejects_missing_evidence_and_wrong_bands(self):
+        for fields in ({'metrics': None}, {'probe': None}, {'tier': 'D', 'tier_cell': False},
+                       {'metrics': {'index': None}}, {'metrics': {'index': -1}},
+                       {'metrics': {'index': float('nan')}}, {'metrics': {'cost': -1}}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                self.override('sol6-high', **fields)
+        with self.assertRaisesRegex(ValueError, 'fixed lane'):
+            self.override('astra-high', model='gpt-6-sol')
+        self.assertIsNotNone(self.override('sol-high', tier='E'))
+        for key in ('bands', 'latency'):
+            invalid = dict(self.data)
+            invalid.pop(key)
+            with self.assertRaises(ValueError): routes.validate_bindings(invalid)
+
+    def test_s_lane_does_not_substitute_an_ordinary_model(self):
+        with self.assertRaisesRegex(IndexError, 'no eligible worker'):
+            routes.resolve(self.data, 'codex', 'implement', tier='S', latency='interactive')
+
+    def test_provisional_precedes_cost_and_unscored_promotion_is_excluded(self):
+        data = self.override('sol61-medium', status='active', probe={'result': 'OK'})
+        ordinary = routes.resolve(data, 'claude', 'implement')
+        self.assertEqual(ordinary['worker_id'], 'sol61-medium')
+        self.assertTrue(ordinary['floor_met'])
+        data = routes.merge_bindings(data, {'workers_local': [
+            {'id': 'sol61-high', 'status': 'active', 'probe': {'result': 'OK'},
+             'metrics': {'provisional': False, 'deepswe_pass1': .7}}]})
+        result = routes.resolve(data, 'claude', 'implement')
+        self.assertEqual(result['worker_id'], 'sol61-high')
+        result = routes.resolve(self.data, 'claude', 'implement', retry_from='sol6-high',
+                                retry_reason='reasoning', attempt=1)
+        self.assertNotIn('sol-high', result['eligible'])
+
+    def test_retry_argument_validation_and_removed_step(self):
+        for options in (dict(retry_from='opus55-high'), dict(attempt=1),
+                        dict(retry_from='opus55-high', retry_reason='reasoning'),
+                        dict(retry_from='sol6-high', retry_reason='reasoning', attempt=1)):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                routes.resolve(self.data, 'codex', 'implement', **options)
+        result = subprocess.run([sys.executable, str(HERE / 'harness-route.py'),
+                                 '--host', 'codex', '--role', 'implement', '--step', '1'],
+                                cwd=ROOT.parent, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('unrecognized arguments: --step', result.stderr)
+
     def test_tier_prefers_nonexhausted_vendor(self):
-        for role, tier, exhausted, fallback, normal in (
-                ('review_deep', 'A', 'claude', 'astra-high', 'opus55-xhigh'),
-                ('implement', 'B', 'openai', 'opus55-high', 'astra-medium')):
-            for budget, expected in [('exhausted:' + exhausted, fallback), ('normal', normal)]:
-                with self.subTest(role=role, budget=budget):
-                    result = routes.resolve(self.data, 'claude', role, tier=tier,
-                                            author_vendors=['google'], budget=budget)
-                    self.assertEqual(result['worker_id'], expected)
-                    self.assertTrue(result['available'])
+        for budget, expected in [('normal', 'astra-high'), ('exhausted:openai', 'fable-high')]:
+            result = routes.resolve(self.data, 'claude', 'implement', tier='S',
+                                    author_vendors=['google'], budget=budget)
+            self.assertEqual(result['worker_id'], expected)
+            self.assertTrue(result['available'])
 
     def test_worker_cannot_combine_with_tier(self):
         with self.assertRaisesRegex(ValueError, '--worker cannot be combined with --tier'):
-            routes.resolve(self.data, 'claude', 'implement', worker='luna56-max', tier='B')
+            routes.resolve(self.data, 'claude', 'implement', worker='sol61-high', tier='B')
 
     def test_optional_worker_needs_requires(self):
         with self.assertRaisesRegex(ValueError, 'optional worker needs requires'):
@@ -75,85 +185,32 @@ class HostRoutes(unittest.TestCase):
             env['HARNESS_ALLOW_AGY_COMMAND'] = '1'
             self.assertIsNone(routes.unmet_requires(requires, self.data, temp, env))
 
-    def test_v1_baseline_all_92_cases(self):
-        fixture = HERE / 'test_fixtures/route-baseline-v1.json'
-        if not fixture.exists():
-            self.skipTest('Development baseline fixture is not installed')
-        cases = json.loads(fixture.read_text(encoding='utf-8'))
-        self.assertEqual(len(cases), 92)
-        exceptions = {'claude/write/budget=exhausted:openai',
-                      'codex/write/budget=exhausted:claude', 'codex/implement/step2'}
-        seen = set()
-        with tempfile.TemporaryDirectory() as temp:
-            for case in cases:
-                with self.subTest(case=case['case']):
-                    host, role, *options = case['case'].split('/')
-                    kwargs = dict(root=temp, env={'HARNESS_AGY_SETTINGS': str(Path(temp) / 'absent.json')})
-                    if role in routes.REVIEW_ROLES:
-                        kwargs['author_vendors'] = [{'claude': 'claude', 'codex': 'openai'}[host]]
-                    for opt in options:
-                        if opt.startswith('step'): kwargs['step'] = int(opt[4:])
-                        elif opt.startswith('tier'): kwargs['tier'] = opt[4:]
-                        elif opt.startswith('budget='): kwargs['budget'] = opt[7:]
-                        elif opt.startswith('author='): kwargs['author_vendors'] = opt[7:].split(',')
-                    if case['case'] in exceptions:
-                        seen.add(case['case'])
-                    if case['case'] == 'codex/implement/step2':
-                        self.assertIn('error', case)
-                        with self.assertRaises((ValueError, IndexError)):
-                            routes.resolve(self.data, host, role, **kwargs)
-                        continue
-                    result = routes.resolve(self.data, host, role, **kwargs)
-                    expected = dict(case)
-                    if case['case'] in exceptions:
-                        expected.update(vendor='google', launcher='.claude/scripts/agy-run.sh',
-                                        model='gemini-3.8-flash', effort='medium',
-                                        sandbox='workspace-write', available=True, separation_satisfied=True)
-                        self.assertEqual(result['worker_id'], 'flash-medium')
-                    for field in ('vendor', 'launcher', 'sandbox', 'model', 'effort', 'available', 'separation_satisfied'):
-                        self.assertEqual(result.get(field), expected.get(field), field)
-        self.assertEqual(seen, exceptions)
-
     def test_requires_and_reader_tiers(self):
         with tempfile.TemporaryDirectory() as temp:
-            reader_data = self.with_test_reader()
             root = Path(temp)
             settings = root / 'agy.json'
             agent = root / '.agents/agents/project-agent.md'
             env = {'HARNESS_AGY_SETTINGS': str(settings), 'PATH': ''}
-            def explore(data=None, **kw):
-                return routes.resolve(data or reader_data, 'codex', 'explore', root=root, env=env, **kw)
-            public = explore(self.data, tier='C')
-            self.assertEqual(public['worker_id'], 'haiku45')
-            self.assertTrue(public['tier_fallback'])
+            data = self.with_test_reader()
+            def explore(**kw):
+                return routes.resolve(data, 'codex', 'explore', root=root, env=env, **kw)
             missing = explore(tier='C')
             self.assertEqual(missing['worker_id'], 'haiku45')
-            self.assertTrue(missing['tier_fallback'])
+            self.assertFalse(missing['floor_met'])
             self.assertTrue(any('agy_grant' in x['reason'] for x in missing['skipped']))
-            reader = next(w for w in reader_data['workers'] if w['id'] == 'test-reader')
-            grant = reader['roles']['explore']['requires']['agy_grant']
-            settings.write_text(json.dumps({'permissions': {'allow': [grant + '(*)']}}))
+            settings.write_text(json.dumps({'permissions': {'allow': ['write_file(*)']}}))
             self.assertTrue(any('agent_file' in x['reason'] for x in explore(tier='C')['skipped']))
             agent.parent.mkdir(parents=True)
             agent.write_text('reader')
             self.assertEqual(explore(tier='C')['worker_id'], 'test-reader')
-            self.assertFalse(explore(tier='C')['tier_fallback'])
-            self.assertEqual(explore()['worker_id'], 'haiku45')
-            fallback = explore(tier='C', budget='exhausted:google')
-            self.assertEqual(fallback['worker_id'], 'haiku45')
-            self.assertTrue(fallback['tier_fallback'])
-            self.assertEqual(explore(budget='exhausted:claude')['worker_id'], 'test-reader')
+            data = routes.merge_bindings(data, {'vendors': {'local': {'endpoint': {'base_url': 'http://localhost', 'model': 'auto'}}}})
+            self.assertEqual(explore(worker='local-reader', latency='detached')['worker_id'], 'local-reader')
             settings.write_text(json.dumps({'permissions': {'allow': ['write_file_other(*)']}}))
-            self.assertEqual(explore(tier='C')['worker_id'], 'haiku45')
-            with self.assertRaises(IndexError):
-                routes.resolve(self.data, 'codex', 'explore', step=1, root=root, env=env)
-            data = routes.merge_bindings(self.data, {'vendors': {'local': {'endpoint': {'base_url': 'http://localhost', 'model': 'auto'}}}})
-            self.assertEqual(routes.resolve(data, 'codex', 'explore', step=1, root=root, env=env)['worker_id'], 'local-reader')
-            data = self.override('haiku45', requires={'binary': 'test-reader'})
+            data = routes.merge_bindings(data, {'workers_local': [{'id': 'haiku45', 'requires': {'binary': 'test-reader'}}]})
             with patch.object(routes.shutil, 'which', return_value=None):
-                with self.assertRaises(IndexError): explore(data)
+                with self.assertRaises(IndexError): explore()
             with patch.object(routes.shutil, 'which', return_value='/bin/test-reader'):
-                self.assertEqual(explore(data)['worker_id'], 'haiku45')
+                self.assertEqual(explore()['worker_id'], 'haiku45')
 
     def test_workers_local_recursive_merge_and_array_replacement(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -166,7 +223,7 @@ class HostRoutes(unittest.TestCase):
             reader = next(w for w in merged['workers'] if w['id'] == 'test-reader')
             self.assertEqual(reader['roles']['explore']['priority'], 7)
             self.assertEqual(reader['roles']['explore']['requires']['agy_grant'], 'write_file')
-            base = self.cell('D', 'claude')
+            base = self.cell('E', 'claude')
             added = dict(base, id='other-reader', tier_cell=False, roles={'explore': 3})
             override = {'workers': [base], 'workers_local': [added]}
             (folder / 'model-bindings.local.json').write_text(json.dumps(override))
@@ -176,40 +233,35 @@ class HostRoutes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unknown worker'):
             routes.resolve(self.data, 'claude', 'implement', worker='absent')
         implicit = routes.resolve(self.data, 'claude', 'implement')
-        self.assertIn({'id': 'luna56-max', 'reason': 'status conditional requires explicit --worker'}, implicit['skipped'])
-        self.assertEqual(routes.resolve(self.data, 'claude', 'implement', worker='luna56-max')['worker_id'], 'luna56-max')
-        data = routes.merge_bindings(self.data, {})
-        data['workers'] = [dict(w, roles={'implement': {'claude': 1}}) if w['id'] == 'sol-high' else w for w in data['workers']]
-        self.assertEqual(routes.resolve(data, 'claude', 'implement')['worker_id'], 'sol-high')
+        self.assertIn({'id': 'sol61-high', 'reason': 'status unverified requires explicit --worker'}, implicit['skipped'])
+        self.assertEqual(routes.resolve(self.data, 'claude', 'implement', worker='sol61-high')['worker_id'], 'sol61-high')
+        data = self.override('sol6-xhigh', roles={'implement': {'priority': 150, 'hosts': ['claude']}})
         result = routes.resolve(data, 'codex', 'implement', author_vendors=['claude'])
-        self.assertEqual(result['worker_id'], 'astra-medium')
-        self.assertIn({'id': 'sol-high', 'reason': 'host is not eligible'}, result['skipped'])
-        data['workers'] = [dict(w, roles={'implement': {'priority': 1, 'hosts': ['codex']}}) if w['id'] == 'sol-high' else w for w in data['workers']]
-        self.assertEqual(routes.resolve(data, 'claude', 'implement')['worker_id'], 'astra-medium')
+        self.assertEqual(result['worker_id'], 'sol6-high')
+        self.assertIn({'id': 'sol6-xhigh', 'reason': 'host is not eligible'}, result['skipped'])
+        data = self.override('sol6-xhigh', status='conditional')
+        self.assertEqual(routes.resolve(data, 'claude', 'implement')['worker_id'], 'sol6-high')
 
     def test_multiple_exhausted_vendors_and_diagnostic(self):
         budget = 'exhausted:openai,claude'
         self.assertEqual(routes.budget_for(self.data, {'HARNESS_BUDGET': budget}), budget)
-        result = routes.resolve(self.data, 'claude', 'write', budget=budget)
+        result = routes.resolve(self.data, 'claude', 'write', budget=budget, latency='detached')
         self.assertEqual(result['worker_id'], 'flash-medium')
         self.assertTrue(result['available'])
-        result = routes.resolve(self.data, 'claude', 'write', budget=budget + ',google')
-        self.assertEqual(result['worker_id'], 'astra-low')
+        result = routes.resolve(self.data, 'claude', 'write', budget=budget + ',google', latency='detached')
         self.assertFalse(result['available'])
-        for host, ident in [('claude', 'opus55-high'), ('codex', 'astra-medium')]:
-            result = routes.resolve(self.data, host, 'review_deep', step=99,
-                                    author_vendors=['openai', 'claude'], budget=budget)
-            self.assertEqual(result['worker_id'], ident)
+        for host in ('claude', 'codex'):
+            result = routes.resolve(self.data, host, 'review_deep', author_vendors=['openai', 'claude'], budget=budget)
             self.assertFalse(result['separation_satisfied'])
             self.assertFalse(result['available'])
             self.assertIn('no configured route is independent', result['reason'])
 
     def test_schema_rejects_invalid_workers(self):
-        for invalid in (None, [], {'schema_version': 2, 'workers': {}},
-                        {'schema_version': 2, 'workers': [None]}):
+        for invalid in (None, [], {'schema_version': 3, 'workers': {}},
+                        {'schema_version': 3, 'workers': [None]}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 routes.merge_bindings(invalid, {})
-        for fields in ({'vendor': 'unknown'}, {'tier': 'E'}, {'status': 'unknown'},
+        for fields in ({'vendor': 'unknown'}, {'tier': 'Z'}, {'status': 'unknown'},
                        {'requires': {'network': True}}, {'roles': {'unknown': 1}},
                        {'roles': {'implement': 0}}, {'roles': {'implement': {'other': 1}}}):
             with self.subTest(fields=fields), self.assertRaises(ValueError):
@@ -223,25 +275,16 @@ class HostRoutes(unittest.TestCase):
     def test_launcher_default_cli_works_for_delegates(self):
         env = dict(os.environ, HARNESS_DELEGATE_RUN='1')
         command = [sys.executable, str(HERE / 'harness-route.py'), '--launcher-default']
-        for vendor, role, expected in [('openai', 'implement', 'gpt-5.6-sol high'),
+        for vendor, role, expected in [('openai', 'implement', 'gpt-6-sol xhigh'),
                                        ('openai', 'image_verify', 'gpt-5.6-terra medium'),
-                                       ('claude', 'implement', 'claude-opus-5-5 high')]:
-            result = subprocess.run(command + ['--vendor', vendor, '--role', role], cwd=ROOT, env=env, capture_output=True, text=True)
+                                       ('claude', 'implement', 'claude-opus-5-5 medium')]:
+            result = subprocess.run(command + ['--vendor', vendor, '--role', role], cwd=ROOT.parent, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             source, _, rest = result.stdout.strip().partition(' ')
             self.assertIn(source, ('public', 'public+local'))
             self.assertEqual(rest, expected)
-        with tempfile.TemporaryDirectory() as temp:
-            folder = Path(temp) / '.claude'
-            folder.mkdir()
-            data = self.override('opus55-high', effort=None)
-            (folder / 'model-bindings.json').write_text(json.dumps(data), encoding='utf-8')
-            result = subprocess.run(command + ['--vendor', 'claude', '--role', 'implement'], cwd=temp, env=env, capture_output=True, text=True)
-            self.assertEqual(result.stdout.strip(), 'public claude-opus-5-5 unspecified')
-            (folder / 'model-bindings.json').write_text('{')
-            result = subprocess.run(command + ['--vendor', 'claude', '--role', 'implement'], cwd=temp, env=env, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 2)
-            self.assertTrue(result.stdout.startswith('ERR JSONDecodeError'))
+        with patch.object(routes, '__file__', str(HERE / 'harness-route.py')):
+            self.assertEqual(routes.load_bindings()['schema_version'], 3)
 
     def test_codex_hook_trust_uses_effective_engine_state(self):
         # Native hooks/list response shape; no model, credentials or trust writes.
@@ -423,10 +466,10 @@ for line in sys.stdin:
                 self.assertEqual(route['vendor'], 'claude')
                 self.assertTrue(route['launcher'].endswith('claude-run.sh'))
                 self.assertEqual(route['claude_role'], 'web')
-                self.assertEqual(route['model'], self.cell('D', 'claude')['model'])
+                self.assertEqual(route['model'], self.cell('E', 'claude')['model'])
                 self.assertEqual(route['sandbox'], 'read-only')
                 self.assertEqual(route['worker_id'], 'haiku45')
-                self.assertFalse(route['tier_fallback'])
+                self.assertEqual(route['tier_fallback'], tier == 'D')
 
     def test_advisory_is_other_vendor_and_readonly(self):
         for host, vendor in [('codex', 'claude'), ('claude', 'openai')]:
@@ -444,42 +487,32 @@ for line in sys.stdin:
             for route in (gate, deep):
                 self.assertEqual(route['sandbox'], 'read-only')
 
-    def test_claude_promotion_uses_claude_binding(self):
-        promoted = routes.resolve(self.data, 'codex', 'implement', 1)
-        self.assertEqual(promoted['model'], self.cell('A', 'claude')['model'])
-        with self.assertRaises(IndexError):
-            routes.resolve(self.data, 'codex', 'implement', 2)
-
     def test_openai_ultra_override_is_a_policy_error_on_both_hosts(self):
-        data = self.override('astra-medium', effort='ultra')
+        data = self.override('sol6-high', effort='ultra')
         for host in ('codex', 'claude'):
             with self.subTest(host=host), self.assertRaisesRegex(ValueError, 're-delegation'):
-                routes.resolve(data, host, 'review_deep', author_vendors=['claude'])
-        data = self.override('sol-high', model='gpt-6-astra', effort='ultra')
-        with self.assertRaisesRegex(ValueError, 're-delegation'):
-            routes.resolve(data, 'claude', 'implement')
+                routes.resolve(data, host, 'review_deep', author_vendors=['claude'],
+                               worker='sol6-high', latency='detached')
 
     def test_openai_max_override_preserves_single_agent_route(self):
-        data = self.override('astra-medium', effort='max')
-        result = routes.resolve(data, 'codex', 'review_deep', author_vendors=['claude'])
+        result = routes.resolve(self.data, 'claude', 'implement', worker='sol6-max', latency='detached')
         self.assertTrue(result['available'])
         self.assertEqual(result['effort'], 'max')
+        result = routes.resolve(self.data, 'claude', 'implement')
+        self.assertNotIn('sol6-max', result['eligible'])
 
     def test_task_tier_selects_efficient_binding_on_both_hosts(self):
-        for host, vendor in [('codex', 'claude'), ('claude', 'openai')]:
+        for host, ident in [('codex', 'sonnet55-medium'), ('claude', 'sol6-high')]:
             result = routes.resolve(self.data, host, 'implement', tier='C')
-            self.assertEqual(result['model'], self.cell('C', vendor)['model'])
+            self.assertEqual(result['worker_id'], ident)
             self.assertEqual(result['tier'], 'C')
             self.assertEqual(result['sandbox'], 'workspace-write')
-            result = routes.resolve(self.data, host, 'write', tier='B')
-            self.assertEqual(result['model'], self.cell('B', vendor)['model'])
 
     def test_tier_override_preserves_review_floor_and_exhaustion(self):
         for role in ('decide', 'plan_review', 'review_deep'):
-            with self.assertRaises(ValueError):
-                routes.resolve(self.data, 'codex', role, tier='C', author_vendors=['openai'])
-        with self.assertRaises(ValueError):
-            routes.resolve(self.data, 'codex', 'implement', step=1, tier='C')
+            result = routes.resolve(self.data, 'codex', role, author_vendors=['openai'])
+            self.assertEqual(result['band'], 'A')
+            self.assertTrue(result['floor_met'])
         result = routes.resolve(self.data, 'codex', 'implement', budget='exhausted:claude', tier='C')
         self.assertFalse(result['available'])
 
@@ -492,7 +525,7 @@ for line in sys.stdin:
         self.assertNotIn('local_endpoint', example)
 
     def test_local_override_changes_only_selected_vendor(self):
-        data = self.override('opus55-high', model='test-claude')
+        data = self.override('opus55-medium', model='test-claude')
         self.assertEqual(routes.resolve(data, 'codex', 'implement')['model'], 'test-claude')
         self.assertEqual(routes.resolve(data, 'claude', 'implement'),
                          routes.resolve(self.data, 'claude', 'implement'))
@@ -507,7 +540,7 @@ for line in sys.stdin:
         blocked = routes.resolve(self.data, 'codex', 'implement', budget='exhausted:claude')
         self.assertFalse(blocked['available'])
         self.assertEqual(blocked['vendor'], 'claude')
-        self.assertFalse(routes.resolve(self.data, 'codex', 'implement', 1, 'tight')['available'])
+        self.assertFalse(routes.resolve(self.data, 'codex', 'implement', budget='tight', retry_from='opus55-medium', retry_reason='reasoning', attempt=1)['available'])
         self.assertTrue(routes.resolve(self.data, 'codex', 'review_deep', budget='tight', author_vendors=['claude'])['available'])
 
     def test_review_follows_actual_implementer_after_direct_work_or_fallback(self):
@@ -523,7 +556,7 @@ for line in sys.stdin:
     def test_implementation_separates_from_actual_designer_without_switching_host(self):
         result = routes.resolve(self.data, 'codex', 'implement', author_vendors=['claude'])
         self.assertEqual((result['host'], result['vendor']), ('codex', 'openai'))
-        self.assertEqual(result['model'], next(w for w in self.data['workers'] if w['id'] == 'sol-high')['model'])
+        self.assertEqual(result['model'], next(w for w in self.data['workers'] if w['id'] == 'sol6-xhigh')['model'])
 
     def test_review_never_infers_authorship_from_starting_host(self):
         for role in ('plan_review', 'review_gate', 'review_deep'):
@@ -586,7 +619,7 @@ for line in sys.stdin:
                 # The recorded exhaustion ranks that vendor last and marks the route unavailable.
                 route = routes.resolve(self.data, 'claude', 'implement', budget='exhausted:google,openai', root=root, env={})
                 self.assertEqual((route['vendor'], route['available']), ('openai', False))
-                route = routes.resolve(self.data, 'claude', 'write', budget='exhausted:openai', root=root, env={})
+                route = routes.resolve(self.data, 'claude', 'write', budget='exhausted:openai', root=root, env={}, latency='detached')
                 self.assertEqual((route['vendor'], route['available']), ('google', True))
                 self.assertEqual(session.update_budget(root, 'sess-1', clear=True), 'HARNESS BUDGET: cleared')
                 self.assertIsNone(routes.session_budget({'HARNESS_SESSION_ID': 'sess-1'}))
