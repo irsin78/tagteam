@@ -2,8 +2,8 @@
   "schema_version": 2,
   "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-09-29",
-  "catalog_checked": "2026-09-29",
+  "updated": "2026-09-30",
+  "catalog_checked": "2026-09-30",
   "tiers": {
     "A": {
       "name": "Top-level judgment",
@@ -68,17 +68,26 @@
       ],
       "effort_note": "The Astra API lists low/medium/high/xhigh/max explicitly. Codex app Ultra is an automatic sub-agent mode; the delegation launcher and router refuse it under the no-redelegation contract. max is -b only. The enumeration in the official config-reference is separate and does not replace a measured success on the installed CLI. The human main session's model and mode are never changed.",
       "catalog": {
-        "checked": "2026-09-23",
-        "source": "~/.codex/models_cache.json (codex-cli 0.153.x)",
+        "checked": "2026-09-30",
+        "source": "~/.codex/models_cache.json (codex-cli 0.158.0, cache fetched 2026-09-30T06:18Z)",
         "listed": [
-          "gpt-6-astra (priority 1)",
-          "gpt-6-sol (priority 2, NEW)",
-          "gpt-6-luna (priority 3, NEW)",
+          "gpt-6-astra (priority 2)",
+          "gpt-6-sol (priority 3)",
+          "gpt-6-luna (priority 4)",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
-          "gpt-5.6-luna",
-          "gpt-5.5"
-        ]
+          "gpt-5.6-luna"
+        ],
+        "not_listed": [
+          "gpt-6.1-sol (released 2026-09-29 per AA/LLM Stats)"
+        ],
+        "probe": {
+          "date": "2026-09-30",
+          "command": "codex exec -m <model> -c model_reasoning_effort=low -s read-only \"Reply with exactly: OK\"",
+          "gpt-6.1-sol": "REFUSED: warning 'Model metadata for gpt-6.1-sol not found', then HTTP 400 invalid_request_error: \"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\"",
+          "gpt-6-sol": "OK (5,125 tokens)",
+          "note": "A catalog or leaderboard listing is not runnability. A candidate enters alternatives/pending_replacement only with a probe result and date; it becomes a worker row only after a successful probe on the installed CLI and account."
+        }
       }
     },
     "google": {
@@ -157,12 +166,30 @@
       ],
       "claude_ladder_note": "Default implementation under Codex orchestration is opus55-high (Opus 5.5 high). One step up to opus55-xhigh (Opus 5.5 xhigh) when a reasoning shortfall is diagnosed. Since 2026-09-23 both rungs are the same model, so the step costs $1.82 -> $3.46 per AA task and 40s -> 160s first token instead of the old Opus 5 -> Fable 5.1 jump (2.2x on DeepSWE). Explicitly mechanical work: C/claude (Opus 5.5 medium). Initial policy before tuning on real runs.",
       "pending_replacement": {
-        "vendor": "openai",
-        "model": "gpt-6-sol",
-        "effort": "high",
         "replaces": "sol-high (implement step 0) gpt-5.6-sol high",
-        "condition": "Switch when DeepSWE lists gpt-6-sol in the same band as gpt-5.6-sol high (69%). AA 9-23 already deprecated GPT-5.6 Sol; codex still lists it (priority 4).",
-        "recorded": "2026-09-23"
+        "candidates": [
+          {
+            "vendor": "openai",
+            "model": "gpt-6-sol",
+            "effort": "high",
+            "runnable": "yes (probe 2026-09-30 OK)",
+            "aa": "43 / $0.37 / 9.9s (9-23 scale)",
+            "deepswe": "not listed (9-30)",
+            "note": "Roughly GPT-5.6 Sol's band at ~60% of the cost per task and half the TTFT. AA 9-23 deprecated GPT-5.6 Sol; codex still lists it."
+          },
+          {
+            "vendor": "openai",
+            "model": "gpt-6.1-sol",
+            "effort": "high",
+            "runnable": "no (probe 2026-09-30: HTTP 400, ChatGPT account)",
+            "aa": "50 / $0.32 (9-30)",
+            "deepswe": "not listed (9-30)",
+            "note": "Preferred successor once runnable: Astra-medium band on AA at 1/5 the cost per task."
+          }
+        ],
+        "condition": "Switch step 0 when a candidate is runnable on the installed CLI/account AND DeepSWE lists it in the gpt-5.6-sol high band (69%) or above. The DeepSWE-only wait has not fired since 9-22; see docs/missions (promotion/selection review) for the provisional-fill proposal.",
+        "recorded": "2026-09-23",
+        "updated": "2026-09-30"
       }
     },
     "write": {
@@ -260,8 +287,8 @@
         "name": "Artificial Analysis",
         "url": "https://artificialanalysis.ai/leaderboards/models",
         "provides": "intelligence index; cost, latency and speed per effort",
-        "updated": "2026-09-23",
-        "note": "Index rescaled again on 9-23 (scale_note). Read in the browser; the haiku-fetcher summary matched. Default 'Current' filter hides deprecated models (Opus 5, GPT-5.6 Sol) — their max rows were read from the per-model pages."
+        "updated": "2026-09-30",
+        "note": "9-30 recheck (GPT-6.1 Sol released 9-29): index scale unchanged since 9-23 (GPT-6 Astra max still 53 / $3.26; Opus 5.5 max 58, Fable 5.1 max 53). GPT-6.1 Sol per-effort grid read in the browser from /models/gpt-6-1-sol[-<effort>]: low 42 / $0.13, medium 48 / $0.21, high 50 / $0.32, xhigh 51 / $0.39, max 52 / $0.72; output 59-69 t/s; TTFT range 2.1s (low) to 206s (max) per the haiku-fetcher summary, per-effort TTFT not read. Earlier 9-23 note: index rescaled on 9-23 (scale_note); default 'Current' filter hides deprecated models (Opus 5, GPT-5.6 Sol), their max rows come from the per-model pages."
       },
       "deepswe": {
         "rank": "secondary",
@@ -269,8 +296,8 @@
         "url": "https://deepswe.datacurve.ai",
         "provides": "long-horizon agentic implementation pass@1, effort sensitivity",
         "updated": "2026-09-22",
-        "checked": "2026-09-23",
-        "note": "v1.1, 113 tasks, updated 2026-09-22. No claude-opus-5.5, gpt-6-sol or gpt-6-luna yet; Terra and Fable 5.1 still absent. GPT-6 Astra cost per task fell (xhigh $6.52 -> $4.43).",
+        "checked": "2026-09-30",
+        "note": "v1.1, 113 tasks, still updated 2026-09-22 on the 9-30 check. No gpt-6.1-sol, gpt-6-sol, gpt-6-luna or claude-opus-5.5; Terra and Fable 5.1 still absent. GPT-6 Astra xhigh 74% $4.43 (cost per task fell from $6.52 on 9-03). The public page shows one effort row per model; the per-effort grid needs the 'All effort levels' toggle in the browser.",
         "rationale": "Updated later than the primary (AA) but measured on long-horizon agentic tasks, so it is highly reliable — hence secondary. When a new model is on AA but not yet on DeepSWE, fill the slot from the primary and re-check once DeepSWE lists it (policy.rules)."
       },
       "llm_stats": {
@@ -278,8 +305,8 @@
         "name": "LLM Stats",
         "url": "https://llm-stats.com",
         "provides": "sub-scores by field, Code Arena, list prices",
-        "updated": "2026-09-23",
-        "note": "Claude Opus 5.5 released 2026-09-22: $4/$20 per 1M (cached input $0.20), 1M context, 128K output; LLM Stats scores reasoning 57.8 / coding 51.7 / agent 44.5. Opus 5 $5/$25. No SWE-bench / Code Arena numbers shown."
+        "updated": "2026-09-30",
+        "note": "9-30: GPT-6.1 Sol released 2026-09-29, $2/$10 per 1M (cached input $0.10; GPT-6 Sol $0.20), 1.1M context / 128K output, described as near-Astra for complex coding at lower cost; no sub-scores or Code Arena rank populated yet. Claude Opus 5.5 released 2026-09-22: $4/$20 per 1M (cached input $0.20), 1M context, 128K output; LLM Stats scores reasoning 57.8 / coding 51.7 / agent 44.5. Opus 5 $5/$25. No SWE-bench / Code Arena numbers shown."
       },
       "openlm": {
         "rank": "reference",
@@ -392,6 +419,34 @@
           "sources": [
             "artificial_analysis"
           ]
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "effort": "high",
+          "intelligence_index": 50,
+          "effective_cost": 0.32,
+          "ttft_s": null,
+          "intelligence_by_effort": {
+            "low": 42,
+            "medium": 48,
+            "high": 50,
+            "xhigh": 51,
+            "max": 52
+          },
+          "effective_cost_by_effort": {
+            "low": 0.13,
+            "medium": 0.21,
+            "high": 0.32,
+            "xhigh": 0.39,
+            "max": 0.72
+          },
+          "condition": "NOT RUNNABLE on the installed codex-cli with a ChatGPT-plan account (probe 2026-09-30: HTTP 400 'not supported when using Codex with a ChatGPT account'; not in models_cache.json). On AA it is Astra medium's band (50 vs 50) at 1/5 the cost per task ($0.32 vs $1.54), so it is the natural successor for implement step 0 and the C/openai and B/openai cells once (1) a probe succeeds on the installed CLI/account and (2) DeepSWE lists it. Not on DeepSWE as of 9-22/9-30.",
+          "evidence": "leaderboard",
+          "sources": [
+            "artificial_analysis",
+            "llm_stats"
+          ],
+          "recorded": "2026-09-30"
         }
       ],
       "id": "astra-medium",
