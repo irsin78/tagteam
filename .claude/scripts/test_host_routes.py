@@ -278,7 +278,8 @@ class HostRoutes(unittest.TestCase):
         for vendor, role, expected in [('openai', 'implement', 'gpt-6-sol xhigh'),
                                        ('openai', 'image_verify', 'gpt-5.6-terra medium'),
                                        ('claude', 'implement', 'claude-opus-5-5 medium')]:
-            result = subprocess.run(command + ['--vendor', vendor, '--role', role], cwd=ROOT.parent, env=env, capture_output=True, text=True)
+            # Launchers run from the project root; bindings resolve from that cwd.
+            result = subprocess.run(command + ['--vendor', vendor, '--role', role], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             source, _, rest = result.stdout.strip().partition(' ')
             self.assertIn(source, ('public', 'public+local'))
@@ -835,3 +836,19 @@ class ReviewFollowUps(unittest.TestCase):
     def test_explore_floor_is_met_by_the_reader(self):
         route = routes.resolve(self.data, 'codex', 'explore')
         self.assertTrue(route['floor_met'])
+
+    def test_launcher_default_names_a_detached_only_row_instead_of_falling_back(self):
+        # A bindings file whose only implement row is max/ultra must still name that row
+        # so the launcher's effort guards refuse it (no silent builtin fallback).
+        rows = [w for w in self.data['workers'] if not (w['vendor'] == 'openai' and 'implement' in w['roles'])]
+        rows.append({'id': 'only-max', 'vendor': 'openai', 'model': 'gpt-6-sol', 'effort': 'max', 'tier': 'B',
+                     'metrics': {'index': 48, 'cost': 1.05, 'ttft_s': 186, 'tps': 76, 'provisional': True},
+                     'probe': {'date': '2026-09-30', 'result': 'OK', 'cli': 'stub'},
+                     'status': 'active', 'roles': {'implement': 1}, 'launcher': '.claude/scripts/codex-run.sh'})
+        data = routes.validate_bindings(dict(self.data, workers=rows))
+        self.assertEqual(routes.launcher_default(data, 'openai', 'implement')['id'], 'only-max')
+        rows[-1] = dict(rows[-1], effort='ultra')
+        data = routes.validate_bindings(dict(self.data, workers=rows))
+        self.assertEqual(routes.launcher_default(data, 'openai', 'implement')['id'], 'only-max')
+        with self.assertRaisesRegex(ValueError, 'ultra'):
+            routes.resolve(data, 'claude', 'implement', worker='only-max', latency='detached')

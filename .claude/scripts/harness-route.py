@@ -169,7 +169,7 @@ def merge_bindings(base, local):
 
 
 def load_bindings(root=None):
-    folder = Path(__file__).resolve().parent.parent if root is None else Path(root) / '.claude'
+    folder = Path(Path.cwd() if root is None else root) / '.claude'
     data = json.loads((folder / 'model-bindings.json').read_text(encoding='utf-8'))
     local = folder / 'model-bindings.local.json'
     override = json.loads(local.read_text(encoding='utf-8')) if local.exists() else {}
@@ -275,9 +275,14 @@ def cost_order(rows, data, exhausted):
 def launcher_default(data, vendor, role):
     host = 'claude' if vendor == 'openai' else 'codex'
     scoped = dict(data, workers=[w for w in data['workers'] if w['vendor'] == vendor])
-    route = resolve(scoped, host, role, latency='foreground',
-                    author_vendors=([{'claude': 'claude', 'codex': 'openai'}[host]]
-                                    if role in SEPARATED_ROLES else None))
+    authors = [{'claude': 'claude', 'codex': 'openai'}[host]] if role in SEPARATED_ROLES else None
+    # Foreground first. A bindings file whose only rows are detached-only (max/ultra)
+    # still names its row, so the launcher's effort guards refuse it instead of a
+    # silent builtin fallback.
+    try:
+        route = resolve(scoped, host, role, latency='foreground', author_vendors=authors)
+    except IndexError:
+        route = resolve(scoped, host, role, latency='detached', author_vendors=authors, allow_ultra=True)
     if not route['available']:
         raise ValueError('no active launcher default')
     return next(w for w in scoped['workers'] if w['id'] == route['worker_id'])
@@ -285,7 +290,7 @@ def launcher_default(data, vendor, role):
 
 def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             worker=None, root=None, env=None, latency=None, retry_from=None,
-            retry_reason=None, attempt=0):
+            retry_reason=None, attempt=0, allow_ultra=False):
     validate_bindings(data)
     root = Path.cwd() if root is None else Path(root)
     env = os.environ if env is None else env
@@ -369,7 +374,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             else:
                 floor = 'S'
     promoting = previous and retry_reason == 'reasoning' and floor != 'S'
-    if explicit and pool and pool[0]['vendor'] == 'openai' and pool[0].get('effort') == 'ultra':
+    if not allow_ultra and explicit and pool and pool[0]['vendor'] == 'openai' and pool[0].get('effort') == 'ultra':
         raise ValueError('Codex worker ultra enables re-delegation; select a single-agent effort')
     if explicit:
         chosen = [w for w in pool if within_latency(w, data, latency) or keep]
@@ -402,7 +407,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
     if explicit:
         floor_met = within_band(selected, data, floor, latency) and selected.get('scored') is not False
     vendor = selected['vendor']
-    if vendor == 'openai' and selected.get('effort') == 'ultra':
+    if not allow_ultra and vendor == 'openai' and selected.get('effort') == 'ultra':
         raise ValueError('Codex worker ultra enables re-delegation; select a single-agent effort')
     metrics = selected.get('metrics', {})
     limit = data['latency'][latency]
@@ -462,7 +467,7 @@ def main():
                 raise ValueError('--vendor required for launcher default')
             data = load_bindings()
             cell = launcher_default(data, args.vendor, args.role)
-            source = 'public+local' if (Path(__file__).resolve().parent.parent / 'model-bindings.local.json').exists() else 'public'
+            source = 'public+local' if Path('.claude/model-bindings.local.json').exists() else 'public'
             print(source, cell['model'], cell.get('effort') or 'unspecified')
             return 0
         except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
