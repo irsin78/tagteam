@@ -39,8 +39,9 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    not an availability fallback. Tight budget disables optional promotions;
    risk floors still apply.
 4. After the second reasoning failure, before any orchestrator takeover, ask
-   the other vendor once, read-only: `harness-route.py --host <host> --role decide
-   --tier S --author-vendor <failed worker's vendor>`, "why did this fail?". A spec or scope answer returns to that class's response; confirmed
+   the other vendor once, read-only: resolve `python .claude/scripts/harness-route.py
+   --host <host> --role decide --tier S --author-vendor <failed worker's vendor>`, then
+   run the returned launcher with `-s read-only` and the question "why did this fail?". A spec or scope answer returns to that class's response; confirmed
    reasoning means the orchestrator implements directly with the same
    verification, or reports instead when it is below the failed band.
 5. At most 3 worker attempts (first + 2 retries): `--attempt` counts retries,
