@@ -42,16 +42,21 @@ docs/                       Manual, runtime-boundary.md, platform notes
 
 See [Design principles](design-principles.md#basis-for-model-selection) for rationale.
 The [bindings JSON](../.claude/model-bindings.json) defines models, effort, benchmarks,
-sources, and measurement dates. Route by `workers` and per-host role priorities; use
-this manual's host-specific execution recipes.
+sources, and measurement dates. The router (`harness-route.py`) selects among `workers`
+by band floor, latency class and measured cost (docs/orchestration/delegation-matrix.md,
+"Assign a worker"); use this manual's host-specific execution recipes.
 
-Schema v2 gives each worker an `id`, `vendor`, `model`, `tier`, `roles`, `status`
-and `launcher` (or `native: true`); optional fields include `effort`, `requires`,
-`tier_cell` and measurement metadata. Role priorities are positive integers or per-host
-maps; a role can also contain `priority`, `hosts` and `requires`. `tier_cell: true`
-identifies the vendor/tier row used by explicit tier selection for separated roles.
-Status is `active`, `optional`, `conditional` (explicit `--worker <id>`) or
-`unverified` (excluded from automatic selection). `workers_local` recursively merges
+Schema v3 gives each worker (one row per model/effort) an `id`, `vendor`, `model`,
+`effort`, `tier` (band `S|A|B|C|D|E`), `roles`, `status`, `probe` and `launcher` (or
+`native: true`), plus `metrics` (`index`, `cost`, `ttft_s`, `tps`, `deepswe_pass1`,
+`provisional`) or `scored: false` for rows the router never picks automatically.
+Top-level `bands` (S is model-fixed: Fable on the Claude lane, Astra on the OpenAI lane;
+A–E are index floors) and `latency` (interactive/foreground TTFT limits) drive selection.
+Role priorities are positive integers or per-host maps and remain for host eligibility
+and `--worker`; a role can also contain `priority`, `hosts` and `requires`. `tier_cell`
+is kept as documentation only. Status is `active`, `optional`, `conditional` (explicit
+`--worker <id>`) or `unverified` (excluded from automatic selection, e.g. a model not yet
+rolled out to the account). `workers_local` recursively merges
 matching IDs and appends new ones; a local `workers` array replaces the public list. For
 example, in local bindings:
 
@@ -1094,8 +1099,9 @@ prompts/classification.
 - **Model/effort**: Always set `-c model_reasoning_effort=`, never inherit global
   `~/.codex/config.toml`. Delegate values: `low|medium|high|xhigh|max`; Max needs `-b`,
   Ultra is rejected (see [Astra guide](#applying-the-gpt-6-astra-official-guide)).
-  Omitted `-m`/`-e` use the first active OpenAI `implement` in `workers`, recorded
-  in `BINDINGS:`. Follow `docs/orchestration/retry-policy.md` for escalation;
+  Omitted `-m`/`-e` use the router's launcher default (`harness-route.py
+  --launcher-default --vendor openai --role implement`: band floor B, foreground,
+  cheapest measured row), recorded in `BINDINGS:`. Follow `docs/orchestration/retry-policy.md` for escalation;
   advisory calls explicitly set routed model/effort and `--sandbox read-only`.
 - **Advisory input**: Inline the target in the prompt file. Codex file reads use
   shell, so a broken sandbox yields READ_FAILED even read-only; follow the
