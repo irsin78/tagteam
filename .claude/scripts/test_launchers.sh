@@ -470,6 +470,16 @@ if [ -z "$REAL_PY" ]; then
     exit 1
 fi
 
+# bindings_v3 <rows-json>: wrap worker rows in the minimal schema-3 envelope
+# (bands, latency, selection_policy, role floors) the router validates.
+bindings_v3() {
+    printf '%s\n' "{\"schema_version\":3,\"bands\":{\"order\":[\"E\",\"D\",\"C\",\"B\",\"A\",\"S\"],\"S\":{\"model_fixed\":true,\"lanes\":{\"claude\":\"claude-fable-5-1\",\"openai\":\"gpt-6-astra\"},\"foreground_effort\":\"high\",\"detached_effort\":\"xhigh\"},\"A\":{\"min_index\":52},\"B\":{\"min_index\":48},\"C\":{\"min_index\":40},\"D\":{\"min_index\":30},\"E\":{\"min_index\":0}},\"latency\":{\"interactive\":10,\"foreground\":60,\"detached\":null},\"selection_policy\":{\"cost_tie_pct\":15,\"promotion_delta\":3,\"attempt_cap\":3},\"roles\":{\"implement\":{\"band_floor\":\"B\"},\"image_verify\":{\"band_floor\":\"D\"},\"web\":{\"band_floor\":\"E\"},\"explore\":{\"band_floor\":\"E\"},\"write\":{\"band_floor\":\"C\"},\"decide\":{\"band_floor\":\"A\"},\"plan_review\":{\"band_floor\":\"A\"},\"review_gate\":{\"band_floor\":\"C\"},\"review_deep\":{\"band_floor\":\"A\"}},\"workers\":[$1]}"
+}
+# row_v3 <id> <vendor> <tier> <index> <launcher> <roles-json> <model-json> <effort-json>
+row_v3() {
+    printf '%s' "{\"id\":\"$1\",\"vendor\":\"$2\",\"tier\":\"$3\",\"metrics\":{\"index\":$4,\"cost\":1.0,\"ttft_s\":5,\"tps\":50,\"provisional\":true},\"probe\":{\"date\":\"2026-09-30\",\"result\":\"OK\",\"cli\":\"stub\"},\"launcher\":\"$5\",\"status\":\"active\",\"roles\":$6,\"model\":$7,\"effort\":$8}"
+}
+
 if selected core; then
 # Policy and availability: these must not invoke either CLI stub.
 fresh_case
@@ -1030,7 +1040,8 @@ for scenario in default-high default-null default-missing local-null explicit-mo
         default-null|explicit-effort) bind_effort=',"effort":null' ;;
         default-missing) bind_effort= ;;
     esac
-    printf '%s\n' "{\"schema_version\":2,\"workers\":[{\"id\":\"bound-claude\",\"vendor\":\"claude\",\"tier\":\"B\",\"launcher\":\".claude/scripts/claude-run.sh\",\"status\":\"active\",\"roles\":{\"implement\":1},\"model\":\"bound-model\"$bind_effort}]}" > "$CASE_REPO/.claude/model-bindings.json"
+    bind_effort_json=null; [ -z "$bind_effort" ] || bind_effort_json=${bind_effort#,\"effort\":}
+    bindings_v3 "$(row_v3 bound-claude claude B 50 .claude/scripts/claude-run.sh '{"implement":1}' '"bound-model"' "$bind_effort_json")" > "$CASE_REPO/.claude/model-bindings.json"
     args=(); expected_model=bound-model; expected_effort=; expected_role=implement
     case "$scenario" in
         default-high) expected_effort=high ;;
@@ -1318,7 +1329,7 @@ if selected codex; then
 # write_bindings <path> <ladder0-model-json> <ladder0-effort-json>: a
 # minimal bindings file with the two role entry points the launcher reads.
 write_bindings() {
-    printf '%s\n' "{\"schema_version\":2,\"workers\":[{\"id\":\"bound-impl\",\"vendor\":\"openai\",\"tier\":\"C\",\"launcher\":\".claude/scripts/codex-run.sh\",\"status\":\"active\",\"roles\":{\"implement\":1},\"model\":$2,\"effort\":$3},{\"id\":\"bound-image\",\"vendor\":\"openai\",\"tier\":\"D\",\"launcher\":\".claude/scripts/codex-run.sh\",\"status\":\"active\",\"roles\":{\"image_verify\":1},\"model\":\"gpt-5.6-terra\",\"effort\":\"medium\"}]}" > "$1"
+    bindings_v3 "$(row_v3 bound-impl openai C 43 .claude/scripts/codex-run.sh '{"implement":1}' "$2" "$3"),$(row_v3 bound-image openai D 33 .claude/scripts/codex-run.sh '{"image_verify":1}' '"gpt-5.6-terra"' '"medium"')" > "$1"
 }
 codex_args() { cat "$TEST_ROOT/codex-args.log" 2>/dev/null; }
 
