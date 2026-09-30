@@ -84,7 +84,7 @@
         "probe": {
           "date": "2026-09-30",
           "command": "codex exec -m <model> -c model_reasoning_effort=low -s read-only \"Reply with exactly: OK\"",
-          "gpt-6.1-sol": "REFUSED: warning 'Model metadata for gpt-6.1-sol not found', then HTTP 400 invalid_request_error: \"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\"",
+          "gpt-6.1-sol": "REFUSED: warning 'Model metadata for gpt-6.1-sol not found', then HTTP 400 invalid_request_error: \"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\" — Rollout in progress as of 2026-09-30 (user report): the 400 reflects the model not yet being enabled on this ChatGPT account, not a permanent account restriction. Re-probe before any ladder decision.",
           "gpt-6-sol": "OK (5,125 tokens)",
           "note": "A catalog or leaderboard listing is not runnability. A candidate enters alternatives/pending_replacement only with a probe result and date; it becomes a worker row only after a successful probe on the installed CLI and account."
         }
@@ -181,7 +181,7 @@
             "vendor": "openai",
             "model": "gpt-6.1-sol",
             "effort": "high",
-            "runnable": "no (probe 2026-09-30: HTTP 400, ChatGPT account)",
+            "runnable": "not yet (probe 2026-09-30: HTTP 400; rollout to this account in progress per user, re-probe)",
             "aa": "50 / $0.32 (9-30)",
             "deepswe": "not listed (9-30)",
             "note": "Preferred successor once runnable: Astra-medium band on AA at 1/5 the cost per task."
@@ -440,7 +440,7 @@
             "xhigh": 0.39,
             "max": 0.72
           },
-          "condition": "NOT RUNNABLE on the installed codex-cli with a ChatGPT-plan account (probe 2026-09-30: HTTP 400 'not supported when using Codex with a ChatGPT account'; not in models_cache.json). On AA it is Astra medium's band (50 vs 50) at 1/5 the cost per task ($0.32 vs $1.54), so it is the natural successor for implement step 0 and the C/openai and B/openai cells once (1) a probe succeeds on the installed CLI/account and (2) DeepSWE lists it. Not on DeepSWE as of 9-22/9-30.",
+          "condition": "NOT YET RUNNABLE on this account (probe 2026-09-30: HTTP 400 'not supported when using Codex with a ChatGPT account'; not in models_cache.json). Rollout in progress as of 2026-09-30 (user report): the 400 reflects the model not yet being enabled on this ChatGPT account, not a permanent account restriction. Re-probe before any ladder decision. On AA it is Astra medium's band (50 vs 50) at 1/5 the cost per task ($0.32 vs $1.54), so it is the natural successor for implement step 0 and the C/openai and B/openai cells once (1) a probe succeeds on the installed CLI/account and (2) DeepSWE lists it. Not on DeepSWE as of 9-22/9-30.",
           "evidence": "leaderboard",
           "sources": [
             "artificial_analysis",
