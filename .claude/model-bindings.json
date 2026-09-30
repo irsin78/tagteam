@@ -74,9 +74,11 @@
           "gpt-6-astra (priority 2)",
           "gpt-6-sol (priority 3)",
           "gpt-6-luna (priority 4)",
-          "gpt-5.6-sol",
-          "gpt-5.6-terra",
-          "gpt-5.6-luna"
+          "gpt-reserve (priority 4)",
+          "gpt-5.6-sol (priority 5)",
+          "gpt-5.6-terra (priority 8)",
+          "gpt-5.6-luna (priority 9)",
+          "gpt-5.5 (priority 13)"
         ],
         "not_listed": [
           "gpt-6.1-sol (released 2026-09-29 per AA/LLM Stats)"
@@ -425,7 +427,6 @@
           "effort": "high",
           "intelligence_index": 50,
           "effective_cost": 0.32,
-          "ttft_s": null,
           "intelligence_by_effort": {
             "low": 42,
             "medium": 48,
