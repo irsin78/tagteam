@@ -810,3 +810,28 @@ for line in sys.stdin:
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReviewFollowUps(unittest.TestCase):
+    """Review r1 notes: a failed S row is never repeated; null metrics never crash."""
+
+    def setUp(self):
+        public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
+        self.data = routes.merge_bindings(public, {})
+
+    def test_failed_s_row_steps_to_detached_effort_then_refuses(self):
+        first = routes.resolve(self.data, 'codex', 'implement', retry_from='fable-high',
+                               retry_reason='reasoning', attempt=1)
+        self.assertEqual(first['worker_id'], 'fable-xhigh')
+        self.assertTrue(first['needs_detached'])
+        with self.assertRaisesRegex(ValueError, 'S row already failed'):
+            routes.resolve(self.data, 'codex', 'implement', retry_from='fable-xhigh',
+                           retry_reason='reasoning', attempt=2)
+
+    def test_null_metrics_override_is_rejected_not_crashed(self):
+        with self.assertRaises(ValueError):
+            routes.merge_bindings(self.data, {'workers_local': [{'id': 'opus55-medium', 'metrics': None}]})
+
+    def test_explore_floor_is_met_by_the_reader(self):
+        route = routes.resolve(self.data, 'codex', 'explore')
+        self.assertTrue(route['floor_met'])

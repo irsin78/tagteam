@@ -175,7 +175,7 @@
       "latency_default": "foreground"
     },
     "explore": {
-      "band_floor": "D",
+      "band_floor": "E",
       "latency_default": "foreground"
     },
     "web": {
