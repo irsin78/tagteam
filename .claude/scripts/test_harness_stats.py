@@ -93,6 +93,54 @@ class Statistics(unittest.TestCase):
         ])
         self.assertIn('timed-runs=2 mean-ms: preflight=200 cli=700 postflight=500 verify=200 total=1600', result)
 
+    def test_model_band_and_retry_headers(self):
+        result = self.run_reports([
+            'STATUS: DONE (codex_exit=0, model=z-model, effort=high)\nBAND: S\nRETRY_OF: previous (reasoning)\n',
+            'STATUS: FAILED (codex_exit=1, model=a-model, effort=medium)\nBAND: B\nRETRY_OF: previous (infra)\n',
+            'STATUS: BLOCKED (codex_exit=0, model=z-model, effort=high)\nBAND: S\n',
+            'STATUS: DONE (codex_exit=0, model=z-model, effort=low)\nBAND: C\n',
+        ])
+        self.assertIn('models: a-model/medium: done=0 failed=1 blocked=0', result)
+        self.assertIn('models: z-model/high: done=1 failed=0 blocked=1', result)
+        self.assertIn('models: z-model/low: done=1 failed=0 blocked=0', result)
+        self.assertLess(result.index('models: a-model/medium'), result.index('models: z-model/high'))
+        self.assertLess(result.index('models: z-model/high'), result.index('models: z-model/low'))
+        self.assertIn('bands: S=2 A=0 B=1 C=1 D=0 E=0 unrecorded=0', result)
+        self.assertIn('retries: total=2 by-reason: infra=1 availability=0 spec=0 scope=0 knowledge=0 reasoning=1; done-after-retry=1/2', result)
+        self.assertIn('band-S-done=1/2', result)
+
+    def test_legacy_telemetry_and_quoted_headers_are_unrecorded(self):
+        result = self.run_reports([
+            'STATUS: DONE (codex_exit=0)\nFINAL_MESSAGE:\n'
+            'STATUS: DONE (model=quoted, effort=high)\nBAND: S\nRETRY_OF: quoted (reasoning)\n',
+        ])
+        self.assertIn('models: unrecorded: done=1 failed=0 blocked=0', result)
+        self.assertIn('bands: S=0 A=0 B=0 C=0 D=0 E=0 unrecorded=1', result)
+        self.assertIn('retries: total=0', result)
+        self.assertIn('done-after-retry=0/0', result)
+        self.assertIn('band-S-done=0/0', result)
+        self.assertNotIn('quoted', result)
+
+    def test_malformed_telemetry_is_unrecorded(self):
+        result = self.run_reports([
+            'STATUS: DONE\nBAND: unknown\nRETRY_OF: previous (unknown)\n',
+            'STATUS: FAILED\nBAND: SS\nRETRY_OF: malformed\n',
+        ])
+        self.assertIn('bands: S=0 A=0 B=0 C=0 D=0 E=0 unrecorded=2', result)
+        self.assertIn('retries: total=2', result)
+        self.assertIn('reasoning=0 unrecorded=2; done-after-retry=1/2', result)
+        self.assertIn('band-S-done=0/0', result)
+
+    def test_done_after_retry_requires_done_and_retry_header(self):
+        result = self.run_reports([
+            'STATUS: DONE\n',
+            'STATUS: DONE\nRETRY_OF: first (availability)\n',
+            'STATUS: FAILED\nRETRY_OF: second (spec)\n',
+            'STATUS: BLOCKED\nRETRY_OF: third (scope)\n',
+            'RETRY_OF: fourth (knowledge)\n',
+        ])
+        self.assertIn('retries: total=4 by-reason: infra=0 availability=1 spec=1 scope=1 knowledge=1 reasoning=0; done-after-retry=1/4', result)
+
     def test_other_modes_are_distinct(self):
         result = self.run_reports([
             'STATUS: DONE (codex_exit=0, sandbox=read-only)\n',

@@ -33,8 +33,9 @@ harness-route.py; use its model/effort, not an assumed maximum model.
 
    Defaults: `workspace-write` / `-t 570`; `-m`/`-e` default from
    `.claude/model-bindings.json` (+ `.claude/model-bindings.local.json`,
-   local workers merge by id): without `-i` → first active OpenAI `implement` worker
-   (Sol/high), with `-i` → first active OpenAI `image_verify` worker (Terra/medium);
+   local workers merge by id): without `-i` → the router's launcher default
+   (`harness-route.py --launcher-default --vendor openai --role implement`:
+   band-floor B, foreground, cheapest measured row), with `-i` → first active OpenAI `image_verify` worker (Terra/medium);
    the report's `BINDINGS:` line names the source (`public`,
    `public+local`, `builtin` when no file/python, `explicit` for a given
    flag). Worker efforts: low|medium|high|xhigh|max; `max` requires `-b`.
@@ -84,7 +85,7 @@ harness-route.py; use its model/effort, not an assumed maximum model.
    pinned identically on both sides. Regression coverage for these
    branches: `bash .claude/scripts/test_launchers.sh` (stub CLIs, no
    quota).
-4. Corrective resume (one per task, retry-policy.md): re-invoke the
+4. Corrective resume (retry-policy.md: one worker attempt per retry, attempt cap 3): re-invoke the
    launcher with `-r <SESSION_ID|last>` and the correction as the prompt
    file, keeping the SAME -m/-e/-s as the original — the launcher
    re-applies every override (a bare `codex exec resume` silently reverts

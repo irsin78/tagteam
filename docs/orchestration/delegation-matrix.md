@@ -26,23 +26,35 @@ one-operation changes or repeated mechanical edits can still qualify after
 inspection, while unresolved design or state behavior cannot.
 
 ## Assign a worker
-Choose role -> capability tier -> risk floor/budget -> specialty and hard constraints
-(vision, web, isolation, platform, data boundary). Use model-bindings.json (+ local)
-for the `workers` list: one row per worker with model/effort and per-host role
-priorities; declare optional workers with `status: optional` and `requires`.
-For separated roles, `--tier` selects the chosen vendor's tier cell; for
-explore it prefers a reader tier with fallback (`tier_fallback` in the output).
-Use `--worker <id>` for conditional rows, and quote the router's `skipped` entries
-in the delegation announcement when a candidate was passed over. The output's
-`tier` field is the selected worker's tier.
-Benchmarks are initial evidence; adjust for
-repeated real-task mismatches, not frequency or one anecdote. No synthetic score.
+Choose role -> capability band -> latency class -> risk floor/budget -> specialty
+and hard constraints (vision, web, isolation, platform, data boundary).
+model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
+measured index/cost/TTFT and per-host role priorities; declare optional workers
+with `status: optional` and `requires`.
+Bands: S is model-fixed (Fable on the Claude lane, Astra on the OpenAI lane) for
+open design, Tier 2 deep review and breakthroughs, never used for A/B/C; A index
+>=52 strong judgment; B >=48 general implementation (default implementation
+floor); C >=40 closed-spec work and review gates; D >=30 mechanical/bulk; E
+isolation reader. Latency: interactive (TTFT <=10s), foreground (<=60s),
+detached (no limit, `-b --wait`; effort max/ultra rows are detached only).
+The router applies hard constraints and author separation first, then the band
+floor and latency class. It then ranks DeepSWE-listed rows before unlisted
+(provisional) ones and, within each group, picks the cheapest; rows within 15% of
+the cheapest tie and the faster TTFT wins. `--tier` is a floor (that band or higher), not an exact
+cell; `--latency interactive|foreground|detached` overrides the role default.
+`floor_met: false` means no eligible row met the floor in that latency class and
+the router returned the best lower one; announce it or change the class/vendor.
+Use `--worker <id>` for conditional rows. The router's `reason` line (band,
+latency, choice, ties, `skipped`) is what the delegation announcement quotes.
+Benchmarks are initial evidence; adjust for repeated real-task mismatches, not
+frequency or one anecdote. No composite score.
 Use `python .claude/scripts/harness-route.py --host <claude|codex> --role <role>`
 from the project root; pass its model, effort and sandbox to the launcher recipe.
-Implementation defaults to B; --tier C is for closed mechanical work, B/A for
-stronger judgment. Explore also needs task grading: choose --tier D for bounded
-extraction, C/B for structure/dependency reasoning. The configured D default is
-not a recommendation for every exploration. Tiny lookups stay in the main session.
+Role floors: implement B, write/review_gate C, decide/plan_review/review_deep A,
+explore/image_verify D, web E. Pass --tier C for closed mechanical implementation,
+A for stronger judgment. Explore also needs task grading: raise it with --tier C/B
+for structure/dependency reasoning; the D floor is not a recommendation for every
+exploration. Tiny lookups stay in the main session.
 Native workers need explicit supported model/effort; include inheritance cost
 when overrides are unavailable. Codex uses process launchers for Claude workers;
 Claude may use installed native workers. Git worktree agents require Git; otherwise
@@ -59,9 +71,9 @@ independent. Missing independence is unavailable. Acceptance still needs actual
 outputs and checks. Review triggers, risk floors and limits: verification-tiering.md.
 
 ## User-facing delegation announcement
-Before each launch, briefly state task, capability tier with task-specific reason,
+Before each launch, briefly state task, capability band with task-specific reason,
 actual resolved model/effort and why it fits (capability, cost/latency, specialty
-or author separation). Capability A-D differs from verification Tier 0-2.
+or author separation). Capability band S-E differs from verification Tier 0-2.
 Unknown/inherited settings stay explicit; a planned route is not a running worker.
 Announce material changes before retry/fallback or direct takeover, including lost
 independence. Unchanged retries may reference the first notice; polling needs none.

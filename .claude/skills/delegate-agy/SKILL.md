@@ -30,10 +30,11 @@ the prompt (rules/security-boundary.md).
 
    The model is the agy CLI default unless `-m MODEL` passes `--model` explicitly.
    Do not report a binding candidate as the model used without passing it.
-   Defaults: `medium` / `-t 570` / logs in `.claude/agy-logs/`. `-e low`
-   for mechanical bulk (comments, boilerplate, rote restructuring);
-   `high` only when a failure diagnosis shows reasoning was the blocker
-   (one bump, then return to the host's implementation fallback). `-x` lists the
+   Select model/effort from the router's launcher default
+   (`harness-route.py --launcher-default --vendor google --role implement`:
+   band-floor B, foreground, cheapest measured row), passing `-m`/`-e` explicitly.
+   Retry settings follow retry-policy.md: one worker attempt per retry, attempt cap 3.
+   Other defaults: `-t 570` / logs in `.claude/agy-logs/`. `-x` lists the
    absolute output paths the task must produce; the launcher verifies
    they exist, are non-empty, and were written BY THIS RUN (new, or
    mtime/size changed since preflight) — `PRODUCED` / `MISSING` is the

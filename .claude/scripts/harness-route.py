@@ -2,6 +2,7 @@
 """Resolve a host/role route; prints data only, never starts a model."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -53,8 +54,19 @@ def validate_requires(value):
 
 
 def validate_bindings(data):
-    if not isinstance(data, dict) or data.get('schema_version') != 2 or not isinstance(data.get('workers'), list):
-        raise ValueError('schema_version 2 and workers array required')
+    if not isinstance(data, dict) or data.get('schema_version') != 3 or not isinstance(data.get('workers'), list):
+        raise ValueError('schema_version 3 and workers array required')
+    bands = data.get('bands', {})
+    if not isinstance(bands, dict) or bands.get('order') != list('EDCBAS') or not isinstance(data.get('latency'), dict):
+        raise ValueError('bands and latency required')
+    for band in 'EDCBA':
+        if not isinstance(bands.get(band, {}).get('min_index'), (int, float)):
+            raise ValueError('band min_index required')
+    if not isinstance(bands.get('S', {}).get('lanes'), dict):
+        raise ValueError('S lanes required')
+    for name in ('interactive', 'foreground', 'detached'):
+        if name not in data['latency']:
+            raise ValueError('latency class required')
     ids, cells, priorities = set(), set(), set()
     for w in data['workers']:
         if not isinstance(w, dict):
@@ -63,7 +75,7 @@ def validate_bindings(data):
         if not isinstance(ident, str) or not re.fullmatch(r'[a-z0-9-]+', ident) or ident in ids:
             raise ValueError('invalid or duplicate worker id')
         ids.add(ident)
-        if w.get('vendor') not in VENDORS or w.get('tier') not in ('A', 'B', 'C', 'D'):
+        if w.get('vendor') not in VENDORS or w.get('tier') not in bands['order']:
             raise ValueError('unknown vendor or tier')
         if w.get('status') not in ('active', 'optional', 'conditional', 'unverified'):
             raise ValueError('unknown worker status')
@@ -80,6 +92,26 @@ def validate_bindings(data):
             if cell in cells:
                 raise ValueError('duplicate tier_cell')
             cells.add(cell)
+        metrics = w.get('metrics')
+        if w.get('scored') is not False:
+            if (not isinstance(metrics, dict) or type(metrics.get('index')) not in (int, float)
+                    or not math.isfinite(metrics['index']) or metrics['index'] < 0):
+                raise ValueError('metrics with current index or scored:false required')
+            for key in ('cost', 'ttft_s', 'tps'):
+                value = metrics.get(key)
+                if key not in metrics or (value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value < 0)):
+                    raise ValueError('invalid metric: ' + key)
+            if w['tier'] != 'S':
+                expected = next((b for b in 'ABCDE' if metrics['index'] >= bands[b]['min_index']), None)
+                if w['tier'] != expected:
+                    raise ValueError('index does not match tier: ' + ident)
+        if w['tier'] == 'S' and (w.get('tier_fixed') is not True or
+                w['model'] != bands['S']['lanes'].get(w['vendor'])):
+            raise ValueError('S row must match fixed lane model')
+        if w['status'] in ('active', 'unverified'):
+            probe = w.get('probe') or {}
+            if not isinstance(probe, dict) or not all(isinstance(probe.get(k), str) and probe[k] for k in ('date', 'result', 'cli')):
+                raise ValueError('probe required: ' + ident)
         validate_requires(w.get('requires', {}))
         if not isinstance(w.get('roles'), dict) or set(w['roles']) - set(ROLES):
             raise ValueError('unknown or invalid worker roles')
@@ -136,8 +168,8 @@ def merge_bindings(base, local):
     return validate_bindings(data)
 
 
-def load_bindings(root):
-    folder = Path(root) / '.claude'
+def load_bindings(root=None):
+    folder = Path(__file__).resolve().parent.parent if root is None else Path(root) / '.claude'
     data = json.loads((folder / 'model-bindings.json').read_text(encoding='utf-8'))
     local = folder / 'model-bindings.local.json'
     override = json.loads(local.read_text(encoding='utf-8')) if local.exists() else {}
@@ -208,28 +240,57 @@ def exclusion(worker, role, host, explicit, data, root, env):
             or unmet_requires(cfg.get('requires', {}), data, root, env))
 
 
+def metric(worker, key):
+    value = worker.get('metrics', {}).get(key)
+    return float('inf') if value is None else value
+
+
+def within_latency(worker, data, latency):
+    if latency == 'detached':
+        return True
+    return (worker.get('effort') not in ('max', 'ultra') and
+            metric(worker, 'ttft_s') <= data['latency'][latency])
+
+
+def within_band(worker, data, floor, latency):
+    if floor == 'S':
+        lane = data['bands']['S']
+        effort = lane['detached_effort' if latency == 'detached' else 'foreground_effort']
+        return worker['model'] == lane['lanes'].get(worker['vendor']) and worker.get('effort') == effort
+    # S is a deliberate model choice, never an automatic index promotion.
+    return worker['tier'] != 'S' and data['bands']['order'].index(worker['tier']) >= data['bands']['order'].index(floor)
+
+
+def cost_order(rows, data, exhausted):
+    if not rows:
+        return []
+    c0 = min(metric(w, 'cost') for w in rows)
+    ceiling = c0 * (1 + data['selection_policy']['cost_tie_pct'] / 100)
+    return sorted(rows, key=lambda w: (w['vendor'] in exhausted,
+                  w.get('metrics', {}).get('provisional', True),
+                  0 if metric(w, 'cost') <= ceiling else metric(w, 'cost'),
+                  metric(w, 'ttft_s')))
+
+
 def launcher_default(data, vendor, role):
-    # Use the usual opposite orchestrator for per-host priorities. The public
-    # implementation order within each vendor is identical on both hosts.
     host = 'claude' if vendor == 'openai' else 'codex'
-    validate_bindings(data)
-    candidates = [w for w in data['workers'] if w['vendor'] == vendor and w['status'] == 'active'
-                  and role in w['roles'] and priority(w, role, host) is not None
-                  and host in role_config(w, role).get('hosts', HOSTS)]
-    if not candidates:
+    scoped = dict(data, workers=[w for w in data['workers'] if w['vendor'] == vendor])
+    route = resolve(scoped, host, role, latency='foreground',
+                    author_vendors=([{'claude': 'claude', 'codex': 'openai'}[host]]
+                                    if role in SEPARATED_ROLES else None))
+    if not route['available']:
         raise ValueError('no active launcher default')
-    return min(candidates, key=lambda w: priority(w, role, host))
+    return next(w for w in scoped['workers'] if w['id'] == route['worker_id'])
 
 
-def resolve(data, host, role, step=0, budget='normal', tier=None, author_vendors=None,
-            worker=None, root=None, env=None):
+def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
+            worker=None, root=None, env=None, latency=None, retry_from=None,
+            retry_reason=None, attempt=0):
     validate_bindings(data)
     root = Path.cwd() if root is None else Path(root)
     env = os.environ if env is None else env
     if host not in HOSTS or role not in ROLES:
         raise ValueError('invalid host or role')
-    if step < 0:
-        raise ValueError('step must be non-negative')
     if role in REVIEW_ROLES and not author_vendors:
         raise ValueError('review requires --author-vendor for the actual artifact author(s)')
     if author_vendors and role not in SEPARATED_ROLES:
@@ -237,19 +298,42 @@ def resolve(data, host, role, step=0, budget='normal', tier=None, author_vendors
     authors = set(author_vendors or [{'codex': 'openai', 'claude': 'claude'}[host]])
     if not authors <= set(VENDORS):
         raise ValueError('invalid author vendor')
-    allowed = {'implement': 'ABC', 'write': 'ABCD', 'explore': 'ABCD', 'web': 'CD',
-               'decide': 'AB', 'plan_review': 'AB', 'review_gate': 'ABC', 'review_deep': 'AB'}
     if worker is not None and tier is not None:
         raise ValueError('--worker cannot be combined with --tier')
-    if tier is not None and (tier not in allowed.get(role, '') or step):
-        raise ValueError('tier is incompatible with this role or ladder step')
-    if worker is not None and not any(w['id'] == worker for w in data['workers']):
-        raise ValueError('unknown worker id: ' + worker)
-    candidates = [w for w in data['workers'] if role in w['roles'] and (worker is None or w['id'] == worker)]
-    candidates.sort(key=lambda w: priority(w, role, host) or float('inf'))
+    floor = tier or data['roles'][role]['band_floor']
+    latency = latency or data['roles'][role].get('latency_default', 'foreground')
+    if floor not in data['bands']['order'] or latency not in ('interactive', 'foreground', 'detached'):
+        raise ValueError('invalid band or latency')
+    if attempt < 0:
+        raise ValueError('attempt must be non-negative')
+    if attempt >= data['selection_policy']['attempt_cap']:  # cap counts the first attempt
+        raise ValueError('attempt cap reached; orchestrator decides (retry-policy §4c)')
+    if bool(retry_from) != bool(retry_reason) or (attempt and not retry_from):
+        raise ValueError('retry requires --retry-from and --retry-reason')
+    if retry_from and (worker or attempt < 1):
+        raise ValueError('retry requires positive --attempt and cannot combine with --worker')
+    if retry_reason and retry_reason not in ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning'):
+        raise ValueError('invalid retry reason')
+    by_id = {w['id']: w for w in data['workers']}
+    for ident in (worker, retry_from):
+        if ident is not None and ident not in by_id:
+            raise ValueError('unknown worker id: ' + ident)
+    exhausted = set(budget[10:].split(',')) if budget.startswith('exhausted:') else set()
+    previous = by_id.get(retry_from)
+    if previous and (role not in previous['roles'] or
+            exclusion(previous, role, host, True, data, root, env) or
+            (role in SEPARATED_ROLES and previous['vendor'] in authors)):
+        raise ValueError('retry worker is not eligible for role/host/authors')
+    keep = previous and retry_reason != 'reasoning' and not (
+        retry_reason == 'availability' and previous['vendor'] in exhausted)
+    explicit = worker or (retry_from if keep else None)
+    candidates = [w for w in data['workers'] if role in w['roles'] and
+                  (explicit is None or w['id'] == explicit)]
     skipped, eligible, diagnostic = [], [], []
     for w in candidates:
-        reason = exclusion(w, role, host, worker is not None, data, root, env)
+        reason = exclusion(w, role, host, explicit is not None, data, root, env)
+        if not reason and explicit is None and w.get('scored') is False:
+            reason = 'unscored requires explicit --worker'
         if not reason:
             diagnostic.append(w)
             if role in SEPARATED_ROLES and w['vendor'] in authors:
@@ -259,47 +343,92 @@ def resolve(data, host, role, step=0, budget='normal', tier=None, author_vendors
         else:
             eligible.append(w)
     separation_ok = bool(eligible) if role in SEPARATED_ROLES else True
-    exhausted = set(budget[10:].split(',')) if budget.startswith('exhausted:') else set()
-    preferred_tier = tier or 'D'
-    if not separation_ok and diagnostic:
-        selected = diagnostic[0]
+    pool = eligible if separation_ok else diagnostic
+    needs_detached = False
+    if previous and retry_reason == 'reasoning':
+        pool = [w for w in pool if w['vendor'] == previous['vendor']]
+        if attempt >= 2 or tier == 'S':
+            floor = 'S'
+        else:
+            index = previous.get('metrics', {}).get('index')
+            promotion = [w for w in pool if w['tier'] != 'S' and index is not None and
+                         metric(w, 'index') >= index + data['selection_policy']['promotion_delta']]
+            fast = [w for w in promotion if within_latency(w, data, latency)]
+            if fast or promotion:
+                pool = fast or promotion
+                needs_detached = not bool(fast)
+            else:
+                floor = 'S'
+    promoting = previous and retry_reason == 'reasoning' and floor != 'S'
+    if explicit and pool and pool[0]['vendor'] == 'openai' and pool[0].get('effort') == 'ultra':
+        raise ValueError('Codex worker ultra enables re-delegation; select a single-agent effort')
+    if explicit:
+        chosen = [w for w in pool if within_latency(w, data, latency) or keep]
+    elif promoting:
+        chosen = pool
     else:
-        if tier and role in SEPARATED_ROLES and eligible:
-            vendor = min(eligible, key=lambda w: w['vendor'] in exhausted)['vendor']
-            cell = next((w for w in data['workers'] if w.get('tier_cell') and w['tier'] == tier and w['vendor'] == vendor), None)
-            if cell is None:
-                raise ValueError('no tier cell for ' + tier + '/' + vendor)
-            reason = exclusion(cell, role, host, worker is not None, data, root, env)
+        chosen = []
+        for w in pool:
+            reason = None
+            if not within_band(w, data, floor, latency):
+                reason = 'S only' if w['tier'] == 'S' and floor != 'S' else 'below band or different S effort'
+            elif not within_latency(w, data, latency):
+                reason = 'latency ' + latency
             if reason:
-                raise ValueError('tier cell unavailable: ' + reason)
-            eligible = [cell]
-        # Stable priority ordering retains the requested reader tier within each
-        # availability group; exhaustion may select a reader from another tier.
-        eligible.sort(key=lambda w: (w['vendor'] in exhausted,
-                      w['tier'] != preferred_tier if role in ('explore', 'web') else False))
-        selected = eligible[step]
+                skipped.append({'id': w['id'], 'reason': reason})
+            else:
+                chosen.append(w)
+    floor_met = bool(chosen)
+    fallback = False
+    if not chosen and not explicit and floor != 'S':
+        chosen = [w for w in pool if w['tier'] != 'S' and w.get('scored') is not False and
+                  within_latency(w, data, latency)]
+        fallback = True
+    ordered = cost_order(chosen, data, exhausted)
+    if fallback:
+        ordered.sort(key=lambda w: (w['vendor'] in exhausted, -metric(w, 'index')))
+    if not ordered:
+        raise IndexError('no eligible worker meets latency and hard constraints')
+    selected = ordered[0]
+    if explicit:
+        floor_met = within_band(selected, data, floor, latency) and selected.get('scored') is not False
     vendor = selected['vendor']
     if vendor == 'openai' and selected.get('effort') == 'ultra':
         raise ValueError('Codex worker ultra enables re-delegation; select a single-agent effort')
+    metrics = selected.get('metrics', {})
+    limit = data['latency'][latency]
+    label = latency if limit is None else f'{latency}<={limit}s'
+    reason = (f'band {floor} floor, {label}: cheapest of {len(ordered)} eligible = '
+              f"{selected['id']} ({metrics.get('index')}, ${metrics.get('cost')}, {metrics.get('ttft_s')}s)")
+    if fallback:
+        reason = f"no row meets band {floor} in {latency}; best available is {selected['id']}"
+    if keep or retry_reason == 'availability':
+        reason = f'retry keeps settings; fix {retry_reason}; ' + reason
+    elif previous:
+        reason = 'reasoning retry; ' + reason
+    c0 = min(metric(w, 'cost') for w in ordered)
+    ties = [w['id'] for w in ordered if metric(w, 'cost') <= c0 * (1 + data['selection_policy']['cost_tie_pct'] / 100)]
+    reason += '; ties: ' + (', '.join(ties) if len(ties) > 1 else 'none')
+    reason += '; skipped: ' + (', '.join(f"{w['id']} ({w['reason']})" for w in skipped) or 'none')
     route = dict(vendor=vendor, launcher=selected.get('launcher'),
                  sandbox='workspace-write' if role in ('implement', 'write') else 'read-only',
                  model=selected['model'], effort=selected.get('effort'), tier=selected['tier'],
-                 host=host, role=role, step=step, budget=budget,
-                 worker_id=selected['id'], skipped=skipped,
-                 tier_fallback=role in ('explore', 'web') and selected['tier'] != preferred_tier,
-                 available=separation_ok and vendor not in exhausted)
+                 host=host, role=role, budget=budget, band=floor, latency_class=latency,
+                 floor_met=floor_met, reason=reason, needs_detached=needs_detached,
+                 eligible=[w['id'] for w in ordered], worker_id=selected['id'], skipped=skipped,
+                 tier_fallback=not floor_met, available=separation_ok and vendor not in exhausted)
     if role == 'web' and vendor == 'claude':
         route['claude_role'] = 'web'
     if role in SEPARATED_ROLES:
         route.update(author_vendors=sorted(authors), separation_satisfied=separation_ok)
     if not separation_ok:
-        route['reason'] = 'no configured route is independent of the artifact authors; do not claim cross-review'
-    elif budget == 'tight' and step:
+        route['reason'] += '; no configured route is independent of the artifact authors; do not claim cross-review'
+    elif budget == 'tight' and retry_reason == 'reasoning':
         route['available'] = False
-        route['reason'] = 'tight budget disables optional ladder promotions'
+        route['reason'] += '; tight budget disables optional reasoning promotions'
     elif vendor in exhausted:
-        route['reason'] = ('independent reviewer is exhausted; report required review as incomplete; do not use implementation fallback'
-                           if role in REVIEW_ROLES else 'selected vendor is declared exhausted; follow fallback policy')
+        route['reason'] += ('; independent reviewer is exhausted; report required review as incomplete; do not use implementation fallback'
+                            if role in REVIEW_ROLES else '; selected vendor is declared exhausted; follow fallback policy')
     return route
 
 
@@ -310,9 +439,11 @@ def main():
     parser.add_argument('--worker')
     parser.add_argument('--launcher-default', action='store_true')
     parser.add_argument('--vendor', choices=VENDORS)
-    parser.add_argument('--step', type=int, default=0)
-    parser.add_argument('--tier', choices=('A', 'B', 'C', 'D'),
-                        help='explicit task capability; cannot be combined with a ladder step')
+    parser.add_argument('--tier', choices=tuple('SABCDE'), help='capability band floor')
+    parser.add_argument('--latency', choices=('interactive', 'foreground', 'detached'))
+    parser.add_argument('--retry-from')
+    parser.add_argument('--retry-reason', choices=('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning'))
+    parser.add_argument('--attempt', type=int, default=0)
     parser.add_argument('--author-vendor', action='append', choices=('openai', 'claude', 'google', 'local'),
                         help='actual author of the design (implement/write/advice) or review target; repeat for coauthors; required for reviews')
     args = parser.parse_args()
@@ -320,9 +451,9 @@ def main():
         try:
             if args.vendor is None:
                 raise ValueError('--vendor required for launcher default')
-            data = load_bindings(Path.cwd())
+            data = load_bindings()
             cell = launcher_default(data, args.vendor, args.role)
-            source = 'public+local' if Path('.claude/model-bindings.local.json').exists() else 'public'
+            source = 'public+local' if (Path(__file__).resolve().parent.parent / 'model-bindings.local.json').exists() else 'public'
             print(source, cell['model'], cell.get('effort') or 'unspecified')
             return 0
         except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
@@ -334,9 +465,10 @@ def main():
         print('HARNESS_DENIED: delegates execute their assignment, not another route', file=sys.stderr)
         return 4
     try:
-        data = load_bindings(Path.cwd())
-        route = resolve(data, args.host, args.role, args.step,
-                        budget_for(data, os.environ), args.tier, args.author_vendor, args.worker)
+        data = load_bindings()
+        route = resolve(data, args.host, args.role, budget_for(data, os.environ),
+                        args.tier, args.author_vendor, args.worker, latency=args.latency,
+                        retry_from=args.retry_from, retry_reason=args.retry_reason, attempt=args.attempt)
         route['shell'] = find_bash()
         if route['shell'] is None:
             native_review = (args.role in REVIEW_ROLES and route['available'] and

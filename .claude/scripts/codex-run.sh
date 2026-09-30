@@ -278,6 +278,7 @@ mkdir -p "$LOG_DIR" || exit 2
 # Timestamp + pid: unique even for two launchers started in the same second.
 RUN_ID=${HARNESS_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}
 case "$RUN_ID" in *[!A-Za-z0-9TZ_-]*) echo "HARNESS_DENIED: bad HARNESS_RUN_ID" >&2; exit 4 ;; esac
+retry_header_check || exit 4
 TIMESTAMP=$RUN_ID
 # Never start on top of a run that is still executing in this tree.
 LAUNCHER_PID=$$
@@ -541,6 +542,7 @@ hooks_canary() {
 
 report() {
     echo "STATUS: $STATUS (codex_exit=$CODEX_EXIT, output=$OUTPUT_STATE, sandbox=$SANDBOX, model=$MODEL, effort=$EFFORT)"
+    retry_header_echo
     # Failed runs only; whole lines, optional warning/ERROR/stream error prefixes.
     # Accepted: HTTP 429[ Too Many Requests], usage/rate-limit[ exceeded/reached],
     # You've hit your usage limit, exceeded retry limit, last status: 429 Too Many Requests,

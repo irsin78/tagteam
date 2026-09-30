@@ -1,6 +1,6 @@
 {
   "_comment": "Copy as model-bindings.local.json. Dictionaries merge; arrays/scalars replace. Omit unused overrides to keep public defaults. Project domain policy goes in root CLAUDE.md/AGENTS.md.",
-  "schema_version": 2,
+  "schema_version": 3,
   "budget_comment": "Optional budget string: normal, tight, exhausted:<vendor>. Omit budget for normal. Startup never probes quota; declare changes when needed.",
   "subscriptions": {
     "claude": null,
@@ -35,7 +35,8 @@
       "status": "optional",
       "requires": {
         "local_endpoint": true
-      }
+      },
+      "scored": false
     }
   ]
 }

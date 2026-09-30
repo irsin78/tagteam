@@ -79,7 +79,7 @@ another delegation. Reader inputs and local model `auto` behavior are defined in
 | Role | Default route and selection criteria |
 |---|---|
 | Orchestration and decisions | Keep the host the user started. Choose a tier matching the judgment required |
-| Implementation | Claude orchestration uses the OpenAI ladder; Codex orchestration uses the Claude ladder. Explicitly select a lower tier for mechanical work |
+| Implementation | Claude orchestration routes to the OpenAI lane; Codex orchestration routes to the Claude lane. The router picks the cheapest row meeting band floor B in the latency class. Explicitly lower the floor for mechanical work |
 | Writing, HTML, experimental code | Match the tier to the audience and task. Apply binding exceptions for specialties such as HTML |
 | Review | Verify according to risk. Choose gate and deep-review routes per host |
 | Image verification | Explicit binding in `roles.image_verify`. Does not always match the orchestrator/implementer's vendor |
@@ -88,7 +88,7 @@ another delegation. Reader inputs and local model `auto` behavior are defined in
 
 For unavailable CLIs, follow delegation-matrix fallback; report irreplaceable
 requirements (such as independent review) incomplete. Choose exploration by the
-question, not blindly by default D: e.g. `--role explore --tier C`. Do not replace
+question, not blindly by the default D floor: e.g. `--role explore --tier C`. Do not replace
 models wholesale after one benchmark/failure. Authentication/quota failures may exit 1;
 inspect original CLI errors and partial artifacts before fallback or reauthentication.
 Printed document error strings are not authentication failures; never repeat a
@@ -595,11 +595,14 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
    (`--host claude` on Claude). Use JSON launcher/model/effort/sandbox/shell paths;
    lookup skips WindowsApps for Git Bash without executing work/changing settings.
    Roles: implement, decide, plan_review, review_gate, review_deep, explore, write, web.
-   Use `--tier C` for mechanical work, default B for ordinary implementation,
-   `--tier A` for higher judgment; decisions/planning/deep reviews require B+.
-   Separated-role `--tier` enforces author separation and vendor tier cells;
-   explore prefers reader tiers with fallback. `--step 1` advances implementation
-   only for insufficient reasoning; `--tier` cannot combine with `--step` > 0.
+   `--tier S..E` sets the band floor (that band or higher): `--tier C` for
+   mechanical work, default B for ordinary implementation, `--tier A` for higher
+   judgment; decide/plan_review/review_deep default to A. S is model-fixed
+   (Fable/Astra) and only chosen by `--tier S`. `--latency
+   interactive|foreground|detached` sets the TTFT class. Separated roles still
+   apply author separation first. `floor_met: false` means only a lower band was
+   available; quote the output's `reason` in the announcement. Retries use
+   `--retry-from <worker_id> --retry-reason <class> --attempt N` (retry-policy).
    Implement/write/decide assume the orchestrator designed the work; otherwise
    pass `--author-vendor <vendor>`. Always specify actual authors for `plan_review`,
    `review_gate`, `review_deep` (repeat for coauthors): designer for design gates,
@@ -935,7 +938,7 @@ reports. Mandatory checks that cannot run leave work incomplete.
 
 For reviews, follow `verification-tiering.md`: provide changed sections, necessary
 surrounding code, contracts, and verification summaries. Match effort to the question
-(e.g. `plan_review --tier B` for closed-scope planning), preserving
+(e.g. `plan_review --tier B` lowers the default A floor for closed-scope planning), preserving
 capability/independence floors. File count alone does not justify full context or high
 effort.
 

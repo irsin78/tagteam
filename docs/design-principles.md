@@ -97,7 +97,7 @@ better deal.
 | What is being judged | Role of the benchmark JSON |
 |---|---|
 | Capability, price and speed across models | Default evidence; check the measurement conditions and sources with it |
-| Candidates per task tier and promotion order | Basis for the initial choice |
+| Band floors and measured ordering (cost, TTFT) of candidates | Basis for the initial choice |
 | Actual success rate in a specific project | Not guaranteed directly |
 | Whether delegation or direct handling is better | Needs a separate judgment: spec writing, waiting and review cost are not included |
 

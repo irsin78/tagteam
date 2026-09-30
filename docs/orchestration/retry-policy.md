@@ -14,23 +14,43 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    the environment and rerun at the same model/effort; do not promote.
    If the same infrastructure failure remains after a targeted repair,
    report it instead of repeatedly launching workers.
-2. After the first implementation failure, choose one correction at the
-   original settings OR one justified promotion below, not both.
-   Codex supports `-r` through codex-run.sh. Claude uses a NEW invocation of
-   claude-run.sh with the original task, exact failure and current state INLINE;
-   claude-run.sh does not implement `-r`. Never assume worker context is
-   preserved. Recheck existing changes before either kind of retry.
-3. Only diagnosed reasoning insufficiency allows ONE promotion. From an
-   explicit C task, use the host route's default B entry (omit --tier).
-   Otherwise move one step on that host's implementation ladder
-   (`harness-route.py --step N`). Never raise effort for slowness.
-   `max` is detached only; Codex worker `ultra` is a policy refusal, not an
-   availability fallback.
-   Tight budget disables optional promotions; risk floors still apply.
-4. After two real implementation failures the orchestrator implements
-   directly with the same verification. Do not cycle through vendors.
-   If the current main model already failed that task or cannot meet its
-   risk floor, stop and report. Availability fallback is separate (matrix).
+2. Classify the failure from run logs and verifier output. The class is the
+   router's `--retry-reason` value; only `reasoning` promotes.
+
+   | Class | Observable evidence | Response |
+   |---|---|---|
+   | `infra` | sandbox refusal, missing dependency, broken quoting, unreachable MCP | repair, same settings |
+   | `availability` | auth/quota error, unsupported-model 400 | matrix fallback, `budget --exhausted` |
+   | `spec` | NEEDS_INPUT, or the worker guessed what the spec omits | supply inputs, same settings |
+   | `scope` | timeout after partial progress, only part of the change landed | split the task, same settings |
+   | `knowledge` | misuse of an unfamiliar API or library | supply references or a web reader, same settings |
+   | `reasoning` | spec understood but approach wrong, repeated verifier failure | promote (3) |
+
+   Get the retry route with `harness-route.py --host <host> --role <role>
+   --retry-from <worker_id> --retry-reason <class> --attempt N`.
+3. Promotion takes the cheapest step that gains at least `promotion_delta`
+   index points in the same lane, not one rung. Steep-curve models (Opus 5.5,
+   Sonnet 5.5) usually raise effort; flat-curve models (Astra, Sol 6.1) switch
+   model. A design/state-judgment diagnosis or a second reasoning failure goes
+   straight to band S (model change: Fable on the Claude lane, Astra on the
+   OpenAI lane). Author separation still applies. A step over the foreground
+   latency limit runs only detached (`-b --wait`). Never raise effort for
+   slowness. `max` is detached only; Codex worker `ultra` is a policy refusal,
+   not an availability fallback. Tight budget disables optional promotions;
+   risk floors still apply.
+4. After the second reasoning failure, before any orchestrator takeover, ask
+   the other vendor once, read-only: `harness-route.py --host <host> --role decide
+   --tier S --author-vendor <failed worker's vendor>`, "why did this fail?". A spec or scope answer returns to that class's response; confirmed
+   reasoning means the orchestrator implements directly with the same
+   verification, or reports instead when it is below the failed band.
+5. At most 3 worker attempts (first + 2 retries): `--attempt` counts retries,
+   so the router refuses `--attempt 3`; then 4 applies. Each retry changes class, settings or inputs; never
+   repeat a combination. Do not cycle through vendors.
+6. A retry is one worker attempt. Always pass the failure and current state;
+   change only the settings, inputs or scope the diagnosis points to. Codex
+   supports `-r` through codex-run.sh; Claude needs a NEW claude-run.sh call with
+   the original task, exact failure and current state INLINE. Never assume worker
+   context is preserved. Recheck existing changes before any retry.
 
 Unresolved NEEDS_INPUT goes back to the parent for an answer and a new
 self-contained assignment; it is not a reason to silently take over.
