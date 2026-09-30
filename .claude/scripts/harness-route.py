@@ -241,7 +241,7 @@ def exclusion(worker, role, host, explicit, data, root, env):
 
 
 def metric(worker, key):
-    value = worker.get('metrics', {}).get(key)
+    value = (worker.get('metrics') or {}).get(key)
     return float('inf') if value is None else value
 
 
@@ -347,10 +347,19 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
     needs_detached = False
     if previous and retry_reason == 'reasoning':
         pool = [w for w in pool if w['vendor'] == previous['vendor']]
-        if attempt >= 2 or tier == 'S':
+        if previous['tier'] == 'S':
+            # A failed S row is never repeated (retry-policy 5): the detached effort is
+            # the only remaining step; past that the orchestrator decides (retry-policy 4).
+            if previous.get('effort') == data['bands']['S']['foreground_effort'] and latency != 'detached':
+                latency = 'detached'
+                needs_detached = True
+            else:
+                raise ValueError('S row already failed at its detached effort; orchestrator decides (retry-policy 4)')
+            floor = 'S'
+        elif attempt >= 2 or tier == 'S':
             floor = 'S'
         else:
-            index = previous.get('metrics', {}).get('index')
+            index = (previous.get('metrics') or {}).get('index')
             promotion = [w for w in pool if w['tier'] != 'S' and index is not None and
                          metric(w, 'index') >= index + data['selection_policy']['promotion_delta']]
             fast = [w for w in promotion if within_latency(w, data, latency)]
