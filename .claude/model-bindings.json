@@ -2,8 +2,8 @@
   "schema_version": 3,
   "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-09-30",
-  "catalog_checked": "2026-09-30",
+  "updated": "2026-10-01",
+  "catalog_checked": "2026-10-01",
   "vendors": {
     "claude": {
       "host": "Claude Code",
@@ -38,9 +38,10 @@
       ],
       "effort_note": "The Astra API lists low/medium/high/xhigh/max explicitly. Codex app Ultra is an automatic sub-agent mode; the delegation launcher and router refuse it under the no-redelegation contract. max is -b only. The enumeration in the official config-reference is separate and does not replace a measured success on the installed CLI. The human main session's model and mode are never changed.",
       "catalog": {
-        "checked": "2026-09-30",
-        "source": "~/.codex/models_cache.json (codex-cli 0.158.0, cache fetched 2026-09-30T06:18Z)",
+        "checked": "2026-10-01",
+        "source": "~/.codex/models_cache.json (codex-cli 0.159.3, cache fetched 2026-10-01T01:19Z)",
         "listed": [
+          "gpt-6.1-sol (priority 1)",
           "gpt-6-astra (priority 2)",
           "gpt-6-sol (priority 3)",
           "gpt-6-luna (priority 4)",
@@ -50,15 +51,13 @@
           "gpt-5.6-luna (priority 9)",
           "gpt-5.5 (priority 13)"
         ],
-        "not_listed": [
-          "gpt-6.1-sol (released 2026-09-29 per AA/LLM Stats)"
-        ],
         "probe": {
-          "date": "2026-09-30",
-          "command": "codex exec -m <model> -c model_reasoning_effort=low -s read-only \"Reply with exactly: OK\"",
-          "gpt-6.1-sol": "REFUSED: warning 'Model metadata for gpt-6.1-sol not found', then HTTP 400 invalid_request_error: \"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\" — Rollout in progress as of 2026-09-30 (user report): the 400 reflects the model not yet being enabled on this ChatGPT account, not a permanent account restriction. Re-probe before any ladder decision.",
+          "date": "2026-10-01",
+          "command": "codex exec -m <model> -c model_reasoning_effort=<effort> -s read-only --skip-git-repo-check \"Reply with exactly: OK\" < /dev/null",
+          "gpt-6.1-sol": "OK at medium (3,841 tokens) and high (3,842 tokens) on codex-cli 0.159.3, 2026-10-01: rollout reached this ChatGPT account. History: 2026-09-30 on codex-cli 0.158.0 it was refused with HTTP 400 'not supported when using Codex with a ChatGPT account' while the rollout was pending.",
           "gpt-6-sol": "OK (5,125 tokens)",
-          "note": "A catalog or leaderboard listing is not runnability. A candidate enters alternatives/pending_replacement only with a probe result and date; it becomes a worker row only after a successful probe on the installed CLI and account."
+          "note": "A catalog or leaderboard listing is not runnability. A candidate enters alternatives/pending_replacement only with a probe result and date; it becomes a worker row only after a successful probe on the installed CLI and account.",
+          "stdin_note": "codex-cli 0.159.x reads additional input from stdin when it is not closed; a manual probe without '< /dev/null' waits instead of answering. The launchers already pass the prompt on stdin."
         }
       }
     },
@@ -67,14 +66,25 @@
       "launcher": ".claude/scripts/agy-run.sh",
       "quota": "Google AI plan",
       "catalog": {
-        "checked": "2026-09-23",
-        "source": "agy models (agy 1.1.26)",
+        "checked": "2026-10-01",
+        "source": "agy models (agy 1.2.14)",
         "listed": [
           "gemini-3.8-flash (high/medium/low)",
-          "gemini-3.7-flash",
-          "gemini-3.6-flash",
-          "gemini-3.1-pro"
-        ]
+          "gemini-3.7-flash (high/medium/low)",
+          "gemini-3.6-flash (high/medium/low)",
+          "gemini-3.1-pro (high/low)",
+          "claude-sonnet-4-6 (thinking)",
+          "claude-opus-4-6-thinking",
+          "gpt-oss-120b-medium"
+        ],
+        "not_listed": [
+          "gemini-4-argon (released September 2026 per AA; not offered by agy on 2026-10-01 — rollout to this account pending per user, expected within a day or two)"
+        ],
+        "probe": {
+          "date": "2026-10-01",
+          "command": "agy models < /dev/null",
+          "gemini-4-argon": "NOT LISTED in agy 1.2.14 model list; re-check with `agy models` before activating the row."
+        }
       }
     },
     "local": {
@@ -305,7 +315,8 @@
     "cross_review": "Host chooses the orchestrator; actual artifact authors choose eligible implementers/reviewers. Pass all authors using --author-vendor. Reviews require explicit provenance and a fresh worker; different vendors do not guarantee correctness.",
     "cost_tie_pct": 15,
     "promotion_delta": 3,
-    "attempt_cap": 3
+    "attempt_cap": 3,
+    "trust_note": "A row with \"trust\": \"low\" sorts after every other eligible row in selection and in the floor_met:false fallback. It is a user call on a new model, not a measurement."
   },
   "workers": [
     {
@@ -411,7 +422,7 @@
       "vendor": "openai",
       "effort": "medium",
       "tier": "B",
-      "status": "unverified",
+      "status": "active",
       "launcher": ".claude/scripts/codex-run.sh",
       "tier_cell": true,
       "metrics": {
@@ -425,9 +436,9 @@
         "provisional": true
       },
       "probe": {
-        "date": "2026-09-30",
-        "result": "REFUSED: HTTP 400; rollout to this ChatGPT account pending",
-        "cli": "codex-cli 0.158.0"
+        "date": "2026-10-01",
+        "result": "OK (3,841 tokens)",
+        "cli": "codex-cli 0.159.3"
       },
       "roles": {
         "implement": 102,
@@ -444,7 +455,7 @@
       "vendor": "openai",
       "effort": "high",
       "tier": "B",
-      "status": "unverified",
+      "status": "active",
       "launcher": ".claude/scripts/codex-run.sh",
       "tier_cell": false,
       "metrics": {
@@ -458,9 +469,9 @@
         "provisional": true
       },
       "probe": {
-        "date": "2026-09-30",
-        "result": "REFUSED: HTTP 400; rollout to this ChatGPT account pending",
-        "cli": "codex-cli 0.158.0"
+        "date": "2026-10-01",
+        "result": "OK (3,842 tokens)",
+        "cli": "codex-cli 0.159.3"
       },
       "roles": {
         "implement": 103,
@@ -477,7 +488,7 @@
       "vendor": "openai",
       "effort": "xhigh",
       "tier": "B",
-      "status": "unverified",
+      "status": "active",
       "launcher": ".claude/scripts/codex-run.sh",
       "tier_cell": false,
       "metrics": {
@@ -491,9 +502,9 @@
         "provisional": true
       },
       "probe": {
-        "date": "2026-09-30",
-        "result": "REFUSED: HTTP 400; rollout to this ChatGPT account pending",
-        "cli": "codex-cli 0.158.0"
+        "date": "2026-10-01",
+        "result": "OK (model probed at medium/high; same model and account)",
+        "cli": "codex-cli 0.159.3"
       },
       "roles": {
         "implement": 104,
@@ -510,7 +521,7 @@
       "vendor": "openai",
       "effort": "max",
       "tier": "A",
-      "status": "unverified",
+      "status": "active",
       "launcher": ".claude/scripts/codex-run.sh",
       "tier_cell": true,
       "metrics": {
@@ -524,9 +535,9 @@
         "provisional": true
       },
       "probe": {
-        "date": "2026-09-30",
-        "result": "REFUSED: HTTP 400; rollout to this ChatGPT account pending",
-        "cli": "codex-cli 0.158.0"
+        "date": "2026-10-01",
+        "result": "OK (model probed at medium/high; same model and account)",
+        "cli": "codex-cli 0.159.3"
       },
       "roles": {
         "implement": 105,
@@ -1448,6 +1459,36 @@
         "local_endpoint": true
       },
       "scored": false
+    },
+    {
+      "id": "argon-high",
+      "vendor": "google",
+      "model": "gemini-4-argon",
+      "effort": "high",
+      "tier": "A",
+      "status": "unverified",
+      "launcher": ".claude/scripts/agy-run.sh",
+      "tier_cell": true,
+      "metrics": {
+        "index": 53,
+        "cost": 1.99,
+        "ttft_s": null,
+        "tps": null,
+        "source": "artificial_analysis",
+        "read": "2026-10-01",
+        "deepswe_pass1": null,
+        "provisional": true
+      },
+      "probe": {
+        "date": "2026-10-01",
+        "result": "NOT LISTED: absent from `agy models` (agy 1.2.14); rollout pending per user",
+        "cli": "agy 1.2.14"
+      },
+      "roles": {
+        "write": 5
+      },
+      "note": "AA 2026-10-01: Gemini 4 Argon (high) 53 / $1.99 per task, $2/$10 per 1M, 1M context; only the high effort is published, output speed and TTFT not yet measured (so the router treats it as detached-only until they are). Not on DeepSWE. Index 53 is the A band; whether it should join band S as a Google lane is a user decision (S is model-fixed: Fable/Astra). agy has no command grant, so implementation through agy still needs codex-side verification. The agy model id may differ from 'gemini-4-argon' (agy uses suffixed ids such as gemini-3.8-flash-high); confirm it from `agy models` when the rollout arrives. User decision 2026-10-01: trust is still low, so even after activation it ranks after every other A-band row (trust: low) and is chosen only when nothing else qualifies. Revisit with real-run results (harness-stats.sh) or a DeepSWE listing.",
+      "trust": "low"
     }
   ],
   "bands": {

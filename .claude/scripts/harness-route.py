@@ -108,6 +108,8 @@ def validate_bindings(data):
         if w['tier'] == 'S' and (w.get('tier_fixed') is not True or
                 w['model'] != bands['S']['lanes'].get(w['vendor'])):
             raise ValueError('S row must match fixed lane model')
+        if 'trust' in w and w['trust'] != 'low':
+            raise ValueError('trust must be "low" when present: ' + ident)
         if w['status'] in ('active', 'unverified'):
             probe = w.get('probe') or {}
             if not isinstance(probe, dict) or not all(isinstance(probe.get(k), str) and probe[k] for k in ('date', 'result', 'cli')):
@@ -266,7 +268,8 @@ def cost_order(rows, data, exhausted):
         return []
     c0 = min(metric(w, 'cost') for w in rows)
     ceiling = c0 * (1 + data['selection_policy']['cost_tie_pct'] / 100)
-    return sorted(rows, key=lambda w: (w['vendor'] in exhausted,
+    # trust 'low' (a user call on a new model) ranks after every other row in the pool.
+    return sorted(rows, key=lambda w: (w['vendor'] in exhausted, w.get('trust') == 'low',
                   w.get('metrics', {}).get('provisional', True),
                   0 if metric(w, 'cost') <= ceiling else metric(w, 'cost'),
                   metric(w, 'ttft_s')))
@@ -400,7 +403,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         fallback = True
     ordered = cost_order(chosen, data, exhausted)
     if fallback:
-        ordered.sort(key=lambda w: (w['vendor'] in exhausted, -metric(w, 'index')))
+        ordered.sort(key=lambda w: (w['vendor'] in exhausted, w.get('trust') == 'low', -metric(w, 'index')))
     if not ordered:
         raise IndexError('no eligible worker meets latency and hard constraints')
     selected = ordered[0]
@@ -412,6 +415,8 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
     metrics = selected.get('metrics', {})
     limit = data['latency'][latency]
     label = latency if limit is None else f'{latency}<={limit}s'
+    if needs_detached:
+        label = f'detached (no {latency} row gains the promotion delta; run with -b --wait)'
     reason = (f'band {floor} floor, {label}: cheapest of {len(ordered)} eligible = '
               f"{selected['id']} ({metrics.get('index')}, ${metrics.get('cost')}, {metrics.get('ttft_s')}s)")
     if fallback:
