@@ -38,8 +38,9 @@ floor); C >=40 closed-spec work and review gates; D >=30 mechanical/bulk; E
 isolation reader. Latency: interactive (TTFT <=10s), foreground (<=60s),
 detached (no limit, `-b --wait`; effort max/ultra rows are detached only).
 The router applies hard constraints and author separation first, then the band
-floor and latency class. It then ranks DeepSWE-listed rows before unlisted
-(provisional) ones and, within each group, picks the cheapest; rows within 15% of
+floor and latency class. Rows the user marked `trust: low` rank after all others.
+It then ranks DeepSWE-listed rows before unlisted (provisional) ones and, within
+each group, picks the cheapest; rows within 15% of
 the cheapest tie and the faster TTFT wins. `--tier` is a floor (that band or higher), not an exact
 cell; `--latency interactive|foreground|detached` overrides the role default.
 `floor_met: false` means no eligible row met the floor in that latency class and

@@ -39,6 +39,11 @@ class HostRoutes(unittest.TestCase):
     def override(self, ident, **fields):
         return routes.merge_bindings(self.data, {'workers_local': [dict(id=ident, **fields)]})
 
+    def sol61_unverified(self):
+        # Pre-rollout state (2026-09-30): GPT-6.1 Sol listed but not runnable on the account.
+        rows = [dict(id=w['id'], status='unverified') for w in self.data['workers'] if w['model'] == 'gpt-6.1-sol']
+        return routes.merge_bindings(self.data, {'workers_local': rows})
+
     def with_test_reader(self):
         return self.override('test-reader', vendor='google', model='test-model',
                              effort='medium', tier='C', status='optional',
@@ -73,13 +78,16 @@ class HostRoutes(unittest.TestCase):
         self.assertTrue(result['floor_met'])
 
     def test_unverified_and_unscored_never_enter_fallback(self):
-        result = routes.resolve(self.data, 'claude', 'implement')
+        active = routes.resolve(self.data, 'claude', 'implement')
+        self.assertEqual(active['worker_id'], 'sol61-medium')
+        self.assertTrue(active['floor_met'])
+        result = routes.resolve(self.sol61_unverified(), 'claude', 'implement')
         self.assertEqual(result['worker_id'], 'sol6-xhigh')
         self.assertFalse(result['floor_met'])
         self.assertIn('no row meets band B in foreground', result['reason'])
         self.assertFalse(any(ident.startswith('sol61-') for ident in result['eligible']))
         self.assertNotIn('sol-high', result['eligible'])
-        explicit = routes.resolve(self.data, 'claude', 'implement', worker='sol-high')
+        explicit = routes.resolve(self.sol61_unverified(), 'claude', 'implement', worker='sol-high')
         self.assertEqual(explicit['worker_id'], 'sol-high')
         self.assertFalse(explicit['floor_met'])
 
@@ -89,7 +97,7 @@ class HostRoutes(unittest.TestCase):
             result = routes.resolve(self.data, 'codex', 'implement', retry_from=previous,
                                     retry_reason='reasoning', attempt=attempt)
             self.assertEqual(result['worker_id'], expected)
-        detached = routes.resolve(self.data, 'claude', 'implement', retry_from='sol6-xhigh',
+        detached = routes.resolve(self.sol61_unverified(), 'claude', 'implement', retry_from='sol6-xhigh',
                                   retry_reason='reasoning', attempt=1)
         self.assertEqual(detached['worker_id'], 'sol6-max')
         self.assertTrue(detached['needs_detached'])
@@ -232,14 +240,16 @@ class HostRoutes(unittest.TestCase):
     def test_explicit_worker_and_host_priorities(self):
         with self.assertRaisesRegex(ValueError, 'unknown worker'):
             routes.resolve(self.data, 'claude', 'implement', worker='absent')
-        implicit = routes.resolve(self.data, 'claude', 'implement')
+        pending = self.sol61_unverified()
+        implicit = routes.resolve(pending, 'claude', 'implement')
         self.assertIn({'id': 'sol61-high', 'reason': 'status unverified requires explicit --worker'}, implicit['skipped'])
-        self.assertEqual(routes.resolve(self.data, 'claude', 'implement', worker='sol61-high')['worker_id'], 'sol61-high')
-        data = self.override('sol6-xhigh', roles={'implement': {'priority': 150, 'hosts': ['claude']}})
+        self.assertEqual(routes.resolve(pending, 'claude', 'implement', worker='sol61-high')['worker_id'], 'sol61-high')
+        data = routes.merge_bindings(pending, {'workers_local': [dict(
+            id='sol6-xhigh', roles={'implement': {'priority': 150, 'hosts': ['claude']}})]})
         result = routes.resolve(data, 'codex', 'implement', author_vendors=['claude'])
         self.assertEqual(result['worker_id'], 'sol6-high')
         self.assertIn({'id': 'sol6-xhigh', 'reason': 'host is not eligible'}, result['skipped'])
-        data = self.override('sol6-xhigh', status='conditional')
+        data = routes.merge_bindings(pending, {'workers_local': [dict(id='sol6-xhigh', status='conditional')]})
         self.assertEqual(routes.resolve(data, 'claude', 'implement')['worker_id'], 'sol6-high')
 
     def test_multiple_exhausted_vendors_and_diagnostic(self):
@@ -275,7 +285,7 @@ class HostRoutes(unittest.TestCase):
     def test_launcher_default_cli_works_for_delegates(self):
         env = dict(os.environ, HARNESS_DELEGATE_RUN='1')
         command = [sys.executable, str(HERE / 'harness-route.py'), '--launcher-default']
-        for vendor, role, expected in [('openai', 'implement', 'gpt-6-sol xhigh'),
+        for vendor, role, expected in [('openai', 'implement', 'gpt-6.1-sol medium'),
                                        ('openai', 'image_verify', 'gpt-5.6-terra medium'),
                                        ('claude', 'implement', 'claude-opus-5-5 medium')]:
             # Launchers run from the project root; bindings resolve from that cwd.
@@ -503,10 +513,11 @@ for line in sys.stdin:
         self.assertNotIn('sol6-max', result['eligible'])
 
     def test_task_tier_selects_efficient_binding_on_both_hosts(self):
-        for host, ident in [('codex', 'sonnet55-medium'), ('claude', 'sol6-high')]:
+        for host, ident, tier in [('codex', 'sonnet55-medium', 'C'), ('claude', 'sol61-medium', 'B')]:
             result = routes.resolve(self.data, host, 'implement', tier='C')
             self.assertEqual(result['worker_id'], ident)
-            self.assertEqual(result['tier'], 'C')
+            self.assertEqual(result['band'], 'C')
+            self.assertEqual(result['tier'], tier)
             self.assertEqual(result['sandbox'], 'workspace-write')
 
     def test_tier_override_preserves_review_floor_and_exhaustion(self):
@@ -557,7 +568,7 @@ for line in sys.stdin:
     def test_implementation_separates_from_actual_designer_without_switching_host(self):
         result = routes.resolve(self.data, 'codex', 'implement', author_vendors=['claude'])
         self.assertEqual((result['host'], result['vendor']), ('codex', 'openai'))
-        self.assertEqual(result['model'], next(w for w in self.data['workers'] if w['id'] == 'sol6-xhigh')['model'])
+        self.assertEqual(result['model'], next(w for w in self.data['workers'] if w['id'] == 'sol61-medium')['model'])
 
     def test_review_never_infers_authorship_from_starting_host(self):
         for role in ('plan_review', 'review_gate', 'review_deep'):
@@ -852,3 +863,26 @@ class ReviewFollowUps(unittest.TestCase):
         self.assertEqual(routes.launcher_default(data, 'openai', 'implement')['id'], 'only-max')
         with self.assertRaisesRegex(ValueError, 'ultra'):
             routes.resolve(data, 'claude', 'implement', worker='only-max', latency='detached')
+
+    def test_promotion_needing_detached_says_so_in_reason(self):
+        route = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-medium',
+                               retry_reason='reasoning', attempt=1)
+        self.assertEqual(route['worker_id'], 'sol61-xhigh')
+        self.assertTrue(route['needs_detached'])
+        self.assertIn('detached', route['reason'])
+        self.assertNotIn('foreground<=', route['reason'])
+
+    def test_low_trust_rows_rank_last_in_band_and_fallback(self):
+        # A low-trust row is chosen only when nothing else qualifies, even if it is cheaper.
+        cheap = dict(trust='low', status='active', metrics=dict(index=53, cost=0.01, ttft_s=1, tps=100,
+                     provisional=False), roles={'write': 2})
+        data = routes.merge_bindings(self.data, {'workers_local': [dict(id='argon-high', **cheap)]})
+        result = routes.resolve(data, 'codex', 'write', tier='A', author_vendors=['openai'])
+        self.assertNotEqual(result['worker_id'], 'argon-high')
+        only = routes.merge_bindings(data, {'workers_local': [
+            dict(id=w['id'], status='conditional') for w in data['workers']
+            if 'write' in w['roles'] and w['id'] != 'argon-high' and w['vendor'] != 'openai']})
+        result = routes.resolve(only, 'codex', 'write', tier='A', author_vendors=['openai'])
+        self.assertEqual(result['worker_id'], 'argon-high')
+        with self.assertRaisesRegex(ValueError, 'trust must be'):
+            routes.merge_bindings(self.data, {'workers_local': [dict(id='argon-high', trust='high')]})
