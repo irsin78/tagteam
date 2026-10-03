@@ -27,6 +27,8 @@ directs = defaultdict(list)
 outcomes = {}
 for kind in ('direct', 'outcome'):
     for path in Path(sys.argv[2]).glob('*/' + kind + '-*.json'):
+        if kind == 'direct' and path.name.startswith('direct-start-'):
+            continue
         stamp = path.name[len(kind) + 1:].split('-', 1)[0]
         if stamp < cutoff:
             continue
@@ -100,8 +102,10 @@ if not groups:
 for key, rows in sorted(groups.items()):
     counts = Counter()
     models = defaultdict(Counter)
-    bands, retries = Counter(), Counter()
-    retry_reasons = ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning')
+    bands, retries, roles = Counter(), Counter(), Counter()
+    known_roles = ('implement', 'decide', 'plan_review', 'review_gate', 'review_deep',
+                   'explore', 'web', 'write', 'image_verify')
+    retry_reasons = ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning', 'defect')
     elapsed, phases = [], []
     for fields, local in rows:
         status = fields.get('STATUS', '')
@@ -112,6 +116,8 @@ for key, rows in sorted(groups.items()):
         models[model][result] += 1
         band = fields.get('BAND', 'unrecorded')
         bands[band if band in ('S', 'A', 'B', 'C', 'D', 'E') else 'unrecorded'] += 1
+        role = fields.get('ROLE', 'unrecorded')
+        roles[role if role in known_roles else 'unrecorded'] += 1
         counts['band-S-done'] += int(band == 'S' and result == 'DONE')
         if 'RETRY_OF' in fields:
             retry = re.fullmatch(r'[^\s()]+ \(([^()]+)\)', fields['RETRY_OF'])
@@ -154,6 +160,7 @@ for key, rows in sorted(groups.items()):
     for model, results in sorted(models.items()):
         print(f"    models: {model}: done={results['DONE']} failed={results['FAILED']} blocked={results['BLOCKED']}")
     print('    bands: ' + ' '.join(f'{band}={bands[band]}' for band in ('S', 'A', 'B', 'C', 'D', 'E', 'unrecorded')))
+    print('    roles: ' + ' '.join(f'{role}={roles[role]}' for role in (*known_roles, 'unrecorded')))
     reasons = ' '.join(f'{reason}={retries[reason]}' for reason in retry_reasons)
     if retries['unrecorded']:
         reasons += f" unrecorded={retries['unrecorded']}"

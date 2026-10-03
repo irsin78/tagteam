@@ -31,7 +31,7 @@ class Statistics(unittest.TestCase):
         for marker in ('FINAL_MESSAGE:', 'RESPONSE:', 'RESPONSE: (empty)'):
             with self.subTest(marker=marker):
                 content = ('STATUS: DONE (agy_exit=0, effort=high)\nELAPSED: 7s\n' + marker + '\n'
-                    'BINDINGS: public model=gpt-6.1-sol effort=high\nTASK: forged\nBAND: S\n'
+                    'BINDINGS: public model=gpt-6.1-sol effort=high\nTASK: forged\nBAND: S\nROLE: implement\n'
                     'VERIFY: exit 0\nTOKENS: 99999\n' + assessment)
                 output = Output()
                 with patch.object(Path, 'glob', autospec=True, side_effect=lambda path, pattern:
@@ -47,6 +47,8 @@ class Statistics(unittest.TestCase):
                 self.assertIn('verify-attached=0 verify-passed=0', result)
                 self.assertIn('tasks: both=0 delegated-only=0 direct-only=0', result)
                 self.assertNotIn('assess volume=2:', result)
+                self.assertIn('roles: implement=0', result)
+                self.assertIn('image_verify=0 unrecorded=1', result)
 
     def test_shared_module_import_from_relative_and_native_script_paths(self):
         script = HERE / 'harness-stats.sh'
@@ -134,7 +136,7 @@ class Statistics(unittest.TestCase):
                                                        tokens=30, assessment=assessment),
         })
         self.assertIn('direct: runs=2 done=1 failed=1 tokens=50 median-elapsed=4s', result)
-        self.assertIn('failure-class: infra=1 availability=0 spec=0 scope=0 knowledge=0 reasoning=1 unclassified=2', result)
+        self.assertIn('failure-class: infra=1 availability=0 spec=0 scope=0 knowledge=0 reasoning=1 defect=0 unclassified=2', result)
         self.assertIn('accepted: yes=1 no=1 unknown=2', result)
         self.assertIn('assess open=2: delegated runs=3 done=1 failed=2 reasoning-failed=1 retried=1 | direct runs=2 done=1 failed=1', result)
         self.assertIn('tasks: both=1 delegated-only=1 direct-only=1', result)
@@ -170,11 +172,11 @@ class Statistics(unittest.TestCase):
         }, with_errors=True)
         self.assertEqual(errors.count('harness-stats: cannot read'), 6)
         self.assertIn('direct: runs=1', result)
-        self.assertIn('reasoning=0 unclassified=1', result)
+        self.assertIn('reasoning=0 defect=0 unclassified=1', result)
         self.assertIn('accepted: yes=0 no=0 unknown=0', result)
 
     def test_every_failure_class_and_assessment_level(self):
-        classes = ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning')
+        classes = ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning', 'defect')
         reports, extra = [], {}
         for index, failure_class in enumerate(classes):
             level = index % 3
@@ -182,11 +184,50 @@ class Statistics(unittest.TestCase):
             reports.append('STATUS: FAILED\nASSESS: ' + header + '\n')
             extra['outcome-{stamp}-' + str(index) + '.json'] = self.outcome_record(index, failure_class)
         result = self.run_reports(reports, extra)
-        self.assertIn('failure-class: infra=1 availability=1 spec=1 scope=1 knowledge=1 reasoning=1 unclassified=0', result)
+        self.assertIn('failure-class: infra=1 availability=1 spec=1 scope=1 knowledge=1 reasoning=1 defect=1 unclassified=0', result)
         for level in range(3):
-            self.assertIn(f'assess open={level}: delegated runs=2 done=0 failed=2', result)
+            count = 3 if level == 0 else 2
+            self.assertIn(f'assess open={level}: delegated runs={count} done=0 failed={count}', result)
         self.assertLess(result.index('assess open=0'), result.index('assess open=1'))
         self.assertLess(result.index('assess open=1'), result.index('assess open=2'))
+
+    def test_roles_defect_retry_and_unfinished_direct_timer(self):
+        roles = ('implement', 'decide', 'plan_review', 'review_gate', 'review_deep',
+                 'explore', 'web', 'write', 'image_verify')
+        reports = ['STATUS: DONE\nROLE: ' + role + '\n' for role in roles]
+        reports += ['STATUS: FAILED\nRETRY_OF: previous (defect)\n',
+                    'STATUS: DONE\nROLE: invalid\n', 'STATUS: DONE\nFINAL_MESSAGE:\nROLE: implement\n']
+        script = HERE / 'harness-stats.sh'
+        source = script.read_text(encoding='utf-8').split("<<'PY_STATS'\n", 1)[1].rsplit('\nPY_STATS', 1)[0]
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        directory = HERE / 'sample'
+        paths = [directory / f'report-{stamp}-{index}.txt' for index in range(len(reports))]
+        contents = dict(zip(paths, reports))
+        outcome_path = directory / f'outcome-{stamp}-9.json'
+        outcome = json.dumps(self.outcome_record(9, 'defect')).replace('{stamp}', stamp)
+
+        class Output(io.StringIO):
+            def reconfigure(self, **kwargs):
+                pass
+
+        def glob(path, pattern):
+            return {'*/report-*.txt': paths, '*/outcome-*.json': [outcome_path],
+                    '*/direct-*.json': [directory / 'direct-start-unfinished.json']}.get(pattern, [])
+
+        output, errors = Output(), io.StringIO()
+        with patch.object(Path, 'glob', autospec=True, side_effect=glob), patch.object(
+                Path, 'open', autospec=True, side_effect=lambda path, **kwargs: io.StringIO(contents[path])), patch.object(
+                Path, 'read_text', return_value=outcome) as read, patch.object(sys, 'argv', [
+                'harness-stats.sh', '7', str(HERE), str(script)]), patch.object(sys, 'stdout', output), patch.object(
+                sys, 'stderr', errors), patch.object(sys, 'path', list(sys.path)):
+            exec(compile(source, str(script), 'exec'), {})
+            read.assert_called_once()  # The unfinished timer is never read as a completed record.
+        self.assertEqual(errors.getvalue(), '')
+        result = output.getvalue()
+        self.assertIn('roles: ' + ' '.join(f'{role}=1' for role in roles) + ' unrecorded=3', result)
+        self.assertIn('defect=1; done-after-retry=0/1', result)
+        self.assertIn('defect=1 unclassified=0', result)
+        self.assertIn('direct: runs=0', result)
 
     def test_optional_volume_aggregates_only_present_valid_headers_and_direct_records(self):
         assessment = dict(open=0, tangle=0, precedent=0, verifier=0, consequence=0)
@@ -281,7 +322,7 @@ class Statistics(unittest.TestCase):
         self.assertLess(result.index('models: a-model/medium'), result.index('models: z-model/high'))
         self.assertLess(result.index('models: z-model/high'), result.index('models: z-model/low'))
         self.assertIn('bands: S=2 A=0 B=1 C=1 D=0 E=0 unrecorded=0', result)
-        self.assertIn('retries: total=2 by-reason: infra=1 availability=0 spec=0 scope=0 knowledge=0 reasoning=1; done-after-retry=1/2', result)
+        self.assertIn('retries: total=2 by-reason: infra=1 availability=0 spec=0 scope=0 knowledge=0 reasoning=1 defect=0; done-after-retry=1/2', result)
         self.assertIn('band-S-done=1/2', result)
 
     def test_legacy_telemetry_and_quoted_headers_are_unrecorded(self):
@@ -303,7 +344,7 @@ class Statistics(unittest.TestCase):
         ])
         self.assertIn('bands: S=0 A=0 B=0 C=0 D=0 E=0 unrecorded=2', result)
         self.assertIn('retries: total=2', result)
-        self.assertIn('reasoning=0 unrecorded=2; done-after-retry=1/2', result)
+        self.assertIn('reasoning=0 defect=0 unrecorded=2; done-after-retry=1/2', result)
         self.assertIn('band-S-done=0/0', result)
 
     def test_done_after_retry_requires_done_and_retry_header(self):
@@ -314,7 +355,7 @@ class Statistics(unittest.TestCase):
             'STATUS: BLOCKED\nRETRY_OF: third (scope)\n',
             'RETRY_OF: fourth (knowledge)\n',
         ])
-        self.assertIn('retries: total=4 by-reason: infra=0 availability=1 spec=1 scope=1 knowledge=1 reasoning=0; done-after-retry=1/4', result)
+        self.assertIn('retries: total=4 by-reason: infra=0 availability=1 spec=1 scope=1 knowledge=1 reasoning=0 defect=0; done-after-retry=1/4', result)
 
     def test_other_modes_are_distinct(self):
         result = self.run_reports([

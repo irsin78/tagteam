@@ -47,7 +47,7 @@ echo "GROUPS: $TEST_GROUPS"
 # under a detached run): scrub every launcher marker and the detach
 # plumbing so the launchers under test start from a clean environment.
 # Cases set what they need explicitly per invocation.
-unset HARNESS_SAVE_BASELINE HARNESS_ALLOW_CONTROL_PLANE HARNESS_ALLOW_AGY_COMMAND HARNESS_ALLOW_FULL_ACCESS       HARNESS_ALLOW_FORGET HARNESS_AGY_SETTINGS HARNESS_STATE_DIR HARNESS_TREE_KEY       HARNESS_RUN_ID HARNESS_RUN_CHILD HARNESS_ASSESS HARNESS_TASK STUB_ACTION STUB_VERIFY_PATH
+unset HARNESS_SAVE_BASELINE HARNESS_ALLOW_CONTROL_PLANE HARNESS_ALLOW_AGY_COMMAND HARNESS_ALLOW_FULL_ACCESS       HARNESS_ALLOW_FORGET HARNESS_AGY_SETTINGS HARNESS_STATE_DIR HARNESS_TREE_KEY       HARNESS_RUN_ID HARNESS_RUN_CHILD HARNESS_ASSESS HARNESS_TASK HARNESS_ROLE HARNESS_BAND HARNESS_RETRY_OF HARNESS_RETRY_REASON STUB_ACTION STUB_VERIFY_PATH
 
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     echo "FAIL: bash 4+ required"
@@ -1336,8 +1336,16 @@ codex_args() { cat "$TEST_ROOT/codex-args.log" 2>/dev/null; }
 fresh_case
 rm -f "$TEST_ROOT/codex-args.log"
 run_capture bindings-builtin env HARNESS_RUN_ID=bindbuiltin bash "$CODEX_RUN" -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: builtin \(no ' && codex_args | grep -q 'model_reasoning_effort=high' && codex_args | grep -q -- '-m gpt-5.6-sol' && ok=1
-expect_case "codex bindings: no file falls back to builtin Terra/high" "$ok" "exit=$LAST_RC"
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: builtin \(no ' && codex_args | grep -q 'model_reasoning_effort=high' && codex_args | grep -q -- '-m gpt-6.1-sol' && ok=1
+expect_case "codex bindings: no file falls back to builtin Sol/high" "$ok" "exit=$LAST_RC"
+
+fresh_case
+rm -f "$TEST_ROOT/codex-args.log"
+printf 'fixture image\n' > "$CASE_REPO/image.png"
+run_capture bindings-builtin-image env HARNESS_RUN_ID=bindbuiltinimage bash "$CODEX_RUN" -p prompt.txt -i image.png
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: builtin \(no ' \
+    && codex_args | grep -q 'model_reasoning_effort=medium' && codex_args | grep -q -- '-m gpt-6.1-sol' && ok=1
+expect_case "codex bindings: image input falls back to builtin Sol/medium" "$ok" "exit=$LAST_RC"
 
 fresh_case
 rm -f "$TEST_ROOT/codex-args.log"
@@ -1375,7 +1383,7 @@ for bad in '""' '42' '"has space"'; do
     rm -f "$TEST_ROOT/codex-args.log"
     write_bindings "$CASE_REPO/.claude/model-bindings.json" "$bad" '"high"'
     run_capture "bindings-schema-$CASE_NO" env HARNESS_RUN_ID="bindschema$CASE_NO" bash "$CODEX_RUN" -p prompt.txt
-    [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: builtin \(bindings unusable: ERR ValueError model' && codex_args | grep -q -- '-m gpt-5.6-sol' || schema_ok=0
+    [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: builtin \(bindings unusable: ERR ValueError model' && codex_args | grep -q -- '-m gpt-6.1-sol' || schema_ok=0
 done
 fresh_case
 rm -f "$TEST_ROOT/codex-args.log"
@@ -1648,6 +1656,7 @@ for launcher in "$CODEX_RUN" "$CLAUDE_RUN" "$AGY_RUN"; do
     assessment='consequence=1,verifier=1,precedent=0,tangle=2,open=1'
     fresh_case nongit
     run_capture "records-valid-$name" env HARNESS_ASSESS="$assessment" HARNESS_TASK=task.1_test \
+        HARNESS_ROLE=review_deep HARNESS_RETRY_OF=previous HARNESS_RETRY_REASON=defect \
         bash "$launcher" -p prompt.txt
     ok=0
     [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^ASSESS: open=1 tangle=2 precedent=0 verifier=1 consequence=1$' \
@@ -1656,7 +1665,18 @@ for launcher in "$CODEX_RUN" "$CLAUDE_RUN" "$AGY_RUN"; do
     report=$(find "$CASE_HOME/.claude/harness-runs" -name "report-$rid.txt" -print | head -n 1)
     has "$report" '^ASSESS: open=1 tangle=2 precedent=0 verifier=1 consequence=1$' || ok=0
     has "$report" '^TASK: task.1_test$' || ok=0
+    has "$LAST_OUT" '^ROLE: review_deep$' && has "$report" '^ROLE: review_deep$' || ok=0
+    has "$LAST_OUT" '^RETRY_OF: previous (defect)$' && has "$report" '^RETRY_OF: previous (defect)$' || ok=0
     expect_case "$name records canonical assessment and task headers" "$ok" "exit=$LAST_RC"
+
+    for bad in 'unknown' 'IMPLEMENT' 'implement review_deep' $'implement\n'; do
+        fresh_case nongit
+        : > "$TEST_ROOT/$name-args.log"
+        run_capture "records-role-denied-$name-$CASE_NO" env HARNESS_ROLE="$bad" bash "$launcher" -p prompt.txt
+        ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: HARNESS_ROLE' \
+            && [ ! -s "$TEST_ROOT/$name-args.log" ] && ok=1
+        expect_case "$name rejects malformed role before the CLI" "$ok" "exit=$LAST_RC"
+    done
 
     for volume in 0 1 2; do
         fresh_case nongit
@@ -1673,7 +1693,7 @@ for launcher in "$CODEX_RUN" "$CLAUDE_RUN" "$AGY_RUN"; do
 
     fresh_case nongit
     run_capture "records-absent-$name" bash "$launcher" -p prompt.txt
-    ok=0; [ "$LAST_RC" -eq 0 ] && ! has "$LAST_OUT" '^(ASSESS|TASK):' && ok=1
+    ok=0; [ "$LAST_RC" -eq 0 ] && ! has "$LAST_OUT" '^(ASSESS|TASK|ROLE):' && ok=1
     expect_case "$name omits absent recording headers" "$ok" "exit=$LAST_RC"
 
     fresh_case nongit

@@ -8,6 +8,34 @@ import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent/'hooks'))
 from stop_gate import find_bash
 
+class TelemetryHeaders(unittest.TestCase):
+    def test_role_headers_accept_all_router_roles_and_defect_retry(self):
+        script = Path(__file__).with_name('launcher-common.sh').resolve().as_posix()
+        roles = ('implement', 'decide', 'plan_review', 'review_gate', 'review_deep',
+                 'explore', 'web', 'write', 'image_verify')
+        env = {key: value for key, value in os.environ.items() if not key.startswith('HARNESS_')}
+        for role in roles:
+            with self.subTest(role=role):
+                result = subprocess.run([find_bash(), '-c', '. "$1"; retry_header_check || exit 4; retry_header_echo',
+                                         'test-headers', script], env={**env, 'HARNESS_ROLE': role,
+                                         'HARNESS_RETRY_OF': 'previous', 'HARNESS_RETRY_REASON': 'defect'},
+                                        capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('ROLE: ' + role + '\n', result.stdout)
+                self.assertIn('RETRY_OF: previous (defect)\n', result.stdout)
+
+    def test_invalid_role_is_policy_denial(self):
+        script = Path(__file__).with_name('launcher-common.sh').resolve().as_posix()
+        env = {key: value for key, value in os.environ.items() if not key.startswith('HARNESS_')}
+        for role in ('unknown', 'IMPLEMENT', 'implement review_deep', 'implement\n'):
+            with self.subTest(role=role):
+                result = subprocess.run([find_bash(), '-c', '. "$1"; retry_header_check || exit 4; retry_header_echo',
+                                         'test-headers', script], env={**env, 'HARNESS_ROLE': role},
+                                        capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 4, result.stderr)
+                self.assertIn('HARNESS_DENIED: HARNESS_ROLE', result.stderr)
+                self.assertNotIn('ROLE:', result.stdout)
+
 class BashReexecTests(unittest.TestCase):
     """A bash 3.2 start is replaced once by a standard-location bash >= 4."""
     def test_old_bash_reaches_launcher_logic_in_one_exec(self):

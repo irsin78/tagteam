@@ -540,7 +540,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('retry requires --retry-from and --retry-reason')
     if retry_from and (worker or attempt < 1):
         raise ValueError('retry requires positive --attempt and cannot combine with --worker')
-    if retry_reason and retry_reason not in ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning'):
+    if retry_reason and retry_reason not in ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning', 'defect'):
         raise ValueError('invalid retry reason')
     by_id = {w['id']: w for w in data['workers']}
     for ident in (worker, retry_from):
@@ -774,6 +774,21 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
     elif (separation_ok or cross_lane_s) and vendor in exhausted:
         route['reason'] += ('; independent reviewer is exhausted; report required review as incomplete; do not use implementation fallback'
                             if role in REVIEW_ROLES else '; selected vendor is declared exhausted; follow fallback policy')
+    if assessment is not None:
+        from harness_records import ASSESSMENT_KEYS
+        route['launch_env'] = dict(HARNESS_BAND=floor, HARNESS_ROLE=role,
+                                  HARNESS_ASSESS=','.join(
+                                      f'{key}={assess[key]}' for key in ASSESSMENT_KEYS if key in assess))
+        estimates = data['selection_policy'].get('estimates')
+        # Without volume, use the small-task seed; timeout always covers the
+        # selected worker, even when the cost comparison favors direct work.
+        # Estimates are optional in bindings: without them there is no suggestion.
+        if estimates:
+            volume = str(assess.get('volume', 0))
+            _, minutes, _ = worker_estimate(selected, estimates, volume, reports)
+            minutes += estimates['delegate_overhead'][volume]['minutes']
+            route['suggested_timeout_s'] = max(570, math.ceil(minutes * 1.5 * 60) + 300)
+            route['reason'] += f"; suggested -t {route['suggested_timeout_s']}"
     return route
 
 
@@ -787,7 +802,7 @@ def main():
     parser.add_argument('--tier', choices=tuple('SABCDE'), help='capability band floor')
     parser.add_argument('--latency', choices=('interactive', 'foreground', 'detached'))
     parser.add_argument('--retry-from')
-    parser.add_argument('--retry-reason', choices=('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning'))
+    parser.add_argument('--retry-reason', choices=('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning', 'defect'))
     parser.add_argument('--attempt', type=int, default=0)
     parser.add_argument('--assess', help='five required 0|1|2 ratings and optional volume=0|1|2')
     parser.add_argument('--recent-failure', action='store_true', help='recent reasoning failure in the same area; raises assessed band once')

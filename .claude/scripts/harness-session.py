@@ -195,9 +195,10 @@ def main():
     outcome.add_argument('--accepted', choices=('yes', 'no'), default='unknown')
     outcome.add_argument('--note', default='')
     direct = commands.add_parser('direct', help='record work handled directly by the orchestrator')
+    direct.add_argument('phase', nargs='?', choices=('start', 'finish'))
     direct.add_argument('--task', required=True)
-    direct.add_argument('--result', choices=('done', 'failed'), required=True)
-    direct.add_argument('--elapsed-s', required=True)
+    direct.add_argument('--result', choices=('done', 'failed'))
+    direct.add_argument('--elapsed-s')
     direct.add_argument('--assess')
     direct.add_argument('--model', default='')
     for name in ('tokens', 'rework', 'interventions'):
@@ -217,7 +218,16 @@ def main():
                     raise ValueError('class must be ' + '|'.join(FAILURE_CLASSES))
             else:
                 args.task = task_slug(args.task)
-                args.elapsed_s = nonnegative(args.elapsed_s)
+                if args.phase is None:
+                    if args.result is None or args.elapsed_s is None:
+                        raise ValueError('direct requires --result and --elapsed-s')
+                    args.elapsed_s = nonnegative(args.elapsed_s)
+                elif args.elapsed_s is not None:
+                    raise ValueError('direct start/finish measures elapsed time; omit --elapsed-s')
+                elif args.phase == 'finish' and args.result is None:
+                    raise ValueError('direct finish requires --result')
+                elif args.phase == 'start' and args.result is not None:
+                    raise ValueError('direct start does not accept --result')
                 for name in ('tokens', 'rework', 'interventions'):
                     setattr(args, name, nonnegative(str(getattr(args, name))))
                 if args.assess is not None:
@@ -230,6 +240,32 @@ def main():
                 record = dict(run=args.run, **{'class': args.failure_class}, accepted=args.accepted,
                               note=args.note, recorded=recorded_now())
             else:
+                start_path = directory / ('direct-start-' + args.task + '.json')
+                if args.phase == 'start':
+                    if start_path.exists():
+                        raise ValueError('direct start already exists for task ' + args.task)
+                    record = dict(task=args.task, started=datetime.now(timezone.utc).isoformat(),
+                                  model=args.model)
+                    if args.assess is not None:
+                        record['assessment'] = args.assess
+                    write_record(start_path, record)
+                    print(start_path)
+                    return 0
+                if args.phase == 'finish':
+                    if not start_path.is_file():
+                        raise ValueError('no direct start exists for task ' + args.task)
+                    started = json.loads(start_path.read_text(encoding='utf-8'))
+                    if not isinstance(started, dict) or started.get('task') != args.task:
+                        raise ValueError('invalid direct start record')
+                    start_time = datetime.fromisoformat(started['started'].replace('Z', '+00:00'))
+                    if start_time.utcoffset() is None:
+                        raise ValueError('direct start stamp requires a timezone')
+                    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+                    if elapsed < 0:
+                        raise ValueError('direct start stamp is in the future')
+                    args.elapsed_s = int(elapsed)
+                    args.model = started.get('model', '')
+                    args.assess = started.get('assessment')
                 stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
                 path = directory / ('direct-' + stamp + '-' + secrets.token_hex(4) + '.json')
                 record = dict(task=args.task, result=args.result, elapsed_s=args.elapsed_s,
@@ -239,8 +275,10 @@ def main():
                 if args.assess is not None:
                     record['assessment'] = args.assess
             write_record(path, record)
+            if args.command == 'direct' and args.phase == 'finish':
+                start_path.unlink()
             print(path)
-        except (ImportError, OSError, ValueError, TypeError) as exc:
+        except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             parser.error(str(exc))
         return 0
     if args.command == 'budget':

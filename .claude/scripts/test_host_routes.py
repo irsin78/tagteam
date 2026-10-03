@@ -206,7 +206,7 @@ class HostRoutes(unittest.TestCase):
                            retry_reason='reasoning', attempt=3)
 
     def test_nonreasoning_retries_keep_settings_and_availability_reselects(self):
-        for reason in ('infra', 'availability', 'spec', 'scope', 'knowledge'):
+        for reason in ('infra', 'availability', 'spec', 'scope', 'knowledge', 'defect'):
             result = routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
                                     retry_reason=reason, attempt=1)
             self.assertEqual(result['worker_id'], 'opus55-high')
@@ -1255,6 +1255,56 @@ class ScoredRoutes(unittest.TestCase):
 
     def scores(self, route):
         return {score['option']: score for score in route['scores']}
+
+    def test_timeout_minimum_rounding_and_launch_environment(self):
+        for volume in (None, 0, 1, 2):
+            for minutes, expected in ((0, 570), (3, 570), (3.001, 571), (4.125, 672)):
+                with self.subTest(volume=volume, minutes=minutes), patch.object(
+                        routes, 'worker_estimate', return_value=(1, minutes, 'seed')):
+                    data = json.loads(json.dumps(self.data))
+                    for seed in data['selection_policy']['estimates']['delegate_overhead'].values():
+                        seed['minutes'] = 0
+                    assessment = self.assess()
+                    if volume is None:
+                        assessment.pop('volume')
+                    else:
+                        assessment['volume'] = volume
+                    route = self.route(data, assess=assessment)
+                    self.assertEqual(route['suggested_timeout_s'], expected)
+                    self.assertTrue(route['reason'].endswith(f'; suggested -t {expected}'))
+                    canonical = ','.join(f'{key}={assessment[key]}' for key in records.ASSESSMENT_KEYS
+                                         if key in assessment)
+                    self.assertEqual(route['launch_env'], dict(HARNESS_BAND=route['band'],
+                                     HARNESS_ASSESS=canonical, HARNESS_ROLE='implement'))
+
+    def test_timeout_covers_worker_and_overhead_when_direct_wins(self):
+        data = json.loads(json.dumps(self.data))
+        for row in data['workers']:
+            for seed in row.get('estimates', {}).values():
+                seed.update(usd=20, minutes=10)
+        data['selection_policy']['estimates']['delegate_overhead']['0']['minutes'] = 2
+        data['selection_policy']['estimates']['direct']['0'].update(usd=0, minutes=0)
+        route = self.route(data, direct_band='B')
+        self.assertEqual(route['decision'], 'direct')
+        self.assertEqual(route['suggested_timeout_s'], 1380)
+
+    def test_launch_environment_omits_unknown_assessment(self):
+        route = self.route(assess=None)
+        self.assertNotIn('launch_env', route)
+        self.assertNotIn('suggested_timeout_s', route)
+
+    def test_defect_cli_retry_keeps_worker_model_effort_and_sandbox(self):
+        stream = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
+                routes, 'find_bash', return_value='bash'), patch.object(routes, 'budget_for', return_value='normal'), patch.object(
+                sys, 'argv', ['harness-route.py', '--host', 'claude', '--role', 'implement',
+                              '--retry-from', 'fast', '--retry-reason', 'defect', '--attempt', '1']), contextlib.redirect_stdout(stream):
+            self.assertEqual(routes.main(), 0)
+        output = json.loads(stream.getvalue())
+        original = self.route(worker='fast')
+        for key in ('worker_id', 'model', 'effort', 'tier', 'sandbox'):
+            self.assertEqual(output[key], original[key])
+        self.assertIn('retry keeps settings; fix defect;', output['reason'])
 
     def test_agy_response_cannot_forge_model_assessment_or_history_headers(self):
         data = json.loads(json.dumps(self.data))

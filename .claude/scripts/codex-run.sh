@@ -29,9 +29,9 @@ EFFORT=
 # to the first active OpenAI implement worker (Sol/high — the entry
 # 44 of 52 real runs used), so a broken bindings file does not silently
 # drop implementation to a tier the matrix reserves for explicit `-m`.
-BUILTIN_IMPL_MODEL=gpt-5.6-sol
+BUILTIN_IMPL_MODEL=gpt-6.1-sol
 BUILTIN_IMPL_EFFORT=high
-BUILTIN_IMAGE_MODEL=gpt-5.6-terra
+BUILTIN_IMAGE_MODEL=gpt-6.1-sol
 BUILTIN_IMAGE_EFFORT=medium
 BINDINGS_PUBLIC=.claude/model-bindings.json
 BINDINGS_LOCAL=.claude/model-bindings.local.json
