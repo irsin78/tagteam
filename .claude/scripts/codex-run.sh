@@ -66,7 +66,9 @@ extract_tokens() {
     fi
 
     tr -d '\000' < "$log_file" |
-        sed $'s/\033\\[[0-?]*[ -/]*[@-~]//g' |
+        # C locale: macOS BSD sed rejects the byte range [0-?] under UTF-8
+        # collation ("invalid character range"), which lost TOKENS.
+        LC_ALL=C sed $'s/\033\\[[0-?]*[ -/]*[@-~]//g' |
         awk '
             { sub(/\r$/, "") }
             $0 == "tokens used" { awaiting_total = 1; total = ""; next }

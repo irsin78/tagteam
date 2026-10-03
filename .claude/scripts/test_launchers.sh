@@ -600,6 +600,13 @@ ok=0
 expect_case "codex availability quota-prose" "$ok" "exit=$LAST_RC"
 
 # Successful paths and persisted state.
+# Token extraction must survive a UTF-8 locale (macOS BSD sed collation).
+fresh_case
+run_capture codex-tokens-utf8 env STUB_ACTION=none LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 bash "$CODEX_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^TOKENS: 42$' && ! has "$LAST_OUT" 'invalid character range' && ok=1
+expect_case "codex TOKENS parsed under a UTF-8 locale" "$ok" "exit=$LAST_RC"
+
 fresh_case
 : > "$TEST_ROOT/codex-args.log"
 run_capture codex-done env STUB_ACTION=none HARNESS_RUN_ID=codexdone bash "$CODEX_RUN" -p prompt.txt
