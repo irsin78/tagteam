@@ -35,7 +35,7 @@ harness-route.py; use its model/effort, not an assumed maximum model.
    `.claude/model-bindings.json` (+ `.claude/model-bindings.local.json`,
    local workers merge by id): without `-i` → the router's launcher default
    (`harness-route.py --launcher-default --vendor openai --role implement`:
-   band-floor B, foreground, cheapest measured row), with `-i` → first active OpenAI `image_verify` worker (Terra/medium);
+   band-floor B, foreground, cheapest measured row), with `-i` → first active OpenAI `image_verify` worker (GPT-6.1 Sol/medium);
    the report's `BINDINGS:` line names the source (`public`,
    `public+local`, `builtin` when no file/python, `explicit` for a given
    flag). Worker efforts: low|medium|high|xhigh|max; `max` requires `-b`.

@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 """Explicit preflight/completion checks for hosts without active lifecycle hooks."""
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import queue
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -125,6 +127,40 @@ def update_budget(cwd, session, exhausted=None, clear=False):
     return 'HARNESS BUDGET: ' + message
 
 
+def update_time(cwd, session, mode=None, tolerance_min=None, cost_at_tolerance=None,
+                clear=False, reason=None, refocus_usd=None, slope=None):
+    """Declare the user's waiting-time value in the selected orchestrator session."""
+    from harness_records import load_time_policy, time_value
+    marker = mission_marker(cwd, session)
+    if marker is None or os.environ.get('HARNESS_DELEGATE_RUN') == '1':
+        raise ValueError('a current orchestrator session id is required')
+    if clear:
+        if any(value is not None for value in (mode, tolerance_min, cost_at_tolerance, refocus_usd, slope)):
+            raise ValueError('--clear cannot be combined with time values')
+    else:
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError('--reason is required for a time declaration')
+        if mode is None and (tolerance_min is None or cost_at_tolerance is None):
+            raise ValueError('time requires --mode or both --tolerance-min and --cost-at-tolerance')
+    effective = time_value(load_time_policy(cwd), mode, tolerance_min, cost_at_tolerance, refocus_usd, slope)
+    record = json.loads(marker.read_text(encoding='utf-8')) if marker.exists() else {}
+    if not isinstance(record, dict):
+        raise ValueError('invalid session record')
+    if clear:
+        record.pop('time_cost', None)
+    else:
+        record['time_cost'] = dict(effective, reason=reason.strip())
+    if record:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(record, ensure_ascii=True), encoding='utf-8')
+    else:
+        marker.unlink(missing_ok=True)
+    source = 'bindings (cleared)' if clear else 'session'
+    return (f"HARNESS TIME: {effective['mode']} T={effective['tolerance_min']:g} "
+            f"k={effective['k']:g} source={source} refocus={effective['refocus_usd']:g} "
+            f"slope={effective['slope_usd_per_tolerance']:g} switch={effective['switch_after_min']:g}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -144,11 +180,80 @@ def main():
     action = budget.add_mutually_exclusive_group(required=True)
     action.add_argument('--exhausted', help='comma-separated vendors')
     action.add_argument('--clear', action='store_true')
+    declaration = commands.add_parser('time', help='declare the session value of waiting time')
+    declaration.add_argument('--session', required=True)
+    declaration.add_argument('--mode', choices=('attended', 'background', 'unattended'))
+    declaration.add_argument('--tolerance-min', type=float)
+    declaration.add_argument('--cost-at-tolerance', type=float)
+    declaration.add_argument('--refocus-usd', type=float)
+    declaration.add_argument('--slope', type=float)
+    declaration.add_argument('--clear', action='store_true')
+    declaration.add_argument('--reason')
+    outcome = commands.add_parser('outcome', help='record a diagnosed delegated run outcome')
+    outcome.add_argument('--run', required=True)
+    outcome.add_argument('--class', dest='failure_class', required=True)
+    outcome.add_argument('--accepted', choices=('yes', 'no'), default='unknown')
+    outcome.add_argument('--note', default='')
+    direct = commands.add_parser('direct', help='record work handled directly by the orchestrator')
+    direct.add_argument('--task', required=True)
+    direct.add_argument('--result', choices=('done', 'failed'), required=True)
+    direct.add_argument('--elapsed-s', required=True)
+    direct.add_argument('--assess')
+    direct.add_argument('--model', default='')
+    for name in ('tokens', 'rework', 'interventions'):
+        direct.add_argument('--' + name, default=0)
+    direct.add_argument('--verify', choices=('passed', 'failed', 'none'), default='none')
+    direct.add_argument('--note', default='')
     args = parser.parse_args()
+    if args.command in ('outcome', 'direct'):
+        try:
+            if os.environ.get('HARNESS_DELEGATE_RUN') == '1':
+                raise ValueError('a current orchestrator session id is required')
+            from harness_records import (FAILURE_CLASSES, nonnegative, parse_assessment, recorded_now,
+                                         run_id, state_directory, task_slug, write_record)
+            if args.command == 'outcome':
+                args.run = run_id(args.run)
+                if args.failure_class not in FAILURE_CLASSES:
+                    raise ValueError('class must be ' + '|'.join(FAILURE_CLASSES))
+            else:
+                args.task = task_slug(args.task)
+                args.elapsed_s = nonnegative(args.elapsed_s)
+                for name in ('tokens', 'rework', 'interventions'):
+                    setattr(args, name, nonnegative(str(getattr(args, name))))
+                if args.assess is not None:
+                    args.assess = parse_assessment(args.assess)
+            directory = state_directory()
+            if args.command == 'outcome':
+                if not (directory / ('report-' + args.run + '.txt')).is_file():
+                    raise ValueError('no report exists for run ' + args.run)
+                path = directory / ('outcome-' + args.run + '.json')
+                record = dict(run=args.run, **{'class': args.failure_class}, accepted=args.accepted,
+                              note=args.note, recorded=recorded_now())
+            else:
+                stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+                path = directory / ('direct-' + stamp + '-' + secrets.token_hex(4) + '.json')
+                record = dict(task=args.task, result=args.result, elapsed_s=args.elapsed_s,
+                              model=args.model, tokens=args.tokens, rework=args.rework,
+                              interventions=args.interventions, verify=args.verify,
+                              note=args.note, recorded=recorded_now())
+                if args.assess is not None:
+                    record['assessment'] = args.assess
+            write_record(path, record)
+            print(path)
+        except (ImportError, OSError, ValueError, TypeError) as exc:
+            parser.error(str(exc))
+        return 0
     if args.command == 'budget':
         try:
             print(update_budget(os.getcwd(), args.session, args.exhausted, args.clear))
         except (OSError, ValueError, TypeError) as exc:
+            parser.error(str(exc))
+        return 0
+    if args.command == 'time':
+        try:
+            print(update_time(os.getcwd(), args.session, args.mode, args.tolerance_min,
+                              args.cost_at_tolerance, args.clear, args.reason, args.refocus_usd, args.slope))
+        except (ImportError, OSError, ValueError, KeyError, TypeError) as exc:
             parser.error(str(exc))
         return 0
     if args.command == 'check-codex-hooks':

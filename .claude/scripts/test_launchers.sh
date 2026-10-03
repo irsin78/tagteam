@@ -47,7 +47,7 @@ echo "GROUPS: $TEST_GROUPS"
 # under a detached run): scrub every launcher marker and the detach
 # plumbing so the launchers under test start from a clean environment.
 # Cases set what they need explicitly per invocation.
-unset HARNESS_SAVE_BASELINE HARNESS_ALLOW_CONTROL_PLANE HARNESS_ALLOW_AGY_COMMAND HARNESS_ALLOW_FULL_ACCESS       HARNESS_ALLOW_FORGET HARNESS_AGY_SETTINGS HARNESS_STATE_DIR HARNESS_TREE_KEY       HARNESS_RUN_ID HARNESS_RUN_CHILD STUB_ACTION STUB_VERIFY_PATH
+unset HARNESS_SAVE_BASELINE HARNESS_ALLOW_CONTROL_PLANE HARNESS_ALLOW_AGY_COMMAND HARNESS_ALLOW_FULL_ACCESS       HARNESS_ALLOW_FORGET HARNESS_AGY_SETTINGS HARNESS_STATE_DIR HARNESS_TREE_KEY       HARNESS_RUN_ID HARNESS_RUN_CHILD HARNESS_ASSESS HARNESS_TASK STUB_ACTION STUB_VERIFY_PATH
 
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     echo "FAIL: bash 4+ required"
@@ -473,7 +473,7 @@ fi
 # bindings_v3 <rows-json>: wrap worker rows in the minimal schema-3 envelope
 # (bands, latency, selection_policy, role floors) the router validates.
 bindings_v3() {
-    printf '%s\n' "{\"schema_version\":3,\"bands\":{\"order\":[\"E\",\"D\",\"C\",\"B\",\"A\",\"S\"],\"S\":{\"model_fixed\":true,\"lanes\":{\"claude\":\"claude-fable-5-1\",\"openai\":\"gpt-6-astra\"},\"foreground_effort\":\"high\",\"detached_effort\":\"xhigh\"},\"A\":{\"min_index\":52},\"B\":{\"min_index\":48},\"C\":{\"min_index\":40},\"D\":{\"min_index\":30},\"E\":{\"min_index\":0}},\"latency\":{\"interactive\":10,\"foreground\":60,\"detached\":null},\"selection_policy\":{\"cost_tie_pct\":15,\"promotion_delta\":3,\"attempt_cap\":3},\"roles\":{\"implement\":{\"band_floor\":\"B\"},\"image_verify\":{\"band_floor\":\"D\"},\"web\":{\"band_floor\":\"E\"},\"explore\":{\"band_floor\":\"E\"},\"write\":{\"band_floor\":\"C\"},\"decide\":{\"band_floor\":\"A\"},\"plan_review\":{\"band_floor\":\"A\"},\"review_gate\":{\"band_floor\":\"C\"},\"review_deep\":{\"band_floor\":\"A\"}},\"workers\":[$1]}"
+    printf '%s\n' "{\"schema_version\":3,\"bands\":{\"order\":[\"E\",\"D\",\"C\",\"B\",\"A\",\"S\"],\"S\":{\"model_fixed\":true,\"lanes\":{\"claude\":\"claude-fable-5-1\",\"openai\":\"gpt-6-astra\"},\"foreground_effort\":\"high\",\"detached_effort\":\"xhigh\"},\"A\":{\"min_index\":52},\"B\":{\"min_index\":48},\"C\":{\"min_index\":40},\"D\":{\"min_index\":30},\"E\":{\"min_index\":0}},\"latency\":{\"interactive\":10,\"foreground\":60,\"detached\":null},\"selection_policy\":{\"cost_tie_pct\":15,\"cross_lane_s\":true,\"attempt_cap\":3},\"roles\":{\"implement\":{\"band_floor\":\"B\"},\"image_verify\":{\"band_floor\":\"D\"},\"web\":{\"band_floor\":\"E\"},\"explore\":{\"band_floor\":\"E\"},\"write\":{\"band_floor\":\"C\"},\"decide\":{\"band_floor\":\"A\"},\"plan_review\":{\"band_floor\":\"A\"},\"review_gate\":{\"band_floor\":\"C\"},\"review_deep\":{\"band_floor\":\"A\"}},\"workers\":[$1]}"
 }
 # row_v3 <id> <vendor> <tier> <index> <launcher> <roles-json> <model-json> <effort-json>
 row_v3() {
@@ -1329,7 +1329,7 @@ if selected codex; then
 # write_bindings <path> <ladder0-model-json> <ladder0-effort-json>: a
 # minimal bindings file with the two role entry points the launcher reads.
 write_bindings() {
-    bindings_v3 "$(row_v3 bound-impl openai C 43 .claude/scripts/codex-run.sh '{"implement":1}' "$2" "$3"),$(row_v3 bound-image openai D 33 .claude/scripts/codex-run.sh '{"image_verify":1}' '"gpt-5.6-terra"' '"medium"')" > "$1"
+    bindings_v3 "$(row_v3 bound-impl openai C 43 .claude/scripts/codex-run.sh '{"implement":1}' "$2" "$3"),$(row_v3 bound-image openai D 33 .claude/scripts/codex-run.sh '{"image_verify":1}' '"gpt-6.1-sol"' '"medium"')" > "$1"
 }
 codex_args() { cat "$TEST_ROOT/codex-args.log" 2>/dev/null; }
 
@@ -1341,23 +1341,23 @@ expect_case "codex bindings: no file falls back to builtin Terra/high" "$ok" "ex
 
 fresh_case
 rm -f "$TEST_ROOT/codex-args.log"
-write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-5.6-terra"' '"high"'
+write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-6.1-sol"' '"high"'
 printf '%s\n' '{"workers_local":[{"id":"bound-impl","effort":"low"}]}' > "$CASE_REPO/.claude/model-bindings.local.json"
 run_capture bindings-local env HARNESS_RUN_ID=bindlocal bash "$CODEX_RUN" -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: public\+local role=implement model=gpt-5.6-terra effort=low$' && codex_args | grep -q 'model_reasoning_effort=low' && ok=1
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: public\+local role=implement model=gpt-6.1-sol effort=low$' && codex_args | grep -q 'model_reasoning_effort=low' && ok=1
 expect_case "codex bindings: local ladder overrides public" "$ok" "exit=$LAST_RC"
 
 fresh_case
 rm -f "$TEST_ROOT/codex-args.log"
-write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-5.6-terra"' '"high"'
+write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-6.1-sol"' '"high"'
 printf 'not-really-a-png\n' > "$CASE_REPO/shot.png"
 run_capture bindings-image env HARNESS_RUN_ID=bindimage bash "$CODEX_RUN" -p prompt.txt -i shot.png
-ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: public role=image_verify model=gpt-5.6-terra effort=medium$' && codex_args | grep -q 'model_reasoning_effort=medium' && codex_args | grep -q -- '-i shot.png' && ok=1
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: public role=image_verify model=gpt-6.1-sol effort=medium$' && codex_args | grep -q 'model_reasoning_effort=medium' && codex_args | grep -q -- '-i shot.png' && ok=1
 expect_case "codex bindings: -i selects the image_verify default" "$ok" "exit=$LAST_RC"
 
 fresh_case
 rm -f "$TEST_ROOT/codex-args.log"
-write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-5.6-terra"' '"high"'
+write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-6.1-sol"' '"high"'
 run_capture bindings-explicit env HARNESS_RUN_ID=bindexplicit bash "$CODEX_RUN" -p prompt.txt -m custom-model
 ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: public role=implement model=custom-model \(explicit\) effort=high$' && codex_args | grep -q -- '-m custom-model' && codex_args | grep -q 'model_reasoning_effort=high' && ok=1
 expect_case "codex bindings: explicit -m wins, -e still from bindings" "$ok" "exit=$LAST_RC"
@@ -1379,7 +1379,7 @@ for bad in '""' '42' '"has space"'; do
 done
 fresh_case
 rm -f "$TEST_ROOT/codex-args.log"
-write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-5.6-terra"' '"turbo"'
+write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-6.1-sol"' '"turbo"'
 run_capture bindings-schema-effort env HARNESS_RUN_ID=bindschemaeffort bash "$CODEX_RUN" -p prompt.txt
 [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^BINDINGS: builtin \(bindings unusable: ERR ValueError effort' && codex_args | grep -q 'model_reasoning_effort=high' || schema_ok=0
 expect_case "codex bindings: schema-invalid model/effort falls back to builtin" "$schema_ok" "exit=$LAST_RC"
@@ -1432,9 +1432,9 @@ expect_case "codex bindings-sourced ultra is denied without a silent builtin fal
 # The guard also fires on an effort that CAME FROM the bindings (no -e).
 fresh_case
 rm -f "$TEST_ROOT/codex-args.log"
-write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-5.6-terra"' '"max"'
+write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-6.1-sol"' '"max"'
 run_capture guard-bindings-max bash "$CODEX_RUN" -p prompt.txt
-ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -e max requires -b.*from the bindings: public' && has "$LAST_OUT" '^BINDINGS: public role=implement model=gpt-5.6-terra effort=max$' && [ ! -e "$TEST_ROOT/codex-args.log" ] && ok=1
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -e max requires -b.*from the bindings: public' && has "$LAST_OUT" '^BINDINGS: public role=implement model=gpt-6.1-sol effort=max$' && [ ! -e "$TEST_ROOT/codex-args.log" ] && ok=1
 expect_case "codex bindings-sourced max without -b is denied and names the source" "$ok" "exit=$LAST_RC"
 
 
@@ -1642,6 +1642,67 @@ expect_case "agy empty response is not DONE" "$ok" "exit=$LAST_RC"
 fi
 
 if selected nongit; then
+# Optional assessment/task headers are validated before any CLI invocation.
+for launcher in "$CODEX_RUN" "$CLAUDE_RUN" "$AGY_RUN"; do
+    name=$(basename "$launcher" -run.sh)
+    assessment='consequence=1,verifier=1,precedent=0,tangle=2,open=1'
+    fresh_case nongit
+    run_capture "records-valid-$name" env HARNESS_ASSESS="$assessment" HARNESS_TASK=task.1_test \
+        bash "$launcher" -p prompt.txt
+    ok=0
+    [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^ASSESS: open=1 tangle=2 precedent=0 verifier=1 consequence=1$' \
+        && has "$LAST_OUT" '^TASK: task.1_test$' && ok=1
+    rid=$(sed -n 's/^RUN_ID: \([^ ]*\).*/\1/p' "$LAST_OUT" | head -n 1)
+    report=$(find "$CASE_HOME/.claude/harness-runs" -name "report-$rid.txt" -print | head -n 1)
+    has "$report" '^ASSESS: open=1 tangle=2 precedent=0 verifier=1 consequence=1$' || ok=0
+    has "$report" '^TASK: task.1_test$' || ok=0
+    expect_case "$name records canonical assessment and task headers" "$ok" "exit=$LAST_RC"
+
+    for volume in 0 1 2; do
+        fresh_case nongit
+        run_capture "records-volume-$name-$volume" env HARNESS_ASSESS="volume=$volume,$assessment" \
+            bash "$launcher" -p prompt.txt
+        ok=0
+        expected="^ASSESS: open=1 tangle=2 precedent=0 verifier=1 consequence=1 volume=$volume$"
+        [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" "$expected" && ok=1
+        rid=$(sed -n 's/^RUN_ID: \([^ ]*\).*/\1/p' "$LAST_OUT" | head -n 1)
+        report=$(find "$CASE_HOME/.claude/harness-runs" -name "report-$rid.txt" -print | head -n 1)
+        has "$report" "$expected" || ok=0
+        expect_case "$name records optional volume last in the assessment header" "$ok" "exit=$LAST_RC volume=$volume"
+    done
+
+    fresh_case nongit
+    run_capture "records-absent-$name" bash "$launcher" -p prompt.txt
+    ok=0; [ "$LAST_RC" -eq 0 ] && ! has "$LAST_OUT" '^(ASSESS|TASK):' && ok=1
+    expect_case "$name omits absent recording headers" "$ok" "exit=$LAST_RC"
+
+    fresh_case nongit
+    run_capture "records-empty-$name" env HARNESS_ASSESS= HARNESS_TASK= bash "$launcher" -p prompt.txt
+    ok=0; [ "$LAST_RC" -eq 0 ] && ! has "$LAST_OUT" '^(ASSESS|TASK):' && ok=1
+    expect_case "$name treats empty recording headers as absent" "$ok" "exit=$LAST_RC"
+
+    for bad in 'open=1' "$assessment,extra=0" "${assessment/open=1/open=3}" \
+        "${assessment/open=1/tangle=1}" "${assessment/open=1/open=01}" "$assessment," \
+        "$assessment,volume=3" "$assessment,volume=-1" "$assessment,volume=01" \
+        "$assessment,volume=" "$assessment,volume=0,volume=1" "${assessment/open=1/volume=1}"; do
+        fresh_case nongit
+        : > "$TEST_ROOT/$name-args.log"
+        run_capture "records-assess-denied-$name-$CASE_NO" env HARNESS_ASSESS="$bad" bash "$launcher" -p prompt.txt
+        ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: HARNESS_ASSESS' \
+            && [ ! -s "$TEST_ROOT/$name-args.log" ] && ok=1
+        expect_case "$name rejects malformed assessment before the CLI" "$ok" "exit=$LAST_RC value=$bad"
+    done
+    long_task=$(printf '%065d' 0)
+    for bad in 'bad task' '../escape' "$long_task"; do
+        fresh_case nongit
+        : > "$TEST_ROOT/$name-args.log"
+        run_capture "records-task-denied-$name-$CASE_NO" env HARNESS_TASK="$bad" bash "$launcher" -p prompt.txt
+        ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: HARNESS_TASK' \
+            && [ ! -s "$TEST_ROOT/$name-args.log" ] && ok=1
+        expect_case "$name rejects malformed task before the CLI" "$ok" "exit=$LAST_RC value=$bad"
+    done
+done
+
 # Non-Git support retains evidence, raw CLI policy, and shared run records.
 for launcher in "$CODEX_RUN" "$CLAUDE_RUN" "$AGY_RUN"; do
     name=$(basename "$launcher" .sh)

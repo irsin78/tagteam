@@ -3,27 +3,33 @@
 Orchestrator only, not auto-loaded; resolve session-role.md first. Workers skip this workflow.
 
 ## Direct work or delegation
-Before delegating, weigh preparation, startup, handoff and verification cost.
-Handle targeted reads directly. Implement directly only when inspecting the
-actual affected code and interfaces establishes a closed local change with known
-verification; request wording, file count and optimistic time estimates are not
-that evidence. Unknown behavior, cross-module contracts or newly needed design
-take the cross-vendor route by default. A same-vendor native worker is not a
-substitute merely because the implementation seems easy (explicit project
-exceptions and diagnosed unavailability still apply). If a direct change grows
+Compare direct work and eligible workers using the single score for money and waiting time
+below. Offer direct implementation/writing with `--direct-band <S|A|B|C|D|E>`;
+the orchestrator's band must meet the assessed floor. Before editing directly,
+inspect the actual affected code, interfaces and checks to establish grounded
+scope and verification; request wording, file count and optimistic time estimates
+are not that evidence. If a direct change grows
 past the grounded scope, stop expanding it, preserve the dirty state, announce
 the reclassification and delegate the remaining coherent implementation without
 waiting for a new user turn. A grounded change already complete needs no
 ceremonial redo: verify it and report the actual authorship.
 Batch related changes into verifiable units; parallelize only independent scopes
-whose saved work exceeds coordination cost. Do not add a scout/controller by ritual.
+whose saved work exceeds coordination cost. Code locality alone does not establish
+closed behavior. Related helpers count as precedent only where they actually cover
+the needed behavior; identify uncovered input, output and validation paths.
 
-Code locality is not sufficient. Multiple new behaviors with interacting input,
-output or validation paths take the cross-vendor route even when they fit one
-module. Related helpers count as reuse only where they actually cover the needed
-behavior; identify the uncovered part before choosing direct work. Routine
-one-operation changes or repeated mechanical edits can still qualify after
-inspection, while unresolved design or state behavior cannot.
+## Thin orchestration
+
+1. Decide the route before deep reading: obtain a read-only brief from the cheapest
+   eligible `explore` worker using [scout-brief.md](scout-brief.md), then assess it.
+2. When the score says delegate, delegate diagnosis together with implementation.
+3. Accept on the launcher verifier result and change summary. Send corrections to
+   the worker with `-r` unless they are only a few lines.
+4. Review at the lowest band allowed by the risk tier. Give the confirmed spec,
+   acceptance questions and relevant hunks only, with necessary interface context.
+5. Change the session time value when the user's words or an evident situation
+   change it (for example unattended overnight). Announce the value in one line;
+   never lower it on your own to justify a slow route.
 
 ## Assign a worker
 Choose role -> capability band -> latency class -> risk floor/budget -> specialty
@@ -31,15 +37,20 @@ and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
 measured index/cost/TTFT and per-host role priorities; declare optional workers
 with `status: optional` and `requires`.
-Bands: S is model-fixed (Fable on the Claude lane, Astra on the OpenAI lane) for
-open design, Tier 2 deep review and breakthroughs, never used for A/B/C; A index
->=52 strong judgment; B >=48 general implementation (default implementation
-floor); C >=40 closed-spec work and review gates; D >=30 mechanical/bulk; E
-isolation reader. Latency: interactive (TTFT <=10s), foreground (<=60s),
+Bands are capability labels independent of leaderboard index values: A strong
+judgment; B general implementation (default implementation floor); C closed-spec
+work and review gates; D mechanical/bulk; E isolation reader. S: Each vendor's
+top-line model. The start tier for the hardest assessed tasks and the last
+escalation rung after A fails. Defined by vendor line, not by index. Its lanes
+remain Fable for Claude and Astra for OpenAI; S rows require an S floor.
+Latency: interactive (TTFT <=10s), foreground (<=60s),
 detached (no limit, `-b --wait`; effort max/ultra rows are detached only).
-The router applies hard constraints and author separation first, then the band
-floor and latency class. Rows the user marked `trust: low` rank after all others.
-It then ranks DeepSWE-listed rows before unlisted (provisional) ones and, within
+The router applies hard constraints, author separation and the band floor first.
+Exhausted vendors rank last; within availability groups `trust: low` ranks last.
+Automatic assessment with volume uses the score below and includes slower rows,
+returning `needs_detached: true` when the selected row exceeds the latency class.
+Other selection paths filter by latency and rank DeepSWE-listed rows before
+unlisted (provisional) ones and, within
 each group, picks the cheapest; rows within 15% of
 the cheapest tie and the faster TTFT wins. `--tier` is a floor (that band or higher), not an exact
 cell; `--latency interactive|foreground|detached` overrides the role default.
@@ -47,19 +58,85 @@ cell; `--latency interactive|foreground|detached` overrides the role default.
 the router returned the best lower one; announce it or change the class/vendor.
 Use `--worker <id>` for conditional rows. The router's `reason` line (band,
 latency, choice, ties, `skipped`) is what the delegation announcement quotes.
-Benchmarks are initial evidence; adjust for repeated real-task mismatches, not
-frequency or one anecdote. No composite score.
+Benchmarks are initial evidence; adjust for repeated real-task mismatches.
 Use `python .claude/scripts/harness-route.py --host <claude|codex> --role <role>`
 from the project root; pass its model, effort and sandbox to the launcher recipe.
-Role floors: implement B, write/review_gate C, decide/plan_review/review_deep A,
-explore/image_verify D, web E. Pass --tier C for closed mechanical implementation,
+Role floors without assessment: implement/decide/plan_review/review_deep B,
+write/review_gate C, image_verify D, explore/web E. Pass --tier C for closed mechanical implementation,
 A for stronger judgment. Explore also needs task grading: raise it with --tier C/B
-for structure/dependency reasoning; the D floor is not a recommendation for every
+for structure/dependency reasoning; the E floor is not a recommendation for every
 exploration. Tiny lookups stay in the main session.
 Native workers need explicit supported model/effort; include inheritance cost
 when overrides are unavailable. Codex uses process launchers for Claude workers;
 Claude may use installed native workers. Git worktree agents require Git; otherwise
 use a scoped sequential run or scratch copy, never automatic git init.
+
+## Assess before routing
+Pass five required 0/1/2 ratings and optional volume with
+`--assess open=0,tangle=0,precedent=0,verifier=0,consequence=0,volume=0`.
+`open` means unresolved design decisions (0 none, 1 small and reversible, 2 structural);
+`tangle` counts modules or screens that must change together in this task (0 one,
+1 a few, 2 many), not the number of concepts involved;
+`precedent` means similar repository implementation (0 copyable, 1 partial, 2 none);
+`verifier` means a test or check fails when the result is wrong (0 exists or cheap to
+add, 1 partial, 2 none); `consequence` is verification-tiering Tier 0/1/2.
+`volume` estimates work size: 0 small (one or two files, well under ~150 changed
+lines), 1 medium, 2 large (many files or modules, ~1000+ lines).
+Difficulty is max(tangle, precedent); exposure is max(verifier, consequence).
+Both 0 gives C; both <=1, except both 0, gives B; exactly one 2 gives A; both 2
+gives S. `--recent-failure` raises one band for a recent reasoning failure in the
+same area (S stays S). With `--paths a/b.py,c/d`, a same-directory reasoning
+failure in this tree's recent reports raises the band automatically; the matched
+run and directory appear in `assessment_floor.recent_failure` and the reason.
+Directories are compared case-insensitively with normalized slashes; other failure
+classes, old records and unreadable records do not raise the band. The manual flag
+still raises it once. Then apply the assessment minimum: implement/write C,
+all other roles their band_floor. `--tier`, `--worker` and retries bypass
+assessment selection, scoring and its advisories. Without `--assess`,
+the existing role floor applies. Local bindings may override the assessment table.
+Without volume, if the assessed floor can only be met detached, keep it and choose
+the cheapest matching row with `needs_detached: true` (`run with -b --wait`). Use a lower band
+only when no eligible row meets the assessed floor at all.
+`open=2` adds advisory
+`shape: decide-first`: resolve the structural decision in a decide run before
+implementation. An applied A/S implementation adds advisory `plan_first: true`:
+obtain the worker's approach before the full run.
+
+## One cost score
+On normal automatic routing, including `volume` enables
+`total = usd + time_cost`. For minutes `m`, tolerance `T` (30) and switch threshold
+`s` (3), attended costs `k * (m/T) ** exponent` through `m <= s` (k=5, exponent=2),
+then `refocus_usd + slope * (m-s)/T` (refocus=5, slope=1.5). Background means already
+switched: `refocus_usd + slope * m/T` (refocus=0, slope=1.5). Unattended means away:
+the same line with refocus=0, slope=0.25. The orchestrator declares the state from
+the user's words. Numeric local mode values retain legacy pure-convex cost.
+After availability and trust priority, pick the lowest total; totals within 1%
+favor fewer minutes.
+
+Declare session time with
+`python .claude/scripts/harness-session.py time --session <id> --mode attended --reason "user waiting"`.
+Mode may be combined with `--tolerance-min N`, `--cost-at-tolerance X` (k),
+`--refocus-usd X` and `--slope X` (costs allow 0);
+without a mode, supply both numbers. `--clear` restores bindings defaults and needs
+no reason. The same session marker preserves mission and exhaustion fields.
+Router `--time-mode`, `--time-tolerance-min`, `--time-cost`, `--time-refocus` and
+`--time-slope` override the session
+selected by `HARNESS_SESSION_ID`, which overrides merged public/local bindings.
+A CLI mode selects that mode's bindings parameters unless individually overridden;
+other CLI values preserve unspecified session values. Malformed session time is ignored.
+Every scored result reports the effective time value and its source.
+
+Worker USD is delegate overhead plus `metrics.cost * task_units[volume]`; minutes
+are overhead plus `base_minutes[volume] * clamp(sqrt(ttft_s / reference_ttft_s))`
+(factor 1 when TTFT is missing). Per-row `estimates` can replace this formula.
+Otherwise enough matching DONE reports (same model, effort and volume) within
+`history_days` replace worker minutes with median launcher ELAPSED; the score marks
+`minutes_source: records`. Direct uses `estimates.direct[volume]`. These are
+provisional seeds from one run per cell with an A-band orchestrator, not promises.
+Unreadable/malformed records are skipped; only headers before FINAL_MESSAGE count.
+The result's `decision` and sorted `scores` compare all options; existing launcher
+fields still describe the best worker when direct wins. S rows need an S floor,
+and OpenAI worker ultra remains refused.
 
 ## Separate authorship from review
 Identify actual designers before implementation and authors before review,

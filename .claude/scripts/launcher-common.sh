@@ -130,10 +130,39 @@ timing_report() {
     echo "TIMING: preflight_ms=$TIMING_PREFLIGHT_MS cli_ms=$TIMING_CLI_MS postflight_ms=$TIMING_POSTFLIGHT_MS verify_ms=$TIMING_VERIFY_MS total_ms=$total attempts=$TIMING_ATTEMPTS resolution=$TIMING_RESOLUTION"
 }
 
-# Optional retry/band telemetry (retry-policy.md, harness-stats.sh). The orchestrator
-# sets HARNESS_BAND / HARNESS_RETRY_OF + HARNESS_RETRY_REASON; malformed values are a
+# Optional run telemetry (retry-policy.md, harness-stats.sh). The orchestrator
+# sets assessment/task and retry/band headers; malformed values are a
 # policy refusal before the CLI starts, so a report never carries an unparseable header.
 retry_header_check() {
+    local item key value
+    local -a assessment_items
+    local -A assessment_values=()
+    ASSESS_HEADER=
+    if [ -n "${HARNESS_ASSESS:-}" ]; then
+        if [[ ! "$HARNESS_ASSESS" =~ ^(open|tangle|precedent|verifier|consequence|volume)=[012](,(open|tangle|precedent|verifier|consequence|volume)=[012]){4,5}$ ]]; then
+            echo "HARNESS_DENIED: HARNESS_ASSESS requires exactly open,tangle,precedent,verifier,consequence, each 0|1|2; optional volume=0|1|2" >&2; return 4
+        fi
+        IFS=',' read -r -a assessment_items <<< "$HARNESS_ASSESS"
+        for item in "${assessment_items[@]}"; do
+            key=${item%=*}; value=${item#*=}
+            if [ -n "${assessment_values[$key]+x}" ]; then
+                echo "HARNESS_DENIED: HARNESS_ASSESS contains duplicate key '$key'" >&2; return 4
+            fi
+            assessment_values[$key]=$value
+        done
+        for key in open tangle precedent verifier consequence; do
+            if [ -z "${assessment_values[$key]+x}" ]; then
+                echo "HARNESS_DENIED: HARNESS_ASSESS missing required key '$key'" >&2; return 4
+            fi
+            ASSESS_HEADER="${ASSESS_HEADER}${ASSESS_HEADER:+ }$key=${assessment_values[$key]}"
+        done
+        if [ -n "${assessment_values[volume]+x}" ]; then
+            ASSESS_HEADER="$ASSESS_HEADER volume=${assessment_values[volume]}"
+        fi
+    fi
+    if [ -n "${HARNESS_TASK:-}" ] && [[ ! "$HARNESS_TASK" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+        echo "HARNESS_DENIED: HARNESS_TASK must match [A-Za-z0-9._-]{1,64}" >&2; return 4
+    fi
     case "${HARNESS_BAND:-}" in ""|E|D|C|B|A|S) ;; *)
         echo "HARNESS_DENIED: HARNESS_BAND must be one of E|D|C|B|A|S (got '$HARNESS_BAND')" >&2; return 4 ;; esac
     case "${HARNESS_RETRY_OF:-}" in "") ;; *[!A-Za-z0-9TZ_-]*)
@@ -147,6 +176,8 @@ retry_header_check() {
 }
 
 retry_header_echo() {
+    [ -n "${ASSESS_HEADER:-}" ] && echo "ASSESS: $ASSESS_HEADER"
+    [ -n "${HARNESS_TASK:-}" ] && echo "TASK: $HARNESS_TASK"
     [ -n "${HARNESS_BAND:-}" ] && echo "BAND: $HARNESS_BAND"
     [ -n "${HARNESS_RETRY_OF:-}" ] && echo "RETRY_OF: $HARNESS_RETRY_OF ($HARNESS_RETRY_REASON)"
     return 0

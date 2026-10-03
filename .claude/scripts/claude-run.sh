@@ -280,6 +280,12 @@ esac
 # marker lives in the child's process environment, which the delegate's own
 # shell cannot rewrite for its parent.
 export HARNESS_DELEGATE_RUN=1
+# A worker inherits the user's settings, including `advisorModel`: without this a
+# cheap worker consults the user's expensive advisor model on every run (measured:
+# a Haiku scout cost $0.35 plus $1.41 of advisor). The orchestrator's own advisor is
+# the user's choice. Unconditional on purpose: an opt-in variable would need the same
+# orchestrator-only hook protection as the HARNESS_ALLOW_* grants.
+export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1
 # Constant role instruction, never interpolated task text. Remove Agent/Task
 # tools so a standalone Claude worker cannot recursively orchestrate.
 DELEGATE_INSTRUCTION='You are a DELEGATE assigned by a parent orchestrator. HARNESS_DELEGATE_RUN=1. Role is already resolved. Skip the Orchestrator workflow and its linked reading/setup; do not run harness-route.py, spawn agents or launch model CLIs. Follow the assigned task and applicable project/security/verification rules. For guidance, read only missing task-relevant sections and the required platform subsection; do not read whole harness manuals or reread unchanged supplied material for onboarding. Never commit, push or revert existing work. Edit the control plane only if this launcher already has HARNESS_ALLOW_CONTROL_PLANE=1. If verification is blocked by the environment, report the exact failed check to the parent; do not expand into permission repair or repeated cleanup. Return CHANGED, VERIFY, NOTES or NEEDS_INPUT; CHANGED and VERIFY must match the actual files and command output.'
