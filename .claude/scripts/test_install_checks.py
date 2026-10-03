@@ -26,6 +26,8 @@ ROOT = Path(__file__).resolve().parents[2]
 class InstallChecks(unittest.TestCase):
     def test_split_guides_copy_targets_and_anchor_links(self):
         docs = ROOT / 'docs'
+        if not (docs / 'harness-install.md').read_text(encoding='utf-8').lstrip().startswith('# Harness installation'):
+            self.skipTest('translated or customized guides; anchors are checked in the shipped English docs')
         guides = ('harness-install.md', 'harness-launchers.md', 'harness-manual.md')
         copy_table = (docs / 'harness-install.md').read_text(encoding='utf-8')
         for name in guides:
@@ -51,6 +53,8 @@ class InstallChecks(unittest.TestCase):
                 for fragment in re.findall(r'\]\(#([^\s)]+)\)', text):
                     self.assertIn(fragment, anchors, f'Unresolved local link in {source}')
 
+    @unittest.skipUnless((ROOT / 'AGENTS.md.template').exists(),
+                         'template default only; a project policy may allow git push')
     def test_push_default_requires_approval_and_retains_force_push_asks(self):
         permissions = json.loads((ROOT / '.claude/settings.json').read_text(encoding='utf-8'))['permissions']
         self.assertNotIn('Bash(git push:*)', permissions['allow'])

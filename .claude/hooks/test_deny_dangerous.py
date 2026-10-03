@@ -125,6 +125,8 @@ class GuardTests(unittest.TestCase):
         with patch.object(guard,'open',mock_open(read_data='{"content_dirs":[]}'),create=True) as source:
             self.assert_template_copy_denied(root)
             source.assert_any_call(os.path.join(root,'.claude','harness-config.json'),encoding='utf-8-sig')
+    @unittest.skipUnless(os.path.exists(os.path.join(guard.PROJECT_ROOT,'AGENTS.md.template')),
+                         'template default only; an installed copy may configure content_dirs')
     def test_shipped_content_dirs_are_empty(self):
         self.assertEqual(guard.content_dirs(), ())
     def test_default_content_dirs_deny_other_payloads(self):
