@@ -10,7 +10,7 @@ import tempfile
 
 DIMENSIONS = ('open', 'tangle', 'precedent', 'verifier', 'consequence')
 ASSESSMENT_KEYS = DIMENSIONS + ('volume',)
-FAILURE_CLASSES = ('none', 'infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning')
+FAILURE_CLASSES = ('none', 'infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning', 'defect')
 TIME_MODES = ('attended', 'background', 'unattended')
 ASSESSMENT_ERROR = ('assessment requires exactly open,tangle,precedent,verifier,consequence, each 0|1|2'
                     '; optional volume=0|1|2')

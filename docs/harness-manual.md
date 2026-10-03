@@ -623,8 +623,11 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
 3. Write goal, scope, existing-change preservation, constraints, verification, and
    output contract to a prompt file; write any launcher verifier separately first.
    Use routed JSON values for MODEL/EFFORT. Run `.sh` with Git Bash even from
-   PowerShell, never WindowsApps WSL bash. For null/unspecified Claude effort,
-   omit `-e`; explicit `-m` without `-e` uses CLI defaults, not implementation
+   PowerShell, never WindowsApps WSL bash.
+   Export the router's `launch_env` and pass `-t suggested_timeout_s` to record
+   band, assessment and role without hand-typing; use detached `-b` for `max`.
+   For null/unspecified Claude effort, omit `-e`; explicit `-m` without `-e`
+   uses CLI defaults, not implementation
    defaults. Effective effort is unobservable and reported `unspecified`.
    Include only needed decisions, not all background/rules, for example:
 
@@ -639,9 +642,9 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
 
 ```bash
 # Codex orchestrates: Claude implementation (model/effort from route output)
-bash .claude/scripts/claude-run.sh -p task.txt -m MODEL -e EFFORT -s workspace-write -v verify.sh
+bash .claude/scripts/claude-run.sh -p task.txt -m MODEL -e EFFORT -t SUGGESTED_TIMEOUT_S -s workspace-write -v verify.sh
 # Claude orchestrates: Codex implementation
-bash .claude/scripts/codex-run.sh -p task.txt -m MODEL -e EFFORT -s workspace-write -v verify.sh
+bash .claude/scripts/codex-run.sh -p task.txt -m MODEL -e EFFORT -t SUGGESTED_TIMEOUT_S -s workspace-write -v verify.sh
 # Isolated external-document reading on either host: model/effort from the web route
 bash .claude/scripts/claude-run.sh -p fetch-task.txt -m MODEL -e EFFORT -a web -s read-only
 ```
@@ -651,6 +654,9 @@ exposes only WebFetch. Run read-only reviews with `-s read-only` (plan mode). `-
 path, not a command string. The launcher retains pre-start verifier bytes in memory and
 fails if the original changes. Claude JSON errors or empty results are FAILED; both
 launchers fail nonzero on verification failure even when the model exits 0.
+Only when bindings cannot be read, Codex falls back to `gpt-6.1-sol` high for
+implementation and `gpt-6.1-sol` medium for `-i` image input (verified live on
+2026-10-01); the optional sandbox probe uses `gpt-6.1-sol` low.
 
 **WebFetch availability is not domain permission.** Delegates cannot prompt:
 unallowed domains are immediately denied and workers report without reading.
@@ -675,6 +681,9 @@ permissions, not a general network sandbox.
   pages; send implementers only the necessary summary prepared by the parent.
 
 4. Start long tasks with `-b` and call `--wait RUN_ID` with the returned RUN_ID.
+   A headless or scripted orchestrator (`claude -p`, CI, overnight runs) receives
+   no completion notification for a detached run and must block on `--wait` until
+   it finishes; ending the turn after `-b` abandons the worker.
    `--wait -t N` is a wait budget including status/PID checks. A final exit-race
    recheck may exceed it by one check duration. On exit 6, wait for the same ID.
    Exit 2 is availability failure, exit 4 policy denial, exit 1 task/verification

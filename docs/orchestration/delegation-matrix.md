@@ -32,6 +32,9 @@ the needed behavior; identify uncovered input, output and validation paths.
    never lower it on your own to justify a slow route.
 
 ## Assign a worker
+Export the router's `launch_env` and pass `-t suggested_timeout_s` to the launcher
+(detached `-b` for `max`), so band, assessment and role are recorded without
+hand-typing. Assessed routes without volume use the small-task estimate for timeout.
 Choose role -> capability band -> latency class -> risk floor/budget -> specialty
 and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
@@ -147,6 +150,12 @@ Review plans against designers and code against implementers with a fresh worker
 Recompute when authorship changes; never hide a coauthor or call self-review
 independent. Missing independence is unavailable. Acceptance still needs actual
 outputs and checks. Review triggers, risk floors and limits: verification-tiering.md.
+
+Keep the review packet bounded: the confirmed spec, acceptance questions, relevant
+hunks with necessary interface context, and check evidence; never the whole diff
+of a large change or the full repository. An unbounded review read 3.7M tokens.
+Follow the [packet contract](../../.claude/rules/verification-tiering.md) for
+controlling instructions, omitted inputs and follow-up context.
 
 ## User-facing delegation announcement
 Before each launch, briefly state task, capability band with task-specific reason,

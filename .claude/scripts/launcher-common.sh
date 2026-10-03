@@ -165,10 +165,12 @@ retry_header_check() {
     fi
     case "${HARNESS_BAND:-}" in ""|E|D|C|B|A|S) ;; *)
         echo "HARNESS_DENIED: HARNESS_BAND must be one of E|D|C|B|A|S (got '$HARNESS_BAND')" >&2; return 4 ;; esac
+    case "${HARNESS_ROLE:-}" in ""|implement|decide|plan_review|review_gate|review_deep|explore|web|write|image_verify) ;; *)
+        echo "HARNESS_DENIED: HARNESS_ROLE must be one of implement|decide|plan_review|review_gate|review_deep|explore|web|write|image_verify (got '$HARNESS_ROLE')" >&2; return 4 ;; esac
     case "${HARNESS_RETRY_OF:-}" in "") ;; *[!A-Za-z0-9TZ_-]*)
         echo "HARNESS_DENIED: HARNESS_RETRY_OF must be a run id (got '$HARNESS_RETRY_OF')" >&2; return 4 ;; esac
-    case "${HARNESS_RETRY_REASON:-}" in ""|infra|availability|spec|scope|knowledge|reasoning) ;; *)
-        echo "HARNESS_DENIED: HARNESS_RETRY_REASON must be infra|availability|spec|scope|knowledge|reasoning (got '$HARNESS_RETRY_REASON')" >&2; return 4 ;; esac
+    case "${HARNESS_RETRY_REASON:-}" in ""|infra|availability|spec|scope|knowledge|reasoning|defect) ;; *)
+        echo "HARNESS_DENIED: HARNESS_RETRY_REASON must be infra|availability|spec|scope|knowledge|reasoning|defect (got '$HARNESS_RETRY_REASON')" >&2; return 4 ;; esac
     if { [ -n "${HARNESS_RETRY_OF:-}" ] && [ -z "${HARNESS_RETRY_REASON:-}" ]; } || { [ -z "${HARNESS_RETRY_OF:-}" ] && [ -n "${HARNESS_RETRY_REASON:-}" ]; }; then
         echo "HARNESS_DENIED: HARNESS_RETRY_OF and HARNESS_RETRY_REASON must be set together" >&2; return 4
     fi
@@ -179,6 +181,7 @@ retry_header_echo() {
     [ -n "${ASSESS_HEADER:-}" ] && echo "ASSESS: $ASSESS_HEADER"
     [ -n "${HARNESS_TASK:-}" ] && echo "TASK: $HARNESS_TASK"
     [ -n "${HARNESS_BAND:-}" ] && echo "BAND: $HARNESS_BAND"
+    [ -n "${HARNESS_ROLE:-}" ] && echo "ROLE: $HARNESS_ROLE"
     [ -n "${HARNESS_RETRY_OF:-}" ] && echo "RETRY_OF: $HARNESS_RETRY_OF ($HARNESS_RETRY_REASON)"
     return 0
 }

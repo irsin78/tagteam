@@ -24,6 +24,7 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    | `spec` | NEEDS_INPUT, or the worker guessed what the spec omits | supply inputs, same settings |
    | `scope` | timeout after partial progress, only part of the change landed | split the task, same settings |
    | `knowledge` | misuse of an unfamiliar API or library | supply references or a web reader, same settings |
+   | `defect` | the verifier caught an implementation defect | corrective resume with the same settings (`-r`), not a promotion |
    | `reasoning` | spec understood but approach wrong, repeated verifier failure | promote (3) |
 
    Get the retry route with `harness-route.py --host <host> --role <role>
@@ -65,6 +66,9 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    supports `-r` through codex-run.sh; Claude needs a NEW claude-run.sh call with
    the original task, exact failure and current state INLINE. Never assume worker
    context is preserved. Recheck existing changes before any retry.
+   A headless or scripted orchestrator (`claude -p`, CI, overnight runs) receives
+   no completion notification for a detached run and must block on `--wait` until
+   it finishes; ending the turn after `-b` abandons the worker.
 
 Unresolved NEEDS_INPUT goes back to the parent for an answer and a new
 self-contained assignment; it is not a reason to silently take over.
@@ -81,3 +85,10 @@ For direct work, use `python .claude/scripts/harness-session.py direct --task <s
 --result done|failed --elapsed-s N [--assess STR]` with optional model, tokens,
 rework, interventions, verify and note fields. Records share the launcher's tree
 state directory; `harness-stats.sh` summarizes them alongside delegated reports.
+For machine timing, use `direct start --task <slug> [--assess STR] [--model TEXT]`
+before work and `direct finish --task <slug> --result done|failed [--tokens N]
+[--rework N] [--interventions N] [--verify passed|failed|none] [--note TEXT]`
+afterward. Start writes a UTC stamp in `direct-start-<slug>.json` in that tree's
+state directory; finish measures `elapsed_s`, preserves the assessment/model,
+writes the usual direct record and removes the start file. Missing starts are
+usage errors; all record commands refuse delegates. The one-shot form remains available.

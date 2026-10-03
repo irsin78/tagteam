@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """Run recording commands and validation, without worker calls."""
 import contextlib
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import io
@@ -47,8 +48,65 @@ class Validation(unittest.TestCase):
     def test_outcome_refuses_delegates_before_reading_or_writing_records(self):
         self.assert_delegate_refused(['outcome', '--run', '20261002T010000Z-42', '--class', 'reasoning'])
 
+    def test_outcome_accepts_defect(self):
+        with patch.object(sys, 'argv', ['harness-session.py', 'outcome', '--run', '20261003T010000Z-42',
+                                      '--class', 'defect']), patch.object(records, 'state_directory'), patch.object(
+                records, 'write_record') as write, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(session.main(), 0)
+        self.assertEqual(write.call_args.args[1]['class'], 'defect')
+
     def test_direct_refuses_delegates_before_reading_or_writing_records(self):
         self.assert_delegate_refused(['direct', '--task', 'task', '--result', 'done', '--elapsed-s', '120'])
+
+    def test_direct_start_and_finish_refuse_delegates(self):
+        self.assert_delegate_refused(['direct', 'start', '--task', 'task'])
+        self.assert_delegate_refused(['direct', 'finish', '--task', 'task', '--result', 'done'])
+
+    def test_direct_finish_without_start_is_usage_error(self):
+        with patch.object(sys, 'argv', ['harness-session.py', 'direct', 'finish', '--task', 'missing',
+                                      '--result', 'done']), patch.object(records, 'state_directory') as directory, patch.object(
+                records, 'write_record') as write, contextlib.redirect_stderr(io.StringIO()) as errors:
+            (directory.return_value / 'direct-start-missing.json').is_file.return_value = False
+            with self.assertRaises(SystemExit) as raised:
+                session.main()
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn('no direct start exists for task missing', errors.getvalue())
+            write.assert_not_called()
+
+    def test_machine_timing_uses_persisted_stamp_and_removes_timer_after_write(self):
+        directory = HERE / 'virtual-state'
+        start_time = datetime(2026, 10, 3, 1, 0, 0, tzinfo=timezone.utc)
+        finish_time = datetime(2026, 10, 3, 1, 2, 3, tzinfo=timezone.utc)
+        with patch.object(records, 'state_directory', return_value=directory), patch.object(
+                records, 'write_record') as write, patch.object(Path, 'exists', return_value=False), patch.object(
+                session, 'datetime', wraps=datetime) as clock, patch.object(sys, 'argv', [
+                'harness-session.py', 'direct', 'start', '--task', 'timed', '--assess', ASSESS,
+                '--model', 'host model']), contextlib.redirect_stdout(io.StringIO()):
+            clock.now.return_value = start_time
+            self.assertEqual(session.main(), 0)
+            start_path, start_record = write.call_args.args
+        self.assertEqual(start_path, directory / 'direct-start-timed.json')
+        self.assertEqual(datetime.fromisoformat(start_record['started']), start_time)
+        for failure in (False, True):
+            with self.subTest(write_failure=failure), patch.object(records, 'state_directory', return_value=directory), patch.object(
+                    records, 'write_record', side_effect=OSError('disk full') if failure else None) as write, patch.object(
+                    Path, 'is_file', return_value=True), patch.object(Path, 'read_text', return_value=json.dumps(start_record)), patch.object(
+                    Path, 'unlink') as unlink, patch.object(session, 'datetime', wraps=datetime) as clock, patch.object(
+                    sys, 'argv', ['harness-session.py', 'direct', 'finish', '--task', 'timed', '--result', 'done',
+                                 '--tokens', '123', '--verify', 'passed']), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                clock.now.return_value = finish_time
+                if failure:
+                    with self.assertRaises(SystemExit) as raised:
+                        session.main()
+                    self.assertEqual(raised.exception.code, 2)
+                    unlink.assert_not_called()
+                else:
+                    self.assertEqual(session.main(), 0)
+                    record = write.call_args.args[1]
+                    self.assertEqual((record['elapsed_s'], record['model'], record['tokens'], record['verify']),
+                                     (123, 'host model', 123, 'passed'))
+                    self.assertEqual(record['assessment'], EXPECTED)
+                    unlink.assert_called_once()
 
     def test_cli_errors_preserve_expected_value_messages(self):
         base = ['direct', '--task', 'valid', '--result', 'done', '--elapsed-s', '0']
@@ -223,6 +281,46 @@ class Recording(unittest.TestCase):
             data = json.loads(second.read_text())
             self.assertNotIn('assessment', data)
             self.assertEqual((data['tokens'], data['rework'], data['interventions'], data['verify']), (0, 0, 0, 'none'))
+
+    def test_direct_start_finish_measures_elapsed_and_carries_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder) / 'tree'
+            start_time = datetime(2026, 10, 3, 1, 0, 0, 250000, tzinfo=timezone.utc)
+            finish_time = datetime(2026, 10, 3, 1, 2, 3, 750000, tzinfo=timezone.utc)
+            with patch.object(session, 'datetime', wraps=datetime) as clock:
+                clock.now.return_value = start_time
+                start = self.invoke(directory, 'direct', 'start', '--task', 'phase-1',
+                                    '--assess', ASSESS, '--model', 'host model')
+            self.assertEqual(start, directory / 'direct-start-phase-1.json')
+            record = json.loads(start.read_text())
+            self.assertEqual(datetime.fromisoformat(record['started']), start_time)
+            self.assertEqual(record['assessment'], EXPECTED)
+            with patch.object(session, 'datetime', wraps=datetime) as clock:
+                clock.now.return_value = finish_time
+                path = self.invoke(directory, 'direct', 'finish', '--task', 'phase-1', '--result', 'failed',
+                                   '--tokens', '99', '--rework', '2', '--interventions', '1',
+                                   '--verify', 'failed', '--note', 'verifier caught defect')
+            self.assertFalse(start.exists())
+            result = json.loads(path.read_text())
+            self.assertEqual(result['elapsed_s'], 123)
+            self.assertEqual(result['assessment'], EXPECTED)
+            self.assertEqual((result['model'], result['result'], result['tokens']), ('host model', 'failed', 99))
+            self.assertEqual((result['rework'], result['interventions'], result['verify'], result['note']),
+                             (2, 1, 'failed', 'verifier caught defect'))
+            self.assertRegex(path.name, r'^direct-20261003T010203Z-[a-f0-9]+\.json$')
+
+    def test_duplicate_direct_start_preserves_timer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            start = self.invoke(directory, 'direct', 'start', '--task', 'repeat')
+            original = start.read_bytes()
+            with patch.object(sys, 'argv', ['harness-session.py', 'direct', 'start', '--task', 'repeat']), patch.object(
+                    records, 'state_directory', return_value=directory), contextlib.redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as raised:
+                    session.main()
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn('direct start already exists', errors.getvalue())
+            self.assertEqual(start.read_bytes(), original)
 
     def test_direct_cli_optional_volume_and_invalid_values(self):
         with tempfile.TemporaryDirectory() as folder:
