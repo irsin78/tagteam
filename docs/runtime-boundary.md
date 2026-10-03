@@ -89,6 +89,18 @@ The harness is an accident guard and evidence layer, not a universal sandbox.
 - Minimal native-worker metadata records who ran where; it is not acceptance
   evidence. Inspect actual changed outputs.
 
+## Classifying bypass findings
+
+A different spelling or encoding of an already-blocked command (quoting, aliases,
+path spellings, argv re-interpretation or encoded input) is a documented
+limitation, not a defect. The guard's check list grows only when a new
+requirement comes from the protected goals.
+A finding that defeats a protected goal (loss of existing work, unauthorized
+commit or push, permission expansion or forged verification) is a defect
+regardless of mechanism; tampering with a verifier copy is an example.
+This applies to the hook, launchers and local-read tool alike. Reviewers should
+classify their findings with this section.
+
 ## Project protection policy
 
 The adopting project states the files to protect, external actions and approval
@@ -114,6 +126,31 @@ textually identical. A project's `.env` and similar files are a separate scope.
   existing rules. When required work conflicts with the default protection, the
   user decides the policy and support scope; the agent does not relax or bypass
   it automatically.
+
+## Content-directory configuration
+
+The guard reads `content_dirs` from the project root's
+`.claude/harness-config.json`, located relative to the running hook rather than
+the tool's working directory. The published file defaults to `"content_dirs": []`,
+so a nested `template/.claude/` has the same delegate write protection as any
+other control-plane path. A maintainer or consumer that keeps harness copies as
+content can set `"content_dirs": ["template"]` in its own root configuration;
+other plain top-level directory names may also be listed.
+A content directory exempts every path under it from control-plane write
+protection, so do not list names such as `docs` when live control-plane files
+live there.
+
+A missing or unreadable file, invalid JSON, a non-list `content_dirs`, or any
+invalid entry disables the entire exemption list without disabling the hook.
+The file is read as UTF-8 with an optional BOM. Entries must be nonempty directory
+names that do not start with `.`, contain `/`, `\`, `..`, `:` or NUL, or end in a
+dot or space. A configured folder must exist, and its real path must equal the
+plain project-root/name path after the host OS's case normalization; a link or
+junction replacing the folder cannot redirect the exemption. A target must
+resolve below that folder after internal links and junctions are followed, and
+relative paths require a certain working directory. The configuration file
+itself is live control plane: delegate writes require the launcher's authorized
+`HARNESS_ALLOW_CONTROL_PLANE=1` grant, and launcher snapshots include it.
 
 ## Approval and completion
 

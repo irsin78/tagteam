@@ -22,7 +22,7 @@ CP_PATTERN = (
     r'(?:^|/)docs/orchestration/(?:delegation-matrix|retry-policy)\.md$|'
     r'(?:^|/)(?:\.claude/(?:hooks|scripts|rules|agents|skills|commands)(?:/|$)|'
     r'\.codex/hooks(?:/|$)|\.agents/agents(?:/|$)|'
-    r'\.claude/(?:settings(?:\.local)?\.json|sandbox-sensitive\.json|'
+    r'\.claude/(?:settings(?:\.local)?\.json|sandbox-sensitive\.json|harness-config\.json|'
     r'model-bindings(?:\.local)?\.json|\.stop-gate|\.preflight-status)$|'
     r'\.codex/(?:config\.toml|hooks\.json|AGENTS(?:\.override)?\.md)$|'
     r'\.gemini/antigravity-cli/settings\.json$|'
@@ -30,11 +30,23 @@ CP_PATTERN = (
     r'check-windows-aliases\.ps1|check-posix\.sh)$)')
 
 
-# Harness copies kept under these project-root folders (the published template
-# submodule) are content, not this project's live control plane: the hooks that
-# run here are always loaded from the outer .claude/, never from a copy.
-TEMPLATE_DIRS = ('template',)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def content_dirs():
+    """Configured project-root content folders; any invalid input exempts nothing."""
+    try:
+        with open(os.path.join(PROJECT_ROOT, '.claude', 'harness-config.json'), encoding='utf-8-sig') as source:
+            config = json.load(source)
+    except (OSError, ValueError, RecursionError):
+        return ()
+    names = config.get('content_dirs') if isinstance(config, dict) else None
+    if not isinstance(names, list) or any(
+            not isinstance(name, str) or not name or name.startswith('.')
+            or '..' in name or any(char in name for char in '/\\:\0')
+            or name.endswith(('.', ' ')) for name in names):
+        return ()
+    return tuple(names)
 
 
 def clean_path(path):
@@ -42,11 +54,14 @@ def clean_path(path):
 
 
 def template_path(path, cwd):
-    """True only when path resolves on disk inside a template folder at the project root.
+    """True only when path resolves inside a configured content folder at the project root.
 
-    Fails closed: an unknown cwd for a relative path, a missing template folder,
-    or a link/junction that leaves the folder all mean "not exempt".
+    Fails closed: an unknown cwd for a relative path, a missing or redirected
+    content folder, or a target that resolves outside it all mean "not exempt".
     """
+    names = content_dirs()
+    if not names:
+        return False
     if not os.path.isabs(path):
         if cwd is None:
             return False
@@ -58,16 +73,20 @@ def template_path(path, cwd):
         parts = relative.split(os.sep)
         if not parts or parts[0] in ('', '.', '..'):
             return False
-        for name in TEMPLATE_DIRS:
+        for name in names:
             folder = os.path.join(PROJECT_ROOT, name)
+            folder_real = os.path.realpath(folder)
+            # The configured folder itself must be the plain root/name
+            # directory, not a link or junction to another directory.
+            if os.path.normcase(folder_real) != os.path.normcase(folder):
+                continue
             spelled_folder = os.path.join(root, parts[0])
             if not (os.path.isdir(folder) and os.path.isdir(spelled_folder)
                     and os.path.samefile(spelled_folder, folder)):
                 continue
             # Rebuild through the canonical folder spelling, then resolve the
-            # suffix again so a symlink/junction inside template cannot escape.
+            # suffix again so a symlink/junction inside content cannot escape.
             canonical = os.path.realpath(os.path.join(folder, *parts[1:]))
-            folder_real = os.path.realpath(folder)
             if os.path.commonpath((canonical, folder_real)) == folder_real \
                     and canonical != folder_real:
                 return True
@@ -87,7 +106,7 @@ def track_cd(cwd, args):
 
 
 def cp_path(path, cwd=None, certain=True):
-    """Control-plane target? The template exemption needs a certain cwd; the
+    """Control-plane target? The content exemption needs a certain cwd; the
     pattern is matched against the raw path AND its best-effort resolution."""
     if certain and template_path(path, cwd):
         return False

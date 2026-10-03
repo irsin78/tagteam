@@ -520,6 +520,12 @@ for line in sys.stdin:
             self.assertTrue(path.is_file(), f'Missing required orchestration policy: {path}; '
                                            'copy it with the updated host entry instructions.')
 
+    def test_required_operation_guides_are_installed(self):
+        for name in ('harness-install.md', 'harness-launchers.md', 'harness-manual.md'):
+            path = ROOT / 'docs' / name
+            self.assertTrue(path.is_file(), f'Missing required harness guide: {path}; '
+                                           'copy all three guides from the installation copy table.')
+
     def test_exhausted_review_reports_incomplete_without_implementation_fallback(self):
         for role in ('plan_review', 'review_gate', 'review_deep'):
             route = routes.resolve(self.data, 'codex', role,

@@ -21,7 +21,6 @@
       "Bash(git rev-parse:*)",
       "Bash(git commit:*)",
       "Bash(git add:*)",
-      "Bash(git push:*)",
       "Bash(where.exe:*)",
       "Bash(which:*)"
     ],

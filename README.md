@@ -72,10 +72,12 @@ mission documents. The document layout and procedure follow
 Copy the template and shared files into the project, install the instruction
 files as `CLAUDE.md` and `AGENTS.md`, and fill in the project-specific items.
 Connect apps and tools using the
-[installation manual](docs/harness-manual.md#installation).
+[installation manual](docs/harness-install.md#installation).
 
 - [Dependencies](docs/dependencies.md) — what to install per platform and what breaks without it
-- [Copy targets](docs/harness-manual.md#copy-targets) · [Support status](docs/harness-manual.md#support-status)
+- [Copy targets](docs/harness-install.md#copy-targets) · [Support status](docs/harness-install.md#support-status)
 - [Design principles and responsibility boundary](docs/design-principles.md) — model selection rationale, efficiency, adoption success criteria
-- [Harness manual](docs/harness-manual.md) — layout, installation, hook behaviour, operation, checks
+- [Installation](docs/harness-install.md) — copy targets, platforms, hook trust and CLI updates
+- [Launchers](docs/harness-launchers.md) — execution recipes, flags, reports and exit codes
+- [Harness manual](docs/harness-manual.md) — configuration, operation and diagnosis
 - [Runtime boundary and optional tools](docs/runtime-boundary.md) — default hooks, local reads, diagnostics and log cleanup

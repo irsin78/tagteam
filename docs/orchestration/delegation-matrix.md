@@ -11,8 +11,8 @@ scope and verification; request wording, file count and optimistic time estimate
 are not that evidence. If a direct change grows
 past the grounded scope, stop expanding it, preserve the dirty state, announce
 the reclassification and delegate the remaining coherent implementation without
-waiting for a new user turn. A grounded change already complete needs no
-ceremonial redo: verify it and report the actual authorship.
+waiting for a new user turn. Accept a grounded change that is already complete after
+verification, recording the actual authorship.
 Batch related changes into verifiable units; parallelize only independent scopes
 whose saved work exceeds coordination cost. Code locality alone does not establish
 closed behavior. Related helpers count as precedent only where they actually cover
@@ -106,6 +106,9 @@ implementation. An applied A/S implementation adds advisory `plan_first: true`:
 obtain the worker's approach before the full run.
 
 ## One cost score
+For parameter meanings, rationale, examples and tuning, see
+[Time value (waiting cost)](../harness-manual.md#time-value-waiting-cost).
+
 On normal automatic routing, including `volume` enables
 `total = usd + time_cost`. For minutes `m`, tolerance `T` (30) and switch threshold
 `s` (3), attended costs `k * (m/T) ** exponent` through `m <= s` (k=5, exponent=2),
@@ -165,7 +168,7 @@ Unknown/inherited settings stay explicit; a planned route is not a running worke
 Announce material changes before retry/fallback or direct takeover, including lost
 independence. Unchanged retries may reference the first notice; polling needs none.
 Continue authorized work immediately: this is a progress update, not an approval gate.
-Examples and launch recipes: docs/harness-manual.md (read only the needed section).
+Examples and launch recipes: docs/harness-launchers.md (read only the needed section).
 
 ## Availability and fallback
 An exhausted vendor is unavailable without a probe. Only a launcher's

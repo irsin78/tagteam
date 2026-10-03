@@ -56,7 +56,7 @@ acceptance; announcing the next step is not performing it. `plan-check-gate.md`
 covers the conditional external plan review, not routine approval.
 Give workers the confirmed goal/spec, file scope and current inputs, constraints,
 verification and output contract; let them decide reversible details. Use the
-selected launcher directly and read only its recipe in docs/harness-manual.md.
+selected launcher directly and read only its recipe in docs/harness-launchers.md.
 Say in one sentence what you will do before the first tool call of multi-step
 work, and give a brief update when a finding changes the plan, a worker is
 launched or returns, or direction changes.
@@ -88,12 +88,18 @@ launchers (PowerShell: `& <shell> <launcher> ...`), not a WindowsApps alias.
 - Conventions: TODO (path to existing project guidance).
 - Protected files/data and permitted worker scope: TODO (project-specific paths).
 - Consequential risks and required reviews: TODO (effects, not keyword lists).
-- Git commit/push (default; replace to tighten): within a confirmed task this is
-  durable authorization. The orchestrator commits verified checkpoints, staging
-  explicit paths, and pushes them to the current branch's existing upstream
-  without asking, then continues; this includes the default branch. Ask first
-  for force push, history rewrite, tag/release/publish, branch or remote
-  deletion, a new remote/upstream, or any other external service.
+- Git commit/push (default; replace to tighten): within a confirmed task the
+  orchestrator commits verified checkpoints, staging explicit paths, without
+  asking. When the task is complete, ask once and push on a yes. Push earlier
+  only when the next verification needs the remote (CI, deployment), asking
+  at that point. In every variant, ask first for force push, history rewrite,
+  tag/release/publish, branch or remote deletion, a new remote/upstream, or any
+  other external service.
+  Single-owner repository alternative: within a confirmed task this is durable
+  authorization. The orchestrator commits verified checkpoints, staging explicit
+  paths, and pushes them to the current branch's existing upstream without
+  asking, then continues; this includes the default branch. This alternative
+  also requires adding `Bash(git push:*)` to `permissions.allow`.
 - Other external actions/release checks needing authorization: TODO (project workflow).
 - Model/role exceptions: `.claude/model-bindings.local.json` (see .example).
 

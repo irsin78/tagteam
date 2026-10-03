@@ -3,7 +3,7 @@
 This document is the guide used in the template repository when the harness
 itself is modified. Ordinary work in a consuming project follows that project's
 verification and release procedure. Installed files and optional features are
-listed under [Copy targets](harness-manual.md#copy-targets).
+listed under [Copy targets](harness-install.md#copy-targets).
 
 ## Relevant regression checks
 
@@ -38,7 +38,12 @@ When the copy table changes, confirm host routing and installation dependencies
 in a temporary adoption copy containing only those files. Keep the files shared
 by hooks and launchers and the `test_host_routes.py` used by the installation
 checks, and include `gen-codex-hooks.sh` only when the Codex hooks are
-installed. Do not require features that were not selected.
+installed. Copy all three required guides: `docs/harness-install.md`,
+`docs/harness-launchers.md`, and `docs/harness-manual.md`; entry instructions and
+SessionStart reference their separate installation, execution and operation sections.
+Run `test_install_checks.py` for copy-table/anchor regressions and
+`test_host_routes.py` for installed-document dependencies.
+Do not require features that were not selected.
 `--template-dir` / `-TemplateDir` compares only the differences of files that
 are actually installed and does not count an unselected optional feature as
 DRIFT. Whether a file is mandatory is checked against the copy table and the
@@ -87,7 +92,7 @@ compare on the same representative tasks. Distinguish the total volume of
 installation documents, the instructions loaded at host start, and additional
 reads during work. Claude rules without a path condition are loaded
 automatically, so renaming them or moving them within the same folder does not
-reduce load cost. Keep detailed procedures in the existing manual and skills and
+reduce load cost. Keep detailed procedures in the installation/launcher guides, operation manual and skills and
 read only the section that is needed. For Codex, check the entry instructions'
 explicit read paths and the actual additional reads separately.
 

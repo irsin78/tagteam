@@ -7,11 +7,11 @@ import sys
 from pathlib import Path
 
 PLATFORM_NOTES = {
-    "Windows": ("docs/harness-manual.md", "only subsection starting with ### Windows, up to the next ### heading"),
+    "Windows": ("docs/harness-install.md", "only subsection starting with ### Windows, up to the next ### heading"),
     "macOS": ("docs/platform-notes-macos.md", None),
     "Linux": ("docs/platform-notes-linux.md", None),
     "Linux (WSL2)": ("docs/platform-notes-linux.md",
-                     "plus docs/harness-manual.md WSL2 isolation-lane sections"),
+                     "plus docs/harness-launchers.md WSL2 isolation-lane sections"),
 }
 
 def detect_platform(system=None, proc_version=None):

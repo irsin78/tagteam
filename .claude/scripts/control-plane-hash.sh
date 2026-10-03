@@ -31,6 +31,7 @@ def inventory():
     for name in (
         "docs/orchestration/delegation-matrix.md", "docs/orchestration/retry-policy.md",
         ".claude/settings.json", ".claude/settings.local.json", ".claude/sandbox-sensitive.json",
+        ".claude/harness-config.json",
         ".claude/model-bindings.json", ".claude/model-bindings.local.json",
         ".claude/.stop-gate", ".claude/.preflight-status", ".mcp.json",
         ".codex/hooks.json", ".codex/config.toml", ".codex/AGENTS.md", ".codex/AGENTS.override.md",

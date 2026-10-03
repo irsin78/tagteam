@@ -99,11 +99,11 @@ fi
 # the same per-task user approval as codex full access.
 PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
 if [ -z "$PY" ]; then
-    echo "AGY_UNAVAILABLE: python/python3 not found on PATH (the launcher parses agy's JSON with it; on Windows the Store alias stub does not count — docs/harness-manual.md, install section step 0)" >&2
+    echo "AGY_UNAVAILABLE: python/python3 not found on PATH (the launcher parses agy's JSON with it; on Windows the Store alias stub does not count — docs/harness-install.md, install section step 0)" >&2
     exit 2
 fi
 if [ ! -f "$AGY_SETTINGS" ]; then
-    echo "AGY_UNAVAILABLE: agy global settings not found at $AGY_SETTINGS (headless auto-approval unconfigured — docs/harness-manual.md, install section)" >&2
+    echo "AGY_UNAVAILABLE: agy global settings not found at $AGY_SETTINGS (headless auto-approval unconfigured — docs/harness-install.md, install section)" >&2
     exit 2
 fi
 # Parse permissions.allow structurally (a grep would confuse deny entries,
@@ -128,7 +128,7 @@ if [ "${GRANTS%% *}" = 1 ] && [ "${HARNESS_ALLOW_AGY_COMMAND:-}" != "1" ]; then
     exit 4
 fi
 if [ "${GRANTS##* }" != 1 ]; then
-    echo "AGY_UNAVAILABLE: no $REQUIRED_GRANT grant in permissions.allow of $AGY_SETTINGS — configure the write_file grant (docs/harness-manual.md, install section)" >&2
+    echo "AGY_UNAVAILABLE: no $REQUIRED_GRANT grant in permissions.allow of $AGY_SETTINGS — configure the write_file grant (docs/harness-install.md, install section)" >&2
     exit 2
 fi
 if ! command -v agy >/dev/null 2>&1; then

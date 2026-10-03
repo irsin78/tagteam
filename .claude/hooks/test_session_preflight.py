@@ -16,7 +16,8 @@ class StartupTests(unittest.TestCase):
     def test_startup_never_probes(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); (root/'.claude').mkdir(); (root/'docs').mkdir()
-            (root/'docs/harness-manual.md').write_text('manual')
+            for name in ('harness-install.md', 'harness-launchers.md', 'harness-manual.md'):
+                (root/'docs'/name).write_text('guide')
             out=io.StringIO()
             with patch('sys.stdin',io.StringIO(json.dumps({'cwd':temp,'source':'startup'}))), \
                  patch('urllib.request.urlopen',side_effect=AssertionError('network at startup')), \
