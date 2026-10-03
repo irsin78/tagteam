@@ -1,0 +1,58 @@
+{
+  "schema_version": 3,
+  "bands": {
+    "order": ["E", "D", "C", "B", "A", "S"],
+    "E": {"min_index": 0}, "D": {"min_index": 30}, "C": {"min_index": 40},
+    "B": {"min_index": 48}, "A": {"min_index": 52},
+    "S": {"lanes": {"openai": "top-openai", "claude": "top-claude"},
+          "foreground_effort": "high", "detached_effort": "xhigh"}
+  },
+  "latency": {"interactive": 10, "foreground": 60, "detached": null},
+  "roles": {
+    "implement": {"band_floor": "B"}, "write": {"band_floor": "C"},
+    "explore": {"band_floor": "E"}, "decide": {"band_floor": "B"},
+    "plan_review": {"band_floor": "B"}, "review_gate": {"band_floor": "C"},
+    "review_deep": {"band_floor": "B"}, "web": {"band_floor": "E"},
+    "image_verify": {"band_floor": "D"}
+  },
+  "selection_policy": {
+    "cost_tie_pct": 15, "attempt_cap": 3,
+    "assessment": {
+      "dimensions": {"open": [], "tangle": [], "precedent": [], "verifier": [], "consequence": []},
+      "difficulty": ["tangle", "precedent"], "exposure": ["verifier", "consequence"],
+      "mapping": [["C", "B", "A"], ["B", "B", "A"], ["A", "A", "S"]],
+      "minimum_by_role": {"implement": "C", "write": "C"}
+    },
+    "time_cost": {"tolerance_min": 30, "exponent": 2, "switch_after_min": 3, "default_mode": "attended",
+                  "modes": {"attended": {"k": 5, "refocus_usd": 5, "slope_usd_per_tolerance": 1.5},
+                            "background": {"k": 0, "refocus_usd": 0, "slope_usd_per_tolerance": 1.5},
+                            "unattended": {"k": 0, "refocus_usd": 0, "slope_usd_per_tolerance": 0.25}}},
+    "estimates": {
+      "direct": {"0": {"usd": 3.8, "minutes": 6.5}, "1": {"usd": 6.8, "minutes": 13.8}, "2": {"usd": 13.6, "minutes": 30.4}},
+      "delegate_overhead": {"0": {"usd": 2.8, "minutes": 3.6}, "1": {"usd": 7.2, "minutes": 20.7}, "2": {"usd": 9, "minutes": 20}},
+      "worker": {"task_units": {"0": 1, "1": 2.5, "2": 4}, "base_minutes": {"0": 4, "1": 15, "2": 30},
+                 "reference_ttft_s": 58, "speed_clamp": [0.5, 3], "min_records": 2},
+      "history_days": 14
+    }
+  },
+  "workers": [
+    {
+      "id": "fast", "vendor": "openai", "model": "fixture-model", "effort": "high",
+      "tier": "B", "status": "active", "launcher": ".claude/scripts/codex-run.sh",
+      "metrics": {"index": 50, "cost": 0.3, "ttft_s": 58, "tps": 65, "provisional": false},
+      "estimates": {"0": {"usd": 0.3, "minutes": 16.4}},
+      "probe": {"date": "2026-10-02", "result": "fixture", "cli": "stub"},
+      "roles": {"implement": 1, "write": 1, "explore": 1, "decide": 1,
+                "plan_review": 1, "review_gate": 1, "review_deep": 1, "web": 1, "image_verify": 1}
+    },
+    {
+      "id": "slow", "vendor": "openai", "model": "fixture-model", "effort": "max",
+      "tier": "B", "status": "active", "launcher": ".claude/scripts/codex-run.sh",
+      "metrics": {"index": 51, "cost": 0.1, "ttft_s": 100, "tps": 65, "provisional": false},
+      "estimates": {"0": {"usd": 0.1, "minutes": 26.4}},
+      "probe": {"date": "2026-10-02", "result": "fixture", "cli": "stub"},
+      "roles": {"implement": 2, "write": 2, "explore": 2, "decide": 2,
+                "plan_review": 2, "review_gate": 2, "review_deep": 2, "web": 2, "image_verify": 2}
+    }
+  ]
+}

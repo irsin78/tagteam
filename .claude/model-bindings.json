@@ -17,12 +17,10 @@
         ],
         "from_model_table": [
           "claude-fable-5-1",
-          "claude-opus-5",
-          "claude-sonnet-5",
           "claude-haiku-4-5"
         ],
         "source": "Claude Code 2.1.280; IDs not probed come from the claude-api skill model table (cached 2026-06-24)",
-        "note": "In-process agents pin effort in frontmatter (opus-architect high, claude-implementer medium), so the alias switch to Opus 5.5 does not change their effort. claude-run.sh passes --effort explicitly. Opus 5.5's API default effort is medium (one below Opus 5's high) — never rely on the default."
+        "note": "In-process agents pin effort in frontmatter; claude-run.sh passes --effort explicitly. Opus 5.5 API default effort is medium; never rely on the default."
       }
     },
     "openai": {
@@ -43,19 +41,12 @@
         "listed": [
           "gpt-6.1-sol (priority 1)",
           "gpt-6-astra (priority 2)",
-          "gpt-6-sol (priority 3)",
-          "gpt-6-luna (priority 4)",
-          "gpt-reserve (priority 4)",
-          "gpt-5.6-sol (priority 5)",
-          "gpt-5.6-terra (priority 8)",
-          "gpt-5.6-luna (priority 9)",
-          "gpt-5.5 (priority 13)"
+          "gpt-6-luna (priority 4)"
         ],
         "probe": {
           "date": "2026-10-01",
           "command": "codex exec -m <model> -c model_reasoning_effort=<effort> -s read-only --skip-git-repo-check \"Reply with exactly: OK\" < /dev/null",
           "gpt-6.1-sol": "OK at medium (3,841 tokens) and high (3,842 tokens) on codex-cli 0.159.3, 2026-10-01: rollout reached this ChatGPT account. History: 2026-09-30 on codex-cli 0.158.0 it was refused with HTTP 400 'not supported when using Codex with a ChatGPT account' while the rollout was pending.",
-          "gpt-6-sol": "OK (5,125 tokens)",
           "note": "A catalog or leaderboard listing is not runnability. A candidate enters alternatives/pending_replacement only with a probe result and date; it becomes a worker row only after a successful probe on the installed CLI and account.",
           "stdin_note": "codex-cli 0.159.x reads additional input from stdin when it is not closed; a manual probe without '< /dev/null' waits instead of answering. The launchers already pass the prompt on stdin."
         }
@@ -69,22 +60,8 @@
         "checked": "2026-10-01",
         "source": "agy models (agy 1.2.14)",
         "listed": [
-          "gemini-3.8-flash (high/medium/low)",
-          "gemini-3.7-flash (high/medium/low)",
-          "gemini-3.6-flash (high/medium/low)",
-          "gemini-3.1-pro (high/low)",
-          "claude-sonnet-4-6 (thinking)",
-          "claude-opus-4-6-thinking",
-          "gpt-oss-120b-medium"
-        ],
-        "not_listed": [
-          "gemini-4-argon (released September 2026 per AA; not offered by agy on 2026-10-01 — rollout to this account pending per user, expected within a day or two)"
-        ],
-        "probe": {
-          "date": "2026-10-01",
-          "command": "agy models < /dev/null",
-          "gemini-4-argon": "NOT LISTED in agy 1.2.14 model list; re-check with `agy models` before activating the row."
-        }
+          "gemini-3.8-flash (high/medium/low)"
+        ]
       }
     },
     "local": {
@@ -125,7 +102,7 @@
         "note": "max is -b + --wait only. Codex delegate ultra is refused because it redelegates automatically. Model and app support evidence follows vendors.openai.guidance_sources.",
         "effort_rule": "Use the selected host/role binding and launcher-supported effort; no common vendor-independent effort floor."
       },
-      "band_floor": "A",
+      "band_floor": "B",
       "latency_default": "foreground"
     },
     "implement": {
@@ -165,7 +142,6 @@
         "D"
       ],
       "excluded": [
-        "gpt-5.6-luna",
         "claude-haiku-4-5",
         "gpt-6-luna"
       ],
@@ -173,7 +149,7 @@
       "latency_default": "foreground"
     },
     "plan_review": {
-      "band_floor": "A",
+      "band_floor": "B",
       "latency_default": "foreground"
     },
     "review_gate": {
@@ -181,7 +157,7 @@
       "latency_default": "foreground"
     },
     "review_deep": {
-      "band_floor": "A",
+      "band_floor": "B",
       "latency_default": "foreground"
     },
     "explore": {
@@ -258,7 +234,7 @@
         "url": "https://artificialanalysis.ai/leaderboards/models",
         "provides": "intelligence index; cost, latency and speed per effort",
         "updated": "2026-09-30",
-        "note": "9-30 recheck (GPT-6.1 Sol released 9-29): index scale unchanged since 9-23 (GPT-6 Astra max still 53 / $3.26; Opus 5.5 max 58, Fable 5.1 max 53). GPT-6.1 Sol per-effort grid read in the browser from /models/gpt-6-1-sol[-<effort>]: low 42 / $0.13, medium 48 / $0.21, high 50 / $0.32, xhigh 51 / $0.39, max 52 / $0.72; output 59-69 t/s; TTFT range 2.1s (low) to 206s (max) per the haiku-fetcher summary, per-effort TTFT not read. Earlier 9-23 note: index rescaled on 9-23 (scale_note); default 'Current' filter hides deprecated models (Opus 5, GPT-5.6 Sol), their max rows come from the per-model pages."
+        "note": "Per-effort index, cost and TTFT observations remain in each worker metrics record with their source and read date. Band labels are maintained independently of index rescaling."
       },
       "deepswe": {
         "rank": "secondary",
@@ -267,7 +243,7 @@
         "provides": "long-horizon agentic implementation pass@1, effort sensitivity",
         "updated": "2026-09-22",
         "checked": "2026-09-30",
-        "note": "v1.1, 113 tasks, still updated 2026-09-22 on the 9-30 check. No gpt-6.1-sol, gpt-6-sol, gpt-6-luna or claude-opus-5.5; Terra and Fable 5.1 still absent. GPT-6 Astra xhigh 74% $4.43 (cost per task fell from $6.52 on 9-03). The public page shows one effort row per model; the per-effort grid needs the 'All effort levels' toggle in the browser.",
+        "note": "v1.1, 113 tasks, updated 2026-09-22 on the 2026-09-30 check. No GPT-6.1 Sol, GPT-6 Luna, Opus 5.5 or Fable 5.1 row yet. Astra xhigh: 74%, $4.43 per task. Per-effort rows require the All effort levels view.",
         "rationale": "Updated later than the primary (AA) but measured on long-horizon agentic tasks, so it is highly reliable — hence secondary. When a new model is on AA but not yet on DeepSWE, fill the slot from the primary and re-check once DeepSWE lists it (policy.rules)."
       },
       "llm_stats": {
@@ -276,7 +252,7 @@
         "url": "https://llm-stats.com",
         "provides": "sub-scores by field, Code Arena, list prices",
         "updated": "2026-09-30",
-        "note": "9-30: GPT-6.1 Sol released 2026-09-29, $2/$10 per 1M (cached input $0.10; GPT-6 Sol $0.20), 1.1M context / 128K output, described as near-Astra for complex coding at lower cost; no sub-scores or Code Arena rank populated yet. Claude Opus 5.5 released 2026-09-22: $4/$20 per 1M (cached input $0.20), 1M context, 128K output; LLM Stats scores reasoning 57.8 / coding 51.7 / agent 44.5. Opus 5 $5/$25. No SWE-bench / Code Arena numbers shown."
+        "note": "2026-09-30: GPT-6.1 Sol ($2/$10 per 1M, cached input $0.10) and Opus 5.5 ($4/$20 per 1M, cached input $0.20) have 128K output. No SWE-bench or Code Arena figures populated for these rows."
       },
       "openlm": {
         "rank": "reference",
@@ -300,23 +276,120 @@
         "date": "2026-09-29",
         "trigger": "Claude Sonnet 5.5 release (2026-09-28); previous: Opus 5.5 release (2026-09-22) + AA effort grid",
         "open": [
-          "DeepSWE rows for claude-opus-5.5, gpt-6-sol, gpt-6-luna (A/B/C claude cells and pending_replacement are AA-only until then)",
-          "AA per-effort grid and DeepSWE row for claude-sonnet-5-5 (recorded as an A/claude alternative, not adopted)"
+          "DeepSWE rows for claude-opus-5-5, gpt-6.1-sol and gpt-6-luna; affected metrics remain provisional until then"
         ]
       }
     }
   },
-  "scale_note": "2026-09-23 recheck: the AA Intelligence Index was rescaled AGAIN (9-06 -> 9-23: GPT-6 Astra xhigh 54 -> 52, Gemini 3.8 Flash high 47 -> 41, Opus 5 max 54 -> 51, Haiku 4.5 22 -> 17). Every intelligence_index / effective_cost / ttft_s in this file is on the 9-23 scale unless a cell says 'frozen at 9-06 scale'. AA now marks Claude Opus 5 and GPT-5.6 Sol as deprecated (only their max row is still benchmarked), so their per-effort grids cannot be rebased. Trigger for this recheck: Claude Opus 5.5 released 2026-09-22 (claude-opus-5-5, $4/$20, verified live in Claude Code 2.1.280); the codex catalog also listed gpt-6-sol and gpt-6-luna. DeepSWE (updated 2026-09-22) does not yet list Opus 5.5, GPT-6 Sol or GPT-6 Luna.",
+  "scale_note": "Index observations use the source scale and read date recorded in metrics. Band labels are independent of leaderboard index values; an external rescale does not invalidate bindings.",
   "selection_policy": {
     "basis": "Benchmarks (capability, cost, latency, source, date) set initial bindings. Preserve measured scores and distinguish unmeasured cells.",
     "objective": "Sufficient task capability at efficient total completion cost/time, including handoff, verification and retries.",
     "adjust_when": "Repeated real-task mismatch; inspect existing run evidence and use local overrides for project-specific differences.",
-    "scope": "Selection orders eligible rows by measured cost with a ±cost_tie_pct tie broken by TTFT; no composite index. Bands are index floors except S (model-fixed).",
+    "scope": "Automatic assessment with volume compares USD plus declared waiting-time cost for workers and eligible direct work. Availability and trust precede the score; latency does not filter scored rows. Other paths retain measured-cost ordering with cost_tie_pct ties broken by TTFT. Bands are independent of metrics.index; S is fixed by vendor line.",
     "cross_review": "Host chooses the orchestrator; actual artifact authors choose eligible implementers/reviewers. Pass all authors using --author-vendor. Reviews require explicit provenance and a fresh worker; different vendors do not guarantee correctness.",
     "cost_tie_pct": 15,
-    "promotion_delta": 3,
     "attempt_cap": 3,
-    "trust_note": "A row with \"trust\": \"low\" sorts after every other eligible row in selection and in the floor_met:false fallback. It is a user call on a new model, not a measurement."
+    "assessment": {
+      "dimensions": {
+        "open": [
+          "no unresolved design decisions",
+          "small and reversible decisions",
+          "structural decisions"
+        ],
+        "tangle": [
+          "one module or screen must change",
+          "a few modules or screens must change together",
+          "many modules or screens must change together"
+        ],
+        "precedent": [
+          "copyable repository implementation",
+          "partial repository precedent",
+          "no repository precedent"
+        ],
+        "verifier": [
+          "a failing check exists or is cheap to add",
+          "partial verification",
+          "no verifier"
+        ],
+        "consequence": [
+          "verification-tiering Tier 0",
+          "verification-tiering Tier 1",
+          "verification-tiering Tier 2"
+        ]
+      },
+      "difficulty": [
+        "tangle",
+        "precedent"
+      ],
+      "exposure": [
+        "verifier",
+        "consequence"
+      ],
+      "mapping_note": "Rows are difficulty 0/1/2; columns are exposure 0/1/2. Recent reasoning failure raises one band before the role minimum.",
+      "mapping": [
+        [
+          "C",
+          "B",
+          "A"
+        ],
+        [
+          "B",
+          "B",
+          "A"
+        ],
+        [
+          "A",
+          "A",
+          "S"
+        ]
+      ],
+      "minimum_by_role": {
+        "implement": "C",
+        "write": "C",
+        "decide": "band_floor",
+        "plan_review": "band_floor",
+        "review_gate": "band_floor",
+        "review_deep": "band_floor",
+        "explore": "band_floor",
+        "web": "band_floor",
+        "image_verify": "band_floor"
+      }
+    },
+    "time_cost": {
+      "tolerance_min": 30,
+      "exponent": 2,
+      "switch_after_min": 3,
+      "note": "Minutes m, tolerance T, switch s: attended costs k*(m/T)^exponent for m<=s, otherwise refocus_usd+slope_usd_per_tolerance*(m-s)/T; background/unattended cost refocus_usd+slope_usd_per_tolerance*m/T. Numeric modes retain the legacy pure-convex k*(m/T)^exponent formula. Keep refocus_usd >= k*(s/T)^exponent, otherwise the cost drops just past the switch point and a slightly slower option can look cheaper.",
+      "default_mode": "attended",
+      "modes": {
+        "attended": {"k": 5, "refocus_usd": 5, "slope_usd_per_tolerance": 1.5},
+        "background": {"k": 0, "refocus_usd": 0, "slope_usd_per_tolerance": 1.5},
+        "unattended": {"k": 0, "refocus_usd": 0, "slope_usd_per_tolerance": 0.25}
+      }
+    },
+    "estimates": {
+      "note": "Provisional seed values from one measurement run per cell (delegate_overhead and worker values: thin-orchestration runs of 2026-10-02 with the worker advisor cost excluded, because the Claude launcher disables the advisor for workers); direct and delegate_overhead were measured with an A-band orchestrator. Volume 0 small, 1 medium, 2 large. Repeated matching DONE run records replace formula worker minutes.",
+      "direct": {
+        "0": {"usd": 3.8, "minutes": 6.5},
+        "1": {"usd": 6.8, "minutes": 13.8},
+        "2": {"usd": 13.6, "minutes": 30.4}
+      },
+      "delegate_overhead": {
+        "0": {"usd": 2.7, "minutes": 6.6},
+        "1": {"usd": 1.8, "minutes": 8.5},
+        "2": {"usd": 6.7, "minutes": 13.7}
+      },
+      "worker": {
+        "task_units": {"0": 0.5, "1": 1, "2": 2.5},
+        "base_minutes": {"0": 6, "1": 9, "2": 19},
+        "reference_ttft_s": 58,
+        "speed_clamp": [0.5, 3],
+        "min_records": 2
+      },
+      "history_days": 14
+    },
+    "cross_lane_s": true
   },
   "workers": [
     {
@@ -335,7 +408,7 @@
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "note": "AA 9-23 GPT-6 Astra: max 53 / $3.26 / 342s, xhigh 52 / $2.31 / 210s, high 51 / $1.73 / 79s, medium 50 / $1.54 / 6.2s, low 46 / $0.82 / 2.8s. DeepSWE 9-22 (cost per task fell since 9-03): xhigh 74% $4.43, high 73% $3.92, medium 73% $3.08, low 67% $1.60. Effort-insensitive from medium up on both sources. Opus 5.5 xhigh (56) now sits above Astra at every effort on AA; Astra stays the A/openai cell because this column is the cross-vendor second opinion for a Claude host. List price $10/$50.",
+      "note": "OpenAI S lane at foreground effort; measured cost and TTFT are recorded in metrics.",
       "intelligence_index": 51,
       "effective_cost": 1.73,
       "deepswe_pass1": {
@@ -352,14 +425,8 @@
           "claude": 3,
           "codex": 5
         },
-        "decide": {
-          "claude": 1,
-          "codex": 2
-        },
-        "plan_review": {
-          "claude": 1,
-          "codex": 2
-        },
+        "decide": 100,
+        "plan_review": 100,
         "write": 100,
         "review_gate": 100,
         "review_deep": 100
@@ -443,10 +510,8 @@
       "roles": {
         "implement": 102,
         "write": 102,
-        "decide": 102,
-        "plan_review": 102,
         "review_gate": 102,
-        "review_deep": 102
+        "image_verify": 1
       }
     },
     {
@@ -549,105 +614,6 @@
       }
     },
     {
-      "id": "sol6-high",
-      "model": "gpt-6-sol",
-      "vendor": "openai",
-      "effort": "high",
-      "tier": "C",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": true,
-      "metrics": {
-        "index": 43,
-        "cost": 0.38,
-        "ttft_s": 19.2,
-        "tps": 66,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli 0.158.0"
-      },
-      "roles": {
-        "implement": 106,
-        "write": 106,
-        "decide": 106,
-        "plan_review": 106,
-        "review_gate": 106,
-        "review_deep": 106
-      }
-    },
-    {
-      "id": "sol6-xhigh",
-      "model": "gpt-6-sol",
-      "vendor": "openai",
-      "effort": "xhigh",
-      "tier": "C",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 44,
-        "cost": 0.52,
-        "ttft_s": 50.6,
-        "tps": 70,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli 0.158.0"
-      },
-      "roles": {
-        "implement": 107,
-        "write": 107,
-        "decide": 107,
-        "plan_review": 107,
-        "review_gate": 107,
-        "review_deep": 107
-      }
-    },
-    {
-      "id": "sol6-max",
-      "model": "gpt-6-sol",
-      "vendor": "openai",
-      "effort": "max",
-      "tier": "B",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 48,
-        "cost": 1.05,
-        "ttft_s": 185.7,
-        "tps": 76,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli 0.158.0"
-      },
-      "roles": {
-        "implement": 108,
-        "write": 108,
-        "decide": 108,
-        "plan_review": 108,
-        "review_gate": 108,
-        "review_deep": 108
-      }
-    },
-    {
       "id": "luna6-high",
       "model": "gpt-6-luna",
       "vendor": "openai",
@@ -674,35 +640,6 @@
       "roles": {
         "implement": 109,
         "write": 109
-      }
-    },
-    {
-      "id": "luna6-xhigh",
-      "model": "gpt-6-luna",
-      "vendor": "openai",
-      "effort": "xhigh",
-      "tier": "D",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 34,
-        "cost": 0.04,
-        "ttft_s": 20.1,
-        "tps": 131,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli 0.158.0"
-      },
-      "roles": {
-        "implement": 110,
-        "write": 110
       }
     },
     {
@@ -820,46 +757,12 @@
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "note": "Tier B judgment, verification (review_deep), image hard cases and the Codex-host implementation entry. Does not pin the main session's model. 2026-09-23 Opus 5 high -> Opus 5.5 high: AA 54 / $1.82 / 40s vs Opus 5 high 52 / $2.44 / 21s on the 9-06 scale (Opus 5 is deprecated on AA; only max=51 remains on the 9-23 scale). Cheaper per task and per token ($4/$20 vs $5/$25); TTFT roughly doubles. Opus 5.5 medium (51 / $1.34 / 24s) is the latency alternative. Recheck when DeepSWE lists claude-opus-5.5.",
+      "note": "Main Claude line. Judgement roles start at high; medium remains eligible for implementation, writing and review gates.",
       "intelligence_index": 54,
       "effective_cost": 1.82,
       "deepswe_pass1": {
-        "_status": "not listed as of 2026-09-22",
-        "_line_prior": "claude-opus-5 high 73% ($6.08)"
+        "_status": "not listed as of 2026-09-22"
       },
-      "alternatives": [
-        {
-          "model": "claude-opus-5-5",
-          "effort": "medium",
-          "intelligence_index": 51,
-          "effective_cost": 1.34,
-          "ttft_s": 24,
-          "condition": "B work where 40s first-token latency hurts",
-          "evidence": "leaderboard",
-          "sources": [
-            "artificial_analysis"
-          ]
-        },
-        {
-          "model": "claude-opus-5",
-          "effort": "high",
-          "intelligence_index": null,
-          "effective_cost": null,
-          "ttft_s": 21,
-          "deepswe_pass1": {
-            "low": 0.58,
-            "medium": 0.69,
-            "high": 0.73,
-            "xhigh": 0.73,
-            "max": 0.74
-          },
-          "condition": "Previous binding; AA deprecated (9-06 scale: 52 / $2.44), DeepSWE-verified. Fallback if Opus 5.5 misbehaves on a task",
-          "evidence": "leaderboard",
-          "sources": [
-            "deepswe"
-          ]
-        }
-      ],
       "id": "opus55-high",
       "tier_cell": true,
       "roles": {
@@ -909,59 +812,12 @@
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "note": "2026-09-23 Fable 5.1 xhigh -> Opus 5.5 xhigh. AA 9-23: Opus 5.5 xhigh 56 / $3.46 / 160s is the top of the board (max 58 / $5.98); Fable 5.1 xhigh is 53 / $5.98 / 126s. DeepSWE has no Opus 5.5 row yet, but its prior for the two lines already points the same way (Opus 5 max 74% vs Fable 5 xhigh 70%). Opus 5.5 high (54 / $1.82 / 40s) matches Fable 5.1 xhigh at a third of the cost — the fast A. This cell does not change the main session's model (roles.orchestrate); it drives the Codex-host decide/plan_review route and Claude implement step 1. Recheck when DeepSWE lists claude-opus-5.5.",
+      "note": "Main Claude line. Judgement roles start at high; medium remains eligible for implementation, writing and review gates.",
       "intelligence_index": 56,
       "effective_cost": 3.46,
       "deepswe_pass1": {
-        "_status": "not listed as of 2026-09-22",
-        "_line_prior": "claude-opus-5 max 74% / claude-fable-5 xhigh 70%"
+        "_status": "not listed as of 2026-09-22"
       },
-      "alternatives": [
-        {
-          "model": "claude-opus-5-5",
-          "effort": "high",
-          "intelligence_index": 54,
-          "effective_cost": 1.82,
-          "ttft_s": 40,
-          "condition": "A-tier judgment when latency matters (same score as Fable 5.1 xhigh)",
-          "evidence": "leaderboard",
-          "sources": [
-            "artificial_analysis"
-          ]
-        },
-        {
-          "model": "claude-fable-5-1",
-          "effort": "xhigh",
-          "intelligence_index": 53,
-          "effective_cost": 5.98,
-          "ttft_s": 126,
-          "deepswe_pass1": {
-            "_model": "claude-fable-5 (5.1 not listed)",
-            "high": 0.69,
-            "xhigh": 0.7,
-            "max": 0.7
-          },
-          "condition": "Only when the user has selected Fable as the main model; AA 9-23 max 53 / $7.63 / 312s, medium 49, low 47",
-          "evidence": "leaderboard",
-          "sources": [
-            "artificial_analysis",
-            "deepswe"
-          ]
-        },
-        {
-          "model": "claude-sonnet-5-5",
-          "effort": null,
-          "intelligence_index": 56,
-          "effective_cost": 7.6,
-          "ttft_s": 353,
-          "condition": "Not adopted (2026-09-29): AA lists one row only (effort not shown) with the same index as Opus 5.5 xhigh at 2.2x the cost per task and latency, and AA notes it is very verbose. Released 2026-09-28, $2/$10 per M tokens, efforts low..max. Recheck when AA posts the per-effort grid or DeepSWE lists it.",
-          "evidence": "leaderboard",
-          "sources": [
-            "artificial_analysis"
-          ],
-          "updated": "2026-09-29"
-        }
-      ],
       "id": "opus55-xhigh",
       "tier_cell": false,
       "roles": {
@@ -1015,26 +871,10 @@
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "excluded": [
-        {
-          "model": "claude-sonnet-5",
-          "reason": "AA 9-23: Sonnet 5 max 38 / $5.09 / 150s, high 32 / $1.79 / 9.5s vs Opus 5.5 medium 51 / $1.34 / 24s; DeepSWE Sonnet 5 max 54% ($26.40) vs Opus 5 medium 69% ($3.29) — behind on score and effective cost at every effort"
-        },
-        {
-          "model": "claude-opus-5-5",
-          "effort": "low",
-          "reason": "AA 42 / $0.55 / 7s — below the C band (Astra low 46); listed as a D alternative instead"
-        },
-        {
-          "model": "claude-sonnet-5-5",
-          "reason": "AA 9-29: single row 56 / $7.60 / 353s with no per-effort grid, so it cannot be placed at C; kept as an A/claude alternative until AA or DeepSWE give effort-level data"
-        }
-      ],
       "deepswe_pass1": {
-        "_status": "not listed as of 2026-09-22",
-        "_line_prior": "claude-opus-5 medium 69% ($3.29)"
+        "_status": "not listed as of 2026-09-22"
       },
-      "note": "Tier C standard route on the Claude side (Codex-host review_gate / write / explicit --tier C implementation). 2026-09-23 Opus 5 medium -> Opus 5.5 medium: AA 51 / $1.34 / 24s vs Opus 5 medium 50 / $1.36 / 6.1s (9-06 scale). Same cost per task, higher index on a lowered scale, but first-token latency 6s -> 24s. Opus 5.5 low (42 / $0.55 / 7s) is too weak for C (peer C/openai Astra low is 46).",
+      "note": "Main Claude line. Judgement roles start at high; medium remains eligible for implementation, writing and review gates.",
       "id": "opus55-medium",
       "tier_cell": true,
       "roles": {
@@ -1046,10 +886,7 @@
           "claude": 2,
           "codex": 1
         },
-        "implement": 116,
-        "decide": 116,
-        "plan_review": 116,
-        "review_deep": 116
+        "implement": 116
       },
       "launcher": ".claude/scripts/claude-run.sh",
       "metrics": {
@@ -1067,40 +904,6 @@
         "date": "2026-09-30",
         "result": "OK",
         "cli": "Claude Code 2.1.283"
-      }
-    },
-    {
-      "id": "opus55-low",
-      "model": "claude-opus-5-5",
-      "vendor": "claude",
-      "effort": "low",
-      "tier": "C",
-      "status": "active",
-      "launcher": ".claude/scripts/claude-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 42,
-        "cost": 0.55,
-        "ttft_s": 14.3,
-        "tps": 72,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true,
-        "note": "AA 'with fallback' configuration"
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "Claude Code 2.1.283"
-      },
-      "roles": {
-        "implement": 117,
-        "write": 117,
-        "decide": 117,
-        "plan_review": 117,
-        "review_gate": 117,
-        "review_deep": 117
       }
     },
     {
@@ -1139,147 +942,6 @@
       }
     },
     {
-      "id": "sonnet55-high",
-      "model": "claude-sonnet-5-5",
-      "vendor": "claude",
-      "effort": "high",
-      "tier": "C",
-      "status": "active",
-      "launcher": ".claude/scripts/claude-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 47,
-        "cost": 1.08,
-        "ttft_s": 14.5,
-        "tps": 92,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true,
-        "note": "AA 'with fallback' configuration"
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "Claude Code 2.1.283",
-        "note": "CLI unrecognized_model warning; probe OK"
-      },
-      "roles": {
-        "implement": 119,
-        "write": 119,
-        "decide": 119,
-        "plan_review": 119,
-        "review_gate": 119,
-        "review_deep": 119
-      }
-    },
-    {
-      "id": "sonnet55-xhigh",
-      "model": "claude-sonnet-5-5",
-      "vendor": "claude",
-      "effort": "xhigh",
-      "tier": "A",
-      "status": "active",
-      "launcher": ".claude/scripts/claude-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 52,
-        "cost": 2.74,
-        "ttft_s": 33.5,
-        "tps": 103,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true,
-        "note": "AA 'with fallback' configuration"
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "Claude Code 2.1.283",
-        "note": "CLI unrecognized_model warning; probe OK"
-      },
-      "roles": {
-        "implement": 120,
-        "write": 120,
-        "decide": 120,
-        "plan_review": 120,
-        "review_gate": 120,
-        "review_deep": 120
-      }
-    },
-    {
-      "vendor": "openai",
-      "model": "gpt-5.6-sol",
-      "effort": "high",
-      "id": "sol-high",
-      "tier": "C",
-      "tier_cell": false,
-      "roles": {
-        "implement": {
-          "claude": 1,
-          "codex": 3
-        }
-      },
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "scored": false,
-      "metrics": {
-        "index": null,
-        "cost": 0.61,
-        "ttft_s": 19,
-        "tps": null,
-        "source": "artificial_analysis",
-        "read": "2026-09-06",
-        "deepswe_pass1": 0.69,
-        "provisional": false,
-        "frozen": "9-06 scale",
-        "note": "AA deprecated 9-23; 9-06 index 48 was on the pre-rescale scale"
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli"
-      }
-    },
-    {
-      "model": "gpt-5.6-terra",
-      "effort": "medium",
-      "intelligence_index": 30,
-      "effective_cost": 0.18,
-      "ttft_s": 2.1,
-      "condition": "Image verification default (codex -i)",
-      "evidence": "leaderboard",
-      "sources": [
-        "artificial_analysis"
-      ],
-      "vendor": "openai",
-      "route": "codex -i",
-      "id": "terra-medium",
-      "tier": "D",
-      "tier_cell": true,
-      "roles": {
-        "image_verify": 1
-      },
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "metrics": {
-        "index": 30,
-        "cost": 0.18,
-        "ttft_s": 1.9,
-        "tps": 77,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli"
-      }
-    },
-    {
       "tier": "E",
       "vendor": "claude",
       "model": "claude-haiku-4-5",
@@ -1295,20 +957,6 @@
       "note": "Non-reasoning isolation worker (explore / web). AA 9-23: 17 / $0.21 / first chunk 23.1s (non-reasoning variant 15* / 0.63s). Opus 5.5 low (42 / $0.55 / 7s) is 2.5x the cost per task for 2.5x the index and a faster first token — use it when a D read needs judgment.",
       "intelligence_index": 17,
       "effective_cost": 0.21,
-      "alternatives": [
-        {
-          "model": "claude-opus-5-5",
-          "effort": "low",
-          "intelligence_index": 42,
-          "effective_cost": 0.55,
-          "ttft_s": 7,
-          "condition": "D reads that need some judgment (summaries feeding a decision)",
-          "evidence": "leaderboard",
-          "sources": [
-            "artificial_analysis"
-          ]
-        }
-      ],
       "id": "haiku45",
       "tier_cell": true,
       "roles": {
@@ -1356,25 +1004,6 @@
         "medium": 0.71,
         "high": 0.74
       },
-      "alternatives": [
-        {
-          "model": "gemini-3.8-flash",
-          "effort": "high",
-          "intelligence_index": 41,
-          "effective_cost": 1.24,
-          "ttft_s": 14,
-          "output_speed_tps": 287,
-          "deepswe_pass1": {
-            "high": 0.74
-          },
-          "condition": "long writing or implementation (DeepSWE 74% $2.36; AA ties with medium)",
-          "evidence": "leaderboard",
-          "sources": [
-            "artificial_analysis",
-            "deepswe"
-          ]
-        }
-      ],
       "id": "flash-medium",
       "tier_cell": true,
       "roles": {
@@ -1459,36 +1088,6 @@
         "local_endpoint": true
       },
       "scored": false
-    },
-    {
-      "id": "argon-high",
-      "vendor": "google",
-      "model": "gemini-4-argon",
-      "effort": "high",
-      "tier": "A",
-      "status": "unverified",
-      "launcher": ".claude/scripts/agy-run.sh",
-      "tier_cell": true,
-      "metrics": {
-        "index": 53,
-        "cost": 1.99,
-        "ttft_s": null,
-        "tps": null,
-        "source": "artificial_analysis",
-        "read": "2026-10-01",
-        "deepswe_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-10-01",
-        "result": "NOT LISTED: absent from `agy models` (agy 1.2.14); rollout pending per user",
-        "cli": "agy 1.2.14"
-      },
-      "roles": {
-        "write": 5
-      },
-      "note": "AA 2026-10-01: Gemini 4 Argon (high) 53 / $1.99 per task, $2/$10 per 1M, 1M context; only the high effort is published, output speed and TTFT not yet measured (so the router treats it as detached-only until they are). Not on DeepSWE. Index 53 is the A band; whether it should join band S as a Google lane is a user decision (S is model-fixed: Fable/Astra). agy has no command grant, so implementation through agy still needs codex-side verification. The agy model id may differ from 'gemini-4-argon' (agy uses suffixed ids such as gemini-3.8-flash-high); confirm it from `agy models` when the rollout arrives. User decision 2026-10-01: trust is still low, so even after activation it ranks after every other A-band row (trust: low) and is chosen only when nothing else qualifies. Revisit with real-run results (harness-stats.sh) or a DeepSWE listing.",
-      "trust": "low"
     }
   ],
   "bands": {
@@ -1501,7 +1100,7 @@
       "S"
     ],
     "S": {
-      "name": "Breakthrough / open design",
+      "name": "Vendor top line",
       "model_fixed": true,
       "lanes": {
         "claude": "claude-fable-5-1",
@@ -1509,7 +1108,7 @@
       },
       "foreground_effort": "high",
       "detached_effort": "xhigh",
-      "rationale": "User-measured: Fable/Astra repeatedly unblocked tasks Opus/GPT could not. Defined by model, not by index; never re-ranked by leaderboards (spec §2)."
+      "rationale": "Each vendor's top-line model. The start tier for the hardest assessed tasks and the last escalation rung after A fails. Defined by vendor line, not by index."
     },
     "A": {
       "name": "Strong judgment",

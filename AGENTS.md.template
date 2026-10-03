@@ -35,8 +35,9 @@ Resolve delegated work with
 
 Before choosing direct implementation or delegation, read only "Direct work or
 delegation" in `docs/orchestration/delegation-matrix.md`; when delegating, also
-its assignment, author-separation and announcement sections. Interacting new
-behaviors take the cross-vendor route even inside one file. Read the fallback
+its assignment, author-separation and announcement sections. Direct work or
+delegation is decided by the cost score in the delegation matrix, with the
+scout brief first (Thin orchestration). Read the fallback
 section when a vendor is unavailable or exhausted (no probe needed), and
 `docs/orchestration/retry-policy.md` when a run fails.
 Verification depth and inspection of actual worker output follow

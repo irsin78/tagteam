@@ -28,13 +28,23 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
 
    Get the retry route with `harness-route.py --host <host> --role <role>
    --retry-from <worker_id> --retry-reason <class> --attempt N`.
-3. Promotion takes the cheapest step that gains at least `promotion_delta`
-   index points in the same lane, not one rung. Steep-curve models (Opus 5.5,
-   Sonnet 5.5) usually raise effort; flat-curve models (Astra, Sol 6.1) switch
-   model. A design/state-judgment diagnosis or a second reasoning failure goes
-   straight to band S (model change: Fable on the Claude lane, Astra on the
-   OpenAI lane). Author separation still applies. A step over the foreground
-   latency limit runs only detached (`-b --wait`). Never raise effort for
+3. A reasoning retry below A raises the floor one band in the same vendor,
+   choosing the cheapest eligible row at or above that band in the latency
+   class; if none is fast enough, use the cheapest such row detached. If the
+   vendor has no higher ordinary row, or A fails, use its S lane at foreground
+   effort (Fable for Claude, Astra for OpenAI). A failed S foreground effort
+   steps to that lane's detached effort. After detached S fails, or when no
+   further S effort exists, implementation and writing may take one cross-lane S
+   attempt at foreground effort, only when the other vendor is an artifact author.
+   Advice and review roles never waive author separation. That single attempt's
+   result must be reviewed by a different vendor than the implementer. A further
+   reasoning retry from an author's cross-lane S row is refused; the orchestrator
+   decides under 4.
+   When the other lane is already independent, this retry is refused; choose it
+   through normal `--tier S` / `--worker` routing, with the orchestrator enforcing
+   rule 5's attempt limit.
+   `selection_policy.cross_lane_s: false` disables this final exception. A step
+   over the requested latency limit runs detached (`-b --wait`). Never raise effort for
    slowness. `max` is detached only; Codex worker `ultra` is a policy refusal,
    not an availability fallback. Tight budget disables optional promotions;
    risk floors still apply.
@@ -44,9 +54,12 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    run the returned launcher with `-s read-only` and the question "why did this fail?". A spec or scope answer returns to that class's response; confirmed
    reasoning means the orchestrator implements directly with the same
    verification, or reports instead when it is below the failed band.
-5. At most 3 worker attempts (first + 2 retries): `--attempt` counts retries,
-   so the router refuses `--attempt 3`; then 4 applies. Each retry changes class, settings or inputs; never
-   repeat a combination. Do not cycle through vendors.
+5. At most 3 attempts within a lane (first + 2 retries), plus the single cross-lane
+   S attempt: `--attempt` counts retries, so `--attempt 3` is accepted only for
+   that final cross-lane S route; later attempts are refused and 4 applies. Each
+   retry changes class, settings or inputs; never repeat a combination. Do not
+   cycle through vendors; the single cross-lane S attempt in 3 is the only
+   reasoning-retry exception.
 6. A retry is one worker attempt. Always pass the failure and current state;
    change only the settings, inputs or scope the diagnosis points to. Codex
    supports `-r` through codex-run.sh; Claude needs a NEW claude-run.sh call with
@@ -55,3 +68,16 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
 
 Unresolved NEEDS_INPUT goes back to the parent for an answer and a new
 self-contained assignment; it is not a reason to silently take over.
+
+Run records: Set optional `HARNESS_TASK` to a task slug (1–64 ASCII letters,
+digits, dots, underscores or hyphens) to link delegated attempts and direct work.
+Set `HARNESS_ASSESS` to all five comma-separated ratings, for example
+`open=1,tangle=2,precedent=0,verifier=1,consequence=1` (each 0, 1 or 2).
+The router's `--assess` uses these ratings to choose the automatic start band
+and records them in JSON; see delegation-matrix.md, "Assess before routing".
+After diagnosis, use `python .claude/scripts/harness-session.py outcome --run <id>
+--class <class> [--accepted yes|no] [--note TEXT]` to record or replace the outcome.
+For direct work, use `python .claude/scripts/harness-session.py direct --task <slug>
+--result done|failed --elapsed-s N [--assess STR]` with optional model, tokens,
+rework, interventions, verify and note fields. Records share the launcher's tree
+state directory; `harness-stats.sh` summarizes them alongside delegated reports.

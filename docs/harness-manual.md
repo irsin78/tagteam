@@ -45,13 +45,16 @@ The [bindings JSON](../.claude/model-bindings.json) defines models, effort, benc
 sources, and measurement dates. The router (`harness-route.py`) selects among `workers`
 by band floor, latency class and measured cost (docs/orchestration/delegation-matrix.md,
 "Assign a worker"); use this manual's host-specific execution recipes.
+With assessment volume, automatic selection compares worker and eligible direct work by USD plus declared waiting-time cost; session and CLI time values override bindings defaults.
 
 Schema v3 gives each worker (one row per model/effort) an `id`, `vendor`, `model`,
 `effort`, `tier` (band `S|A|B|C|D|E`), `roles`, `status`, `probe` and `launcher` (or
 `native: true`), plus `metrics` (`index`, `cost`, `ttft_s`, `tps`, `deepswe_pass1`,
 `provisional`) or `scored: false` for rows the router never picks automatically.
-Top-level `bands` (S is model-fixed: Fable on the Claude lane, Astra on the OpenAI lane;
-A–E are index floors) and `latency` (interactive/foreground TTFT limits) drive selection.
+Top-level `bands` (capability labels independent of index; S is fixed by vendor line:
+Fable on the Claude lane, Astra on the OpenAI lane), assessment policy and `latency`
+(interactive/foreground TTFT limits) drive selection. OpenAI image verification
+defaults to GPT-6.1 Sol/medium; Opus 5.5/high remains the second image worker.
 Role priorities are positive integers or per-host maps and remain for host eligibility
 and `--worker`; a role can also contain `priority`, `hosts` and `requires`. `tier_cell`
 is kept as documentation only. Status is `active`, `optional`, `conditional` (explicit
@@ -212,6 +215,7 @@ do not derive improvement rates by simple comparison.
 - Roles, progress, conflicts, requirements, communication: `rules/session-role.md`
 - Routing, switching-cost exceptions, fallback:
   `docs/orchestration/delegation-matrix.md`
+- Read-only routing brief: `docs/orchestration/scout-brief.md`
 - Actual artifacts, existing changes, orchestrator-only commits:
   `rules/delegate-output-trust.md`
 - Risk, Git timing, mutation checks: `rules/verification-tiering.md` +
@@ -306,9 +310,9 @@ missions. Merge existing settings/instructions without overwriting.
 |---|---|---|
 | `AGENTS.md.template` → `AGENTS.md`, `CLAUDE.md.template` → `CLAUDE.md` | Shared | One entry instruction file for both hosts plus the `@AGENTS.md` import stub for Claude Code. Fill Project policy in AGENTS.md only |
 | `.claude/settings.json`, `.claude/model-bindings.json`, `.claude/model-bindings.local.json.example`, `.claude/rules/*.md` | Shared | Hook wiring, permissions, shared contracts; model-bindings.json uses schema v2. Create personal settings in the target project from the example |
-| `docs/orchestration/delegation-matrix.md`, `docs/orchestration/retry-policy.md` | Shared | Orchestrator reads only needed documents when selecting delegation/diagnosing failures. Separate from Claude's automatic rules loading |
+| `docs/orchestration/delegation-matrix.md`, `docs/orchestration/retry-policy.md`, `docs/orchestration/scout-brief.md` | Shared | Orchestrator reads only needed documents when selecting delegation/diagnosing failures. Separate from Claude's automatic rules loading |
 | `.claude/hooks/deny_dangerous.py`, `session_preflight.py`, `stop_gate.py`, `verify_delegation.py`, `evidence.py` | Shared (all in the same hooks folder) | Shared dependencies of default hooks and delegation records |
-| `.claude/scripts/harness-route.py`, `harness-session.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py` | Shared (all in the same scripts folder) | Routing, stop checks, configuration/change evidence, execution tracking. Keep with each launcher |
+| `.claude/scripts/harness-route.py`, `harness-session.py`, `harness_records.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py` | Shared (all in the same scripts folder) | Routing, run records, stop checks, configuration/change evidence, execution tracking. Keep with each launcher |
 | `.claude/scripts/codex-run.sh`, `claude-run.sh`, `codex-report.schema.json`, `.claude/skills/delegate-codex/SKILL.md` | Bidirectional delegation | Per-app execution and Codex results/recipes |
 | `.codex/hooks.json`, `.claude/scripts/gen-codex-hooks.sh` | Using Codex | Hook wiring and installation-path generation. Machine-specific `/hooks` trust registration required. Installation checks also use the generator |
 | `.claude/scripts/test_host_routes.py` | Using installation checks | Current dependency of both platform installation checks. Unlike other `test_*` files, copy this one too |
@@ -330,7 +334,7 @@ missions. Merge existing settings/instructions without overwriting.
 | Antigravity | `.claude/scripts/agy-run.sh`, `.claude/agents/antigravity-delegate.md`, `.claude/skills/delegate-agy/SKILL.md` | Configure CLI/permissions only when selecting agy. Shared launcher dependencies also required |
 | Local reads | `.claude/scripts/local-run.sh`, `local-read.py` | Declare only when using a local endpoint |
 | Enhanced WSL isolation | `.claude/scripts/lane-sensitive.sh`, `.claude/sandbox-sensitive.json` | When selecting a separate isolation lane |
-| Statistics, cleanup, Codex diagnostics | Needed files among `.claude/scripts/harness-stats.sh`, `harness-clean.py`, `check-codex-sandbox.sh` | Explicitly invoked tools. Diagnostics require shared `workspace-snapshot.py` |
+| Statistics, cleanup, Codex diagnostics | Needed files among `.claude/scripts/harness-stats.sh`, `harness-clean.py`, `check-codex-sandbox.sh` | Explicitly invoked tools. Statistics require shared `harness_records.py`; diagnostics require shared `workspace-snapshot.py` |
 
 | Maintenance only | Application in consuming projects |
 |---|---|
