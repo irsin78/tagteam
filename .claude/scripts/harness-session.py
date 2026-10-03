@@ -200,11 +200,11 @@ def main():
     direct.add_argument('--result', choices=('done', 'failed'))
     direct.add_argument('--elapsed-s')
     direct.add_argument('--assess')
-    direct.add_argument('--model', default='')
+    direct.add_argument('--model')
     for name in ('tokens', 'rework', 'interventions'):
-        direct.add_argument('--' + name, default=0)
-    direct.add_argument('--verify', choices=('passed', 'failed', 'none'), default='none')
-    direct.add_argument('--note', default='')
+        direct.add_argument('--' + name)
+    direct.add_argument('--verify', choices=('passed', 'failed', 'none'))
+    direct.add_argument('--note')
     args = parser.parse_args()
     if args.command in ('outcome', 'direct'):
         try:
@@ -228,10 +228,19 @@ def main():
                     raise ValueError('direct finish requires --result')
                 elif args.phase == 'start' and args.result is not None:
                     raise ValueError('direct start does not accept --result')
+                phase_options = {'start': ('tokens', 'rework', 'interventions', 'verify', 'note'),
+                                 'finish': ('model', 'assess')}
+                for name in phase_options.get(args.phase, ()):
+                    if getattr(args, name) is not None:
+                        raise ValueError('direct ' + args.phase + ' does not accept --' + name)
                 for name in ('tokens', 'rework', 'interventions'):
-                    setattr(args, name, nonnegative(str(getattr(args, name))))
+                    value = getattr(args, name)
+                    setattr(args, name, nonnegative(str(0 if value is None else value)))
                 if args.assess is not None:
                     args.assess = parse_assessment(args.assess)
+                args.model = args.model or ''
+                args.verify = args.verify or 'none'
+                args.note = args.note or ''
             directory = state_directory()
             if args.command == 'outcome':
                 if not (directory / ('report-' + args.run + '.txt')).is_file():

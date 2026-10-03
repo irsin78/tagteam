@@ -1,0 +1,4 @@
+{
+  "_comment": "content_dirs lists project-root content directories exempt from control-plane protection; [] exempts none.",
+  "content_dirs": []
+}

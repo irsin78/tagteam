@@ -13,7 +13,7 @@ Within confirmed scope, closed reversible plans proceed after grounding without
 reapproval.
 
 Check paths, dependencies, ownership and verification commands directly; use
-the matrix's overhead criteria for broad grounding, never a ceremonial scout.
+a scout when its saved work exceeds the coordination cost (delegation matrix).
 
 If review is useful, resolve harness-route.py --host <current-host>
 --role plan_review --author-vendor <actual-designer>, with --tier B for a

@@ -126,6 +126,22 @@ admit_run
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('HITS=.agents/agents/project-agent.md', result.stdout)
 
+    def test_content_config_is_hashed_and_classified(self):
+        target = self.root / '.claude/harness-config.json'
+        target.write_bytes(b'{"content_dirs":[]}\n')
+        self.assertEqual(self.hashes()['.claude/harness-config.json'],
+                         hashlib.sha256(target.read_bytes()).hexdigest())
+        mutations = ("printf '%s\\n' '{\"content_dirs\":[\"template\"]}' > .claude/harness-config.json",
+                     'rm .claude/harness-config.json',
+                     "printf '%s\\n' '.claude/harness-config.json' > changed")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                result = self.control(mutation)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('OK=1', result.stdout)
+                self.assertIn('HITS=.claude/harness-config.json', result.stdout)
+                self.assertIn('NOTICE=\n', result.stdout)
+
     def test_only_hook_runtime_trust_is_ignored(self):
         config = self.personal / ".codex/config.toml"
         text = 'model = "sample"\n  [hooks.state."example"]\ntrusted_hash = "old"\n  [projects."example"]\ntrust_level = "untrusted"\n'

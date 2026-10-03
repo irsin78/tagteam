@@ -371,7 +371,7 @@ foreach ($cliName in @('codex', 'agy')) {
 # falls back with AGY_UNAVAILABLE. Same path/override as agy-run.sh.
 $agySettings = if ($env:HARNESS_AGY_SETTINGS) { $env:HARNESS_AGY_SETTINGS } else { Join-Path $HOME '.gemini\antigravity-cli\settings.json' }
 if (-not (Test-Path -LiteralPath $agySettings -PathType Leaf)) {
-    Write-Host "INFO: agy global settings not found at $agySettings (headless agy auto-approval unconfigured; agy lane -> AGY_UNAVAILABLE). Minimal file: docs/harness-manual.md install step 1."
+    Write-Host "INFO: agy global settings not found at $agySettings (headless agy auto-approval unconfigured; agy lane -> AGY_UNAVAILABLE). Minimal file: docs/harness-install.md install step 1."
 }
 else {
     # Structural parse of permissions.allow, like agy-run.sh: a text match
@@ -413,7 +413,8 @@ if ($TemplateDir) {
         $driftGlobs = @('.claude/agents/*.md', '.claude/rules/*.md', 'docs/orchestration/*.md', '.claude/skills/*/SKILL.md',
                         '.claude/hooks/*.py', '.claude/scripts/*', '.claude/settings.json',
                         '.claude/sandbox-sensitive.json', 'check-windows-aliases.ps1', 'check-posix.sh',
-                        '.codex/hooks.json')
+                        '.codex/hooks.json', 'docs/harness-install.md', 'docs/harness-launchers.md',
+                        'docs/harness-manual.md')
         $driftCount = 0
         $comparedCount = 0
         $notInstalledCount = 0

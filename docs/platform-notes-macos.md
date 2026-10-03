@@ -2,9 +2,9 @@
 
 Read on macOS; kept outside `.claude/rules/` to avoid loading it on other platforms.
 
-Windows-side deltas live in docs/harness-manual.md (installation
-preflight, the codex sandbox/Store-alias failure mode, and the direct
-`codex exec` recipe appendix).
+Windows-side deltas live in [Installation](harness-install.md#windows-specific-details)
+(installation preflight and the codex sandbox/Store-alias failure mode) and the
+[direct `codex exec` recipe appendix](harness-launchers.md#appendix-direct-codex-exec-recipes-outside-the-launcher).
 
 ## macOS (zsh)
 

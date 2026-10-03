@@ -2,7 +2,7 @@
 
 Keep the user-started app as orchestrator and meet the project's quality and
 safety bar with less cost, time and user intervention. For installation and
-execution, see the [harness manual](harness-manual.md).
+execution, see [Installation](harness-install.md) and [Launchers](harness-launchers.md).
 
 ## Premises and the responsibility boundary
 
@@ -146,6 +146,9 @@ unverified completion reports. Guards are placed on controllable actions, and
 when a guard did not run or verification failed, that is surfaced. Fully sealing
 off every risky action and every variant of prompt injection with the harness's
 own hooks is not the goal.
+
+Reviewers classify bypass findings using the
+[runtime boundary's classification](runtime-boundary.md#classifying-bypass-findings).
 
 Verification prioritises actual outputs and repeatable checks, and its depth is
 set by the impact of failure. Verify-and-fix loops need a termination condition,

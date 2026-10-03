@@ -6,9 +6,11 @@ redirected to a disposable fixture. Do not rerun the complete installer from
 its own host tests. Windows and POSIX sections are checked when shells exist.
 """
 import copy
+import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +24,57 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class InstallChecks(unittest.TestCase):
+    def test_split_guides_copy_targets_and_anchor_links(self):
+        docs = ROOT / 'docs'
+        guides = ('harness-install.md', 'harness-launchers.md', 'harness-manual.md')
+        copy_table = (docs / 'harness-install.md').read_text(encoding='utf-8')
+        for name in guides:
+            self.assertIn('`docs/' + name + '`', copy_table)
+        # Check cross-document and local links after moving installation/recipes.
+        sources = [ROOT / 'README.md', *docs.rglob('*.md')]
+        for source in sources:
+            text = source.read_text(encoding='utf-8')
+            for target, fragment in re.findall(
+                    r'\]\(([^\s)]*harness-(?:manual|install|launchers)\.md)(?:#([^\s)]+))?\)', text):
+                path = source.parent / target
+                with self.subTest(source=source, target=target, fragment=fragment):
+                    self.assertTrue(path.is_file(), 'Missing linked harness guide')
+                    if fragment:
+                        headings = re.findall(r'^#{1,6} (.+)$', path.read_text(encoding='utf-8'), re.M)
+                        anchors = {re.sub(r'[^\w\- ]', '', re.sub(r'[`*_]', '', title).lower()).replace(' ', '-')
+                                   for title in headings}
+                        self.assertIn(fragment, anchors, 'Moved heading has an unresolved inbound link')
+            if source.name in guides:
+                headings = re.findall(r'^#{1,6} (.+)$', text, re.M)
+                anchors = {re.sub(r'[^\w\- ]', '', re.sub(r'[`*_]', '', title).lower()).replace(' ', '-')
+                           for title in headings}
+                for fragment in re.findall(r'\]\(#([^\s)]+)\)', text):
+                    self.assertIn(fragment, anchors, f'Unresolved local link in {source}')
+
+    def test_push_default_requires_approval_and_retains_force_push_asks(self):
+        permissions = json.loads((ROOT / '.claude/settings.json').read_text(encoding='utf-8'))['permissions']
+        self.assertNotIn('Bash(git push:*)', permissions['allow'])
+        for rule in ('Bash(git push --force:*)', 'Bash(git push --force-with-lease:*)', 'Bash(git push -f:*)'):
+            self.assertIn(rule, permissions['ask'])
+
+    def test_platform_guidance_references_installed_split_guides(self):
+        spec = importlib.util.spec_from_file_location(
+            'installed_preflight', ROOT / '.claude/hooks/session_preflight.py')
+        preflight = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(preflight)
+        for label, (name, extra) in preflight.PLATFORM_NOTES.items():
+            with self.subTest(platform=label):
+                self.assertTrue((ROOT / name).is_file(), 'Missing platform reading target')
+                note = preflight.platform_note(label, ROOT)
+                self.assertNotIn('file not found', note)
+                if extra:
+                    for linked in re.findall(r'docs/[\w-]+\.md', extra):
+                        self.assertTrue((ROOT / linked).is_file(), 'Missing supplemental reading target')
+        windows = preflight.PLATFORM_NOTES['Windows'][0]
+        self.assertEqual(windows, 'docs/harness-install.md')
+        text = (ROOT / windows).read_text(encoding='utf-8')
+        self.assertRegex(text, r'(?s)### Windows[^\n]*\n.*?\n### macOS\n')
+
     def test_codex_registration_tracks_installed_events(self):
         runners = []
         pwsh = shutil.which('pwsh') or shutil.which('powershell')

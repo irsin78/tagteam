@@ -2,7 +2,7 @@
 
 This is the canonical dependency list. Update it first when requirements change.
 For settings, instruction files and trust registration, see the
-[installation manual](harness-manual.md#installation); platform notes cover operation.
+[installation manual](harness-install.md#installation); platform notes cover operation.
 
 Run the platform check after installing anything below:
 `bash check-posix.sh` (macOS/Linux) or
@@ -31,7 +31,7 @@ flag or model is rejected, not on every run.
 
 Every Claude hook is wired as `python <script>`. Codex hooks are generated with
 an absolute interpreter path by `bash .claude/scripts/gen-codex-hooks.sh --force`
-(see [Codex host](harness-manual.md#codex-host-hook-mirror-and-trust-registration)),
+(see [Codex host](harness-install.md#codex-host-hook-mirror-and-trust-registration)),
 so Codex does not need the unversioned name, but Claude does.
 
 Any Python 3 works for the hooks. Observed: the hook, routing and snapshot
@@ -39,7 +39,7 @@ suites pass on macOS system Python 3.9.6 and on Homebrew Python 3.14.
 
 | Platform | Provide `python` |
 |---|---|
-| Windows | Install from python.org and use `python`/`py`. Never rely on `python3`: it is often a Microsoft Store alias. See [Windows-specific details](harness-manual.md#windows-specific-details) |
+| Windows | Install from python.org and use `python`/`py`. Never rely on `python3`: it is often a Microsoft Store alias. See [Windows-specific details](harness-install.md#windows-specific-details) |
 | macOS | Homebrew Python ships the unversioned name in `$(brew --prefix)/opt/python@3.X/libexec/bin`; put that directory on PATH, or link `python` to any Python 3 in a directory that is already on PATH |
 | Linux | `sudo apt install python-is-python3` (Debian/Ubuntu) |
 

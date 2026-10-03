@@ -16,7 +16,7 @@
 # Output lines start with OK / INFO / WARN / DRIFT. Only WARN counts toward
 # the exit code: `SUMMARY: N warning(s).`, exit 1 when N > 0. The
 # authoritative statement of each finding and its fix is
-# docs/harness-manual.md (install section) and docs/platform-notes-*.md.
+# docs/harness-install.md (install section) and docs/platform-notes-*.md.
 set -u
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -45,7 +45,7 @@ case "$UNAME" in
     Darwin) echo "INFO: platform macOS ($(sw_vers -productVersion 2>/dev/null || uname -r)) -- operational notes: docs/platform-notes-macos.md" ;;
     Linux)
         if [ "$IS_WSL" -eq 1 ]; then
-            echo "INFO: platform Linux (WSL2) -- operational notes: docs/platform-notes-linux.md + the manual's WSL2 isolation-lane sections"
+            echo "INFO: platform Linux (WSL2) -- operational notes: docs/platform-notes-linux.md + docs/harness-launchers.md WSL2 isolation-lane sections"
         else
             echo "INFO: platform Linux ($(uname -r)) -- operational notes: docs/platform-notes-linux.md (native Linux: platform facts and harness behaviour measured on 24.04 aarch64; isolation lane unproven)"
         fi ;;
@@ -283,7 +283,7 @@ done
 # ---- 9. agy global grant (security-boundary.md): command(...) is a WARN
 AGY_SETTINGS=${HARNESS_AGY_SETTINGS:-$HOME/.gemini/antigravity-cli/settings.json}
 if [ ! -f "$AGY_SETTINGS" ]; then
-    echo "INFO: agy global settings not found at $AGY_SETTINGS (headless agy auto-approval unconfigured; agy lane -> AGY_UNAVAILABLE). Minimal file: docs/harness-manual.md install step 1."
+    echo "INFO: agy global settings not found at $AGY_SETTINGS (headless agy auto-approval unconfigured; agy lane -> AGY_UNAVAILABLE). Minimal file: docs/harness-install.md install step 1."
 elif [ "$PY_OK" -ne 1 ]; then
     echo "INFO: agy grant not checked (no working python to parse $AGY_SETTINGS)."
 else
@@ -335,7 +335,8 @@ if [ -n "$TEMPLATE_DIR" ]; then
         for glob in '.claude/agents/*.md' '.claude/rules/*.md' 'docs/orchestration/*.md' '.claude/skills/*/SKILL.md' \
                     '.claude/hooks/*.py' '.claude/scripts/*' '.claude/settings.json' \
                     '.claude/sandbox-sensitive.json' 'check-windows-aliases.ps1' \
-                    'check-posix.sh' '.codex/hooks.json'; do
+                    'check-posix.sh' '.codex/hooks.json' 'docs/harness-install.md' \
+                    'docs/harness-launchers.md' 'docs/harness-manual.md'; do
             for tf in "$TEMPLATE_DIR"/$glob; do
                 [ -f "$tf" ] || continue
                 rel=${tf#"$TEMPLATE_DIR"/}

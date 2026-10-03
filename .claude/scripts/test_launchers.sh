@@ -152,6 +152,7 @@ case "${STUB_ACTION:-none}" in
     init-git) git init -q ;;
     break-index) printf 'broken index' > .git/index ;;
     touch-control-plane) printf '%s\n' '# stub changed control plane' >> .claude/settings.json ;;
+    touch-harness-config) printf '%s\n' '{"content_dirs":["template"]}' > .claude/harness-config.json ;;
     touch-settings-local) printf '%s\n' '{"stub":true}' > .claude/settings.local.json ;;
     # The codex TUI rewrites config.toml whenever it records hook trust.
     # That record is normalized out of the hash; anything else in the file
@@ -203,6 +204,7 @@ case "${STUB_ACTION:-none}" in
     delayed-write:*) sleep 1.1; printf '%s\n' 'stub-output' > "${STUB_ACTION#delayed-write:}" ;;
     write:*) printf '%s\n' 'stub-output' > "${STUB_ACTION#write:}" ;;
     touch-control-plane) printf '%s\n' '# stub changed control plane' >> .claude/settings.json ;;
+    touch-harness-config) printf '%s\n' '{"content_dirs":["template"]}' > .claude/harness-config.json ;;
     # agy widening its OWN grant list: must BLOCK.
     touch-agy-settings) printf '%s\n' '{"permissions":{"allow":["write_file(*)","command(*)"]}}' > "$HOME/.gemini/antigravity-cli/settings.json" ;;
     success-stderr) printf '%s\n' "$STUB_STATUS_LINE" >&2 ;;
@@ -247,6 +249,7 @@ case "${STUB_ACTION:-none}" in
     init-git) git init -q ;;
     break-index) printf 'broken index' > .git/index ;;
     touch-control-plane) echo '# stub changed control plane' >> .claude/settings.json ;;
+    touch-harness-config) printf '%s\n' '{"content_dirs":["template"]}' > .claude/harness-config.json ;;
     write:*) echo 'stub-output' > "${STUB_ACTION#write:}" ;;
     commit) git -c user.name=Stub -c user.email=stub@example.invalid commit --allow-empty -m stub >/dev/null ;;
     nojson) echo 'not json'; exit 0 ;;
@@ -662,7 +665,7 @@ for hook_case in quoted-failure quoted-success failed; do
     case "$hook_case" in
         quoted-failure)
             printf '%s\r\n' 'hook: PreToolUse Completed' 'hook: Stop Blocked' > "$TEST_ROOT/hook-output.log"
-            cat "$REPO_ROOT/docs/harness-manual.md" >> "$TEST_ROOT/hook-output.log"
+            cat "$REPO_ROOT/docs/harness-install.md" >> "$TEST_ROOT/hook-output.log"
             printf '%s\n' '1602:  **exit code 2: `hook: PreToolUse Failed`**' \
                 'hook: Stop Failed is an example, not a status line' >> "$TEST_ROOT/hook-output.log" ;;
         quoted-success)
@@ -1095,6 +1098,30 @@ fi
 
 if selected evidence; then
 # Control-plane, scope, and verify gates.
+for content_tool in codex claude agy; do
+    case "$content_tool" in
+        codex) content_launcher=$CODEX_RUN ;;
+        claude) content_launcher=$CLAUDE_RUN ;;
+        agy) content_launcher=$AGY_RUN ;;
+    esac
+    for approval in 0 1; do
+        fresh_case
+        printf '%s\n' '{"content_dirs":[]}' > "$CASE_REPO/.claude/harness-config.json"
+        run_capture "$content_tool-content-config-$approval" env STUB_ACTION=touch-harness-config \
+            HARNESS_ALLOW_CONTROL_PLANE="$approval" HARNESS_RUN_ID="${content_tool}contentcfg${approval}" \
+            bash "$content_launcher" -p prompt.txt
+        ok=0
+        if [ "$approval" -eq 0 ]; then
+            [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'CONTROL_PLANE_WARNING.*\.claude/harness-config\.json' \
+                && has "$LAST_OUT" 'STATUS: BLOCKED\(control-plane, was DONE\)' && ok=1
+        else
+            [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" 'CONTROL_PLANE_APPROVED.*\.claude/harness-config\.json' \
+                && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+        fi
+        expect_case "$content_tool content config edit approval=$approval" "$ok" "exit=$LAST_RC"
+    done
+done
+
 fresh_case
 run_capture codex-cp-block env STUB_ACTION=touch-control-plane HARNESS_RUN_ID=codexcp bash "$CODEX_RUN" -p prompt.txt
 ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'CONTROL_PLANE_WARNING' && has "$LAST_OUT" 'STATUS: BLOCKED\(control-plane, was DONE\)' && ok=1

@@ -62,6 +62,31 @@ class Validation(unittest.TestCase):
         self.assert_delegate_refused(['direct', 'start', '--task', 'task'])
         self.assert_delegate_refused(['direct', 'finish', '--task', 'task', '--result', 'done'])
 
+    def test_direct_phase_rejects_ignored_options_before_accessing_state(self):
+        options = {
+            'start': (('--result', 'done'), ('--elapsed-s', '0'), ('--tokens', '0'),
+                      ('--rework', '0'), ('--interventions', '0'), ('--verify', 'none'), ('--note', '')),
+            'finish': (('--elapsed-s', '0'), ('--model', 'host model'), ('--model', ''),
+                       ('--assess', ASSESS), ('--assess', '')),
+        }
+        for phase, cases in options.items():
+            base = ['harness-session.py', 'direct', phase, '--task', 'timed']
+            if phase == 'finish':
+                base += ['--result', 'done']
+            for option, value in cases:
+                with self.subTest(phase=phase, option=option, value=value), patch.object(
+                        sys, 'argv', base + [option + '=' + value]), patch.object(
+                        records, 'state_directory') as directory, patch.object(
+                        records, 'write_record') as write, patch.object(
+                        Path, 'unlink') as unlink, contextlib.redirect_stderr(io.StringIO()) as errors:
+                    with self.assertRaises(SystemExit) as raised:
+                        session.main()
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertIn(option, errors.getvalue())
+                    directory.assert_not_called()
+                    write.assert_not_called()
+                    unlink.assert_not_called()
+
     def test_direct_finish_without_start_is_usage_error(self):
         with patch.object(sys, 'argv', ['harness-session.py', 'direct', 'finish', '--task', 'missing',
                                       '--result', 'done']), patch.object(records, 'state_directory') as directory, patch.object(
