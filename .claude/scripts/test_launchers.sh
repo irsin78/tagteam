@@ -1693,7 +1693,7 @@ for launcher in "$CODEX_RUN" "$CLAUDE_RUN" "$AGY_RUN"; do
     has "$report" '^ASSESS: open=1 tangle=2 precedent=0 verifier=1 consequence=1$' || ok=0
     has "$report" '^TASK: task.1_test$' || ok=0
     has "$LAST_OUT" '^ROLE: review_deep$' && has "$report" '^ROLE: review_deep$' || ok=0
-    has "$LAST_OUT" '^RETRY_OF: previous (defect)$' && has "$report" '^RETRY_OF: previous (defect)$' || ok=0
+    has "$LAST_OUT" '^RETRY_OF: previous \(defect\)$' && has "$report" '^RETRY_OF: previous \(defect\)$' || ok=0
     expect_case "$name records canonical assessment and task headers" "$ok" "exit=$LAST_RC"
 
     for bad in 'unknown' 'IMPLEMENT' 'implement review_deep' $'implement\n'; do

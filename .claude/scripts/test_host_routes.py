@@ -28,6 +28,7 @@ session_spec.loader.exec_module(session)
 
 
 class HostRoutes(unittest.TestCase):
+    @unittest.skipUnless((ROOT / 'AGENTS.md.template').exists(), 'template source only')
     def test_direct_delegation_instructions_point_to_score_and_scout(self):
         instructions = (ROOT / 'AGENTS.md.template').read_text(encoding='utf-8')
         paragraph = ('Before choosing direct implementation or delegation, read only "Direct work or '
