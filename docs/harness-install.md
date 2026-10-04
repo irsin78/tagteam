@@ -40,7 +40,7 @@ missions. Merge existing settings/instructions without overwriting.
 | `.claude/scripts/harness-route.py`, `harness-session.py`, `harness_records.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py` | Shared (all in the same scripts folder) | Routing, run records, stop checks, configuration/change evidence, execution tracking. Keep with each launcher |
 | `.claude/scripts/codex-run.sh`, `claude-run.sh`, `codex-report.schema.json`, `.claude/skills/delegate-codex/SKILL.md` | Bidirectional delegation | Per-app execution and Codex results/recipes |
 | `.codex/hooks.json`, `.claude/scripts/gen-codex-hooks.sh` | Using Codex | Hook wiring and installation-path generation. Machine-specific `/hooks` trust registration required. Installation checks also use the generator |
-| `.claude/scripts/test_host_routes.py` | Using installation checks | Current dependency of both platform installation checks. Unlike other `test_*` files, copy this one too |
+| `.claude/scripts/test_host_routes.py`, `.claude/scripts/test_fixtures/*.json` | Using installation checks | Current dependency of both platform installation checks; its score/baseline scenarios read the fixtures. Unlike other `test_*` files, copy these too |
 | `.gitattributes` | Required with Git | Fix LF. Without it, checkout changes line endings and destabilizes control-plane hashes without content changes |
 | Harness entries in `.gitignore` | Required with Git | Prevent committing `settings.local.json`, which accumulates local absolute paths/usernames, and hook evidence files |
 | `check-windows-aliases.ps1` | Required on Windows | Installation step 0. Must be at project root because it finds hooks relative to itself; covered by control-plane hashes |
@@ -63,7 +63,7 @@ missions. Merge existing settings/instructions without overwriting.
 
 | Maintenance only | Application in consuming projects |
 |---|---|
-| `.claude/hooks/test_*`, `.claude/scripts/test_*`, excluding `test_host_routes.py` | Regression checks in the template repository. No general obligation to copy/run for project work |
+| `.claude/hooks/test_*`, `.claude/scripts/test_*`, excluding `test_host_routes.py` and `test_fixtures/` | Regression checks in the template repository. No general obligation to copy/run for project work |
 | `.claude/skills/verify-safety-guard/`, `tools/`, `docs/harness-maintenance.md`, individual missions in this repository | Consult in the template repository for harness changes, platform measurements, and historical evidence |
 
 For Windows process delegation, only shared requirements and the Windows check are

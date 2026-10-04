@@ -37,7 +37,7 @@ review conditions follow the
 When the copy table changes, confirm host routing and installation dependencies
 in a temporary adoption copy containing only those files. Keep the files shared
 by hooks and launchers and the `test_host_routes.py` used by the installation
-checks, and include `gen-codex-hooks.sh` only when the Codex hooks are
+checks together with the `.claude/scripts/test_fixtures/` it reads, and include `gen-codex-hooks.sh` only when the Codex hooks are
 installed. Copy all three required guides: `docs/harness-install.md`,
 `docs/harness-launchers.md`, and `docs/harness-manual.md`; entry instructions and
 SessionStart reference their separate installation, execution and operation sections.

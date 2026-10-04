@@ -32,6 +32,13 @@ class InstallChecks(unittest.TestCase):
         copy_table = (docs / 'harness-install.md').read_text(encoding='utf-8')
         for name in guides:
             self.assertIn('`docs/' + name + '`', copy_table)
+        # The installed host-route check reads fixtures; the copy table must ship them.
+        host_routes = (ROOT / '.claude/scripts/test_host_routes.py').read_text(encoding='utf-8')
+        fixtures = set(re.findall(r"test_fixtures/([\w.-]+\.json)", host_routes))
+        self.assertTrue(fixtures)
+        self.assertIn('`.claude/scripts/test_fixtures/*.json`', copy_table)
+        for name in fixtures:
+            self.assertTrue((ROOT / '.claude/scripts/test_fixtures' / name).is_file(), name)
         # Check cross-document and local links after moving installation/recipes.
         sources = [ROOT / 'README.md', *docs.rglob('*.md')]
         for source in sources:
