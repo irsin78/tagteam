@@ -76,7 +76,7 @@
           "tps": 73,
           "source": "artificial_analysis",
           "read": "2026-09-30",
-          "deepswe_pass1": null,
+          "secondary_pass1": null,
           "provisional": true,
           "note": "AA 'with fallback' configuration"
         },
@@ -104,7 +104,7 @@
           "tps": 74,
           "source": "artificial_analysis",
           "read": "2026-09-30",
-          "deepswe_pass1": null,
+          "secondary_pass1": null,
           "provisional": true,
           "note": "AA 'with fallback' configuration"
         },
@@ -130,7 +130,7 @@
           "tps": 51,
           "source": "artificial_analysis",
           "read": "2026-09-30",
-          "deepswe_pass1": null,
+          "secondary_pass1": null,
           "provisional": true,
           "note": "AA 'with fallback' configuration"
         },

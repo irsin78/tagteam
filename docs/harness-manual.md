@@ -48,8 +48,8 @@ With assessment volume, automatic selection compares worker and eligible direct 
 
 Schema v3 gives each worker (one row per model/effort) an `id`, `vendor`, `model`,
 `effort`, `tier` (band `S|A|B|C|D|E`), `roles`, `status`, `probe` and `launcher` (or
-`native: true`), plus `metrics` (`index`, `cost`, `ttft_s`, `tps`, `deepswe_pass1`,
-`provisional`) or `scored: false` for rows the router never picks automatically.
+`native: true`), plus `metrics` (`index`, `cost`, `ttft_s`, `tps`, `secondary_pass1` with
+`secondary_effort`/`secondary_source`/`secondary_read`, optional `eci`, `provisional`) or `scored: false` for rows the router never picks automatically.
 Top-level `bands` (capability labels independent of index; S is fixed by vendor line:
 Fable on the Claude lane, Astra on the OpenAI lane), assessment policy and `latency`
 (interactive/foreground TTFT limits) drive selection. OpenAI image verification

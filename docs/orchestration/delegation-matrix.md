@@ -52,8 +52,8 @@ The router applies hard constraints, author separation and the band floor first.
 Exhausted vendors rank last; within availability groups `trust: low` ranks last.
 Automatic assessment with volume uses the score below and includes slower rows,
 returning `needs_detached: true` when the selected row exceeds the latency class.
-Other selection paths filter by latency and rank DeepSWE-listed rows before
-unlisted (provisional) ones and, within
+Other selection paths filter by latency and rank rows whose model the secondary
+source lists (`sources.catalog`, rank `secondary`) before unlisted (provisional) ones and, within
 each group, picks the cheapest; rows within 15% of
 the cheapest tie and the faster TTFT wins. `--tier` is a floor (that band or higher), not an exact
 cell; `--latency interactive|foreground|detached` overrides the role default.

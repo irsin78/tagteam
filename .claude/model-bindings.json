@@ -2,7 +2,7 @@
   "schema_version": 3,
   "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-10-01",
+  "updated": "2026-10-06",
   "catalog_checked": "2026-10-01",
   "vendors": {
     "claude": {
@@ -236,15 +236,26 @@
         "updated": "2026-09-30",
         "note": "Per-effort index, cost and TTFT observations remain in each worker metrics record with their source and read date. Band labels are maintained independently of index rescaling."
       },
-      "deepswe": {
+      "frontierswe": {
         "rank": "secondary",
-        "name": "DeepSWE",
-        "url": "https://deepswe.datacurve.ai",
-        "provides": "long-horizon agentic implementation pass@1, effort sensitivity",
-        "updated": "2026-09-22",
-        "checked": "2026-09-30",
-        "note": "v1.1, 113 tasks, updated 2026-09-22 on the 2026-09-30 check. No GPT-6.1 Sol, GPT-6 Luna, Opus 5.5 or Fable 5.1 row yet. Astra xhigh: 74%, $4.43 per task. Per-effort rows require the All effort levels view.",
-        "rationale": "Updated later than the primary (AA) but measured on long-horizon agentic tasks, so it is highly reliable — hence secondary. When a new model is on AA but not yet on DeepSWE, fill the slot from the primary and re-check once DeepSWE lists it (policy.rules)."
+        "name": "FrontierSWE",
+        "url": "https://www.frontierswe.com/",
+        "data": "https://epoch.ai/data/benchmark_data.zip (frontierswe_external.csv)",
+        "provides": "long-horizon agentic SWE score (Mean@5), implementation/performance/research sub-scores, average cost and duration",
+        "updated": "2026-09-30",
+        "checked": "2026-10-06",
+        "note": "Collected by Epoch AI; one row per model at its top effort (max; Gemini Flash high), harness proximus. 2026-10-06: Astra 0.655, Opus 5.5 0.623, Sonnet 5.5 0.619, Fable 5.1 0.563, Gemini 3.8 Flash 0.196. No GPT-6.1 Sol, GPT-6 Luna or Haiku 4.5 row.",
+        "rationale": "Measures long-horizon agentic work and lists models within weeks of release. Scores are model-level evidence at the measured effort, not per-effort values. Excluded alternatives: policy.excluded."
+      },
+      "epoch_eci": {
+        "rank": "cross-check",
+        "name": "Epoch Capabilities Index",
+        "url": "https://epoch.ai/eci",
+        "data": "https://epoch.ai/data/eci_scores.csv",
+        "provides": "composite capability index with confidence interval",
+        "updated": "2026-10-05",
+        "checked": "2026-10-06",
+        "note": "2026-10-06: Opus 5.5 167.4, Astra 166.5, Sonnet 5.5 165.2, Fable 5.1 164.8, Gemini 3.8 Flash 156.9; Haiku 4.5 listed (2025). No GPT-6.1 Sol or GPT-6 Luna. A composite like the primary, so it flags disagreement rather than filling slots."
       },
       "llm_stats": {
         "rank": "cross-check",
@@ -267,17 +278,39 @@
         "url": "https://vellum.ai",
         "provides": "relative position of unlisted models",
         "updated": "2026-08-18"
+      },
+      "livebench": {
+        "rank": "reference",
+        "name": "LiveBench",
+        "url": "https://livebench.ai",
+        "provides": "contamination-limited coding and agentic coding categories",
+        "checked": "2026-10-06",
+        "note": "Current tables are script-rendered and the latest public release found was 2025-04; reference only until current data can be read."
+      },
+      "arena": {
+        "rank": "reference",
+        "name": "Arena (human preference)",
+        "url": "https://arena.ai",
+        "provides": "pairwise human-preference ratings, including code/webdev arenas",
+        "checked": "2026-10-06",
+        "note": "Subjective preference votes; never enters scores or provisional status. Use only as a prompt for human review when it strongly contradicts the benchmark sources."
       }
     },
     "policy": {
-      "rules": "Fill a slot from the primary; confirm when the secondary lands in the same band, and when they disagree follow the secondary for long implementations only and record it in the evidence column. Items on neither source are filled from own measurements or experience, with the evidence type marked.",
+      "rules": "Fill a slot from the primary. A model listed on the secondary is evidence-backed (metrics.provisional false on all of its rows); confirm when the secondary agrees with the primary's band, and when they disagree follow the secondary for long implementations and record the cross-check in the worker note. The cross-check source only flags disagreement. Items on neither source are filled from own measurements or experience, with the evidence type marked. Reference sources never change scores.",
       "recheck_trigger": "Actual model adoption, repeated task failure or observed performance change; reassess only affected bindings/policies.",
       "last_recheck": {
-        "date": "2026-09-29",
-        "trigger": "Claude Sonnet 5.5 release (2026-09-28); previous: Opus 5.5 release (2026-09-22) + AA effort grid",
+        "date": "2026-10-06",
+        "trigger": "Secondary source replacement (FrontierSWE secondary, Epoch ECI cross-check; see policy.excluded)",
         "open": [
-          "DeepSWE rows for claude-opus-5-5, gpt-6.1-sol and gpt-6-luna; affected metrics remain provisional until then"
+          "GPT-6.1 Sol, GPT-6 Luna and Claude Haiku 4.5 have no secondary row; their metrics stay provisional until FrontierSWE lists them"
         ]
+      },
+      "excluded": {
+        "deepswe": "Retired 2026-10-06: slow updates and newest models missing (two of eight current models listed: GPT-6 Astra, Gemini 3.8 Flash).",
+        "swe_bench_official": "Verified/mini-SWE-agent rows last updated 2026-02; no current models.",
+        "epoch_swe_bench_verified": "Epoch-run Verified rows stop at 2026-04 models.",
+        "scale_swe_bench_pro": "Public split saturated (99.4% top) and leaderboard stalled at older models."
       }
     }
   },
@@ -402,22 +435,16 @@
       "evidence": "leaderboard",
       "sources": [
         "artificial_analysis",
-        "deepswe",
-        "llm_stats"
+        "llm_stats",
+        "frontierswe",
+        "epoch_eci"
       ],
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "note": "OpenAI S lane at foreground effort; measured cost and TTFT are recorded in metrics.",
+      "note": "OpenAI S lane at foreground effort; measured cost and TTFT are recorded in metrics. Cross-check 10-06: agrees with the primary; FrontierSWE 0.655 is the top long-horizon score.",
       "intelligence_index": 51,
       "effective_cost": 1.73,
-      "deepswe_pass1": {
-        "low": 0.67,
-        "medium": 0.73,
-        "high": 0.73,
-        "xhigh": 0.74,
-        "max": 0.73
-      },
       "id": "astra-high",
       "tier_cell": true,
       "roles": {
@@ -440,7 +467,11 @@
         "tps": 47,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": 0.73,
+        "secondary_pass1": 0.655,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 166.5,
         "provisional": false
       },
       "probe": {
@@ -466,7 +497,11 @@
         "tps": 49,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": 0.74,
+        "secondary_pass1": 0.655,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 166.5,
         "provisional": false
       },
       "probe": {
@@ -481,7 +516,12 @@
         "plan_review": 101,
         "review_gate": 101,
         "review_deep": 101
-      }
+      },
+      "sources": [
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
+      ]
     },
     {
       "id": "sol61-medium",
@@ -499,7 +539,7 @@
         "tps": 59,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
+        "secondary_pass1": null,
         "provisional": true
       },
       "probe": {
@@ -512,7 +552,8 @@
         "write": 102,
         "review_gate": 102,
         "image_verify": 1
-      }
+      },
+      "note": "Cross-check 10-06: no FrontierSWE row; verdict unavailable, primary only (metrics stay provisional)."
     },
     {
       "id": "sol61-high",
@@ -530,7 +571,7 @@
         "tps": 65,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
+        "secondary_pass1": null,
         "provisional": true
       },
       "probe": {
@@ -563,7 +604,7 @@
         "tps": 64,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
+        "secondary_pass1": null,
         "provisional": true
       },
       "probe": {
@@ -596,7 +637,7 @@
         "tps": 69,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
+        "secondary_pass1": null,
         "provisional": true
       },
       "probe": {
@@ -629,7 +670,7 @@
         "tps": 124,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
+        "secondary_pass1": null,
         "provisional": true
       },
       "probe": {
@@ -640,7 +681,8 @@
       "roles": {
         "implement": 109,
         "write": 109
-      }
+      },
+      "note": "Cross-check 10-06: no FrontierSWE row; verdict unavailable, primary only (metrics stay provisional)."
     },
     {
       "id": "luna6-low",
@@ -658,7 +700,7 @@
         "tps": 124,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
+        "secondary_pass1": null,
         "provisional": true
       },
       "probe": {
@@ -688,8 +730,12 @@
         "tps": 51,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true,
+        "secondary_pass1": 0.563,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 164.8,
+        "provisional": false,
         "note": "AA 'with fallback' configuration"
       },
       "probe": {
@@ -704,7 +750,13 @@
         "plan_review": 112,
         "review_gate": 112,
         "review_deep": 112
-      }
+      },
+      "note": "Cross-check 10-06: agrees; FrontierSWE 0.563 is one step below Opus 5.5 and Astra on long-horizon work.",
+      "sources": [
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
+      ]
     },
     {
       "id": "fable-xhigh",
@@ -723,8 +775,12 @@
         "tps": 61,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true,
+        "secondary_pass1": 0.563,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 164.8,
+        "provisional": false,
         "note": "AA 'with fallback' configuration"
       },
       "probe": {
@@ -739,7 +795,12 @@
         "plan_review": 113,
         "review_gate": 113,
         "review_deep": 113
-      }
+      },
+      "sources": [
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
+      ]
     },
     {
       "tier": "A",
@@ -751,18 +812,16 @@
       "evidence": "leaderboard",
       "sources": [
         "artificial_analysis",
-        "deepswe",
-        "llm_stats"
+        "llm_stats",
+        "frontierswe",
+        "epoch_eci"
       ],
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "note": "Main Claude line. Judgement roles start at high; medium remains eligible for implementation, writing and review gates.",
+      "note": "Main Claude line. Judgement roles start at high; medium remains eligible for implementation, writing and review gates. Cross-check 10-06: agrees (top band on AA, FrontierSWE 0.623, ECI 167.4).",
       "intelligence_index": 54,
       "effective_cost": 1.82,
-      "deepswe_pass1": {
-        "_status": "not listed as of 2026-09-22"
-      },
       "id": "opus55-high",
       "tier_cell": true,
       "roles": {
@@ -788,8 +847,12 @@
         "tps": 74,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true,
+        "secondary_pass1": 0.623,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 167.4,
+        "provisional": false,
         "note": "AA 'with fallback' configuration"
       },
       "probe": {
@@ -807,7 +870,9 @@
       "endpoint": "claude-code",
       "evidence": "leaderboard",
       "sources": [
-        "artificial_analysis"
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
       ],
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
@@ -815,9 +880,6 @@
       "note": "Main Claude line. Judgement roles start at high; medium remains eligible for implementation, writing and review gates.",
       "intelligence_index": 56,
       "effective_cost": 3.46,
-      "deepswe_pass1": {
-        "_status": "not listed as of 2026-09-22"
-      },
       "id": "opus55-xhigh",
       "tier_cell": false,
       "roles": {
@@ -845,8 +907,12 @@
         "tps": 80,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true,
+        "secondary_pass1": 0.623,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 167.4,
+        "provisional": false,
         "note": "AA 'with fallback' configuration"
       },
       "probe": {
@@ -866,14 +932,13 @@
       "endpoint": "claude-code",
       "evidence": "leaderboard",
       "sources": [
-        "artificial_analysis"
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
       ],
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "deepswe_pass1": {
-        "_status": "not listed as of 2026-09-22"
-      },
       "note": "Main Claude line. Judgement roles start at high; medium remains eligible for implementation, writing and review gates.",
       "id": "opus55-medium",
       "tier_cell": true,
@@ -896,8 +961,12 @@
         "tps": 73,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true,
+        "secondary_pass1": 0.623,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 167.4,
+        "provisional": false,
         "note": "AA 'with fallback' configuration"
       },
       "probe": {
@@ -922,8 +991,12 @@
         "tps": 90,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true,
+        "secondary_pass1": 0.619,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 165.2,
+        "provisional": false,
         "note": "AA 'with fallback' configuration"
       },
       "probe": {
@@ -939,7 +1012,13 @@
         "plan_review": 118,
         "review_gate": 118,
         "review_deep": 118
-      }
+      },
+      "note": "Cross-check 10-06: AA medium 41 reflects effort, not the model; FrontierSWE max 0.619 is Opus-level at high effort.",
+      "sources": [
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
+      ]
     },
     {
       "tier": "E",
@@ -954,7 +1033,7 @@
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "note": "Non-reasoning isolation worker (explore / web). AA 9-23: 17 / $0.21 / first chunk 23.1s (non-reasoning variant 15* / 0.63s). Opus 5.5 low (42 / $0.55 / 7s) is 2.5x the cost per task for 2.5x the index and a faster first token — use it when a D read needs judgment.",
+      "note": "Non-reasoning isolation worker (explore / web). AA 9-23: 17 / $0.21 / first chunk 23.1s (non-reasoning variant 15* / 0.63s). Opus 5.5 low (42 / $0.55 / 7s) is 2.5x the cost per task for 2.5x the index and a faster first token — use it when a D read needs judgment. Cross-check 10-06: no FrontierSWE row; verdict unavailable, primary only (metrics stay provisional).",
       "intelligence_index": 17,
       "effective_cost": 0.21,
       "id": "haiku45",
@@ -972,7 +1051,7 @@
         "tps": 91,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
+        "secondary_pass1": null,
         "provisional": true,
         "note": "AA 'with fallback' configuration"
       },
@@ -992,18 +1071,16 @@
       "endpoint": "agy-cli",
       "evidence": "leaderboard",
       "sources": [
-        "artificial_analysis"
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
       ],
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
       "status": "active",
-      "note": "HTML/CSS and static-prototype specialty. AA 9-23: 3.8 Flash medium 40 / $0.93 (speed and latency not shown), high 41 / $1.24 / 14s / 287 t/s, low 33. DeepSWE 9-22 unchanged: medium 71% $1.97, high 74% $2.36 (still tied for first at the lowest cost). agy has no command grant, so it cannot run tests — implementation via agy needs codex-side verification. Recheck item.",
+      "note": "HTML/CSS and static-prototype specialty. AA 9-23: 3.8 Flash medium 40 / $0.93 (speed and latency not shown), high 41 / $1.24 / 14s / 287 t/s, low 33. agy has no command grant, so it cannot run tests — implementation via agy needs codex-side verification. Cross-check 10-06: disagrees. AA medium 40 resembles Sonnet 5.5 medium, but FrontierSWE high is 0.196. Following the secondary for long work: unsuitable for long implementation; trust low makes it a last resort (user decision 2026-10-06).",
       "intelligence_index": 40,
       "effective_cost": 0.93,
-      "deepswe_pass1": {
-        "medium": 0.71,
-        "high": 0.74
-      },
       "id": "flash-medium",
       "tier_cell": true,
       "roles": {
@@ -1017,14 +1094,19 @@
         "tps": null,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true
+        "secondary_pass1": 0.196,
+        "secondary_effort": "high",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 156.9,
+        "provisional": false
       },
       "probe": {
         "date": "2026-09-30",
         "result": "OK",
         "cli": "agy"
-      }
+      },
+      "trust": "low"
     },
     {
       "tier": "D",
@@ -1035,7 +1117,9 @@
       "endpoint": "agy-cli",
       "evidence": "leaderboard",
       "sources": [
-        "artificial_analysis"
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
       ],
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
@@ -1057,14 +1141,19 @@
         "tps": null,
         "source": "artificial_analysis",
         "read": "2026-09-30",
-        "deepswe_pass1": null,
-        "provisional": true
+        "secondary_pass1": 0.196,
+        "secondary_effort": "high",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 156.9,
+        "provisional": false
       },
       "probe": {
         "date": "2026-09-30",
         "result": "OK",
         "cli": "agy"
-      }
+      },
+      "trust": "low"
     },
     {
       "tier": "D",

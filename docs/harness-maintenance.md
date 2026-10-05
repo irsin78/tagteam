@@ -62,6 +62,13 @@ The authoritative source for current execution values and benchmark evidence is
 [model bindings](../.claude/model-bindings.json). Figures from measurement
 history are not used as the current version's speed or protection guarantee.
 
+Benchmark rechecks read the secondary and cross-check sources from fixed data
+files rather than script-rendered tables: `https://epoch.ai/data/benchmark_data.zip`
+(`frontierswe_external.csv`) and `https://epoch.ai/data/eci_scores.csv`. The
+isolated web reader cannot render those pages; a direct download needs explicit
+user approval for those files, and only model-name, score and date columns are
+extracted. Sources, ranks and exclusions live in `sources` of the bindings.
+
 ## Behaviour evaluation (observing real runs)
 
 Some effects of instruction and policy changes do not show up in regression

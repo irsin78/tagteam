@@ -243,7 +243,7 @@ class HostRoutes(unittest.TestCase):
         self.assertTrue(ordinary['floor_met'])
         data = routes.merge_bindings(data, {'workers_local': [
             {'id': 'sol61-high', 'status': 'active', 'probe': {'result': 'OK'},
-             'metrics': {'provisional': False, 'deepswe_pass1': .7}}]})
+             'metrics': {'provisional': False, 'secondary_pass1': .7}}]})
         result = routes.resolve(data, 'claude', 'implement')
         self.assertEqual(result['worker_id'], 'sol61-high')
         unscored = self.override('sol61-max', scored=False)
@@ -1028,7 +1028,8 @@ class AssessmentRoutes(unittest.TestCase):
         self.assertEqual(len(self.data['workers']), 18)
         for band, ids in expected.items():
             self.assertEqual({w['id'] for w in self.data['workers'] if w['tier'] == band}, ids)
-        self.assertTrue(all('trust' not in w for w in self.data['workers']))
+        # Only Gemini Flash is a last resort (cross-check 2026-10-06, user decision).
+        self.assertEqual({w['id'] for w in self.data['workers'] if w.get('trust') == 'low'}, {'flash-medium', 'flash-low'})
         self.assertNotIn('trust_note', self.data['selection_policy'])
         self.assertNotIn('promotion_delta', self.data['selection_policy'])
         self.assertEqual(routes.launcher_default(self.data, 'openai', 'image_verify')['id'], 'sol61-medium')
