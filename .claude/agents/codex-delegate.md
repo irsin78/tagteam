@@ -8,7 +8,6 @@ description: >
   when codex cannot run so the orchestrator applies the codex fallback.
 tools: Bash, Read, Grep, Glob
 model: haiku
-effort: low
 maxTurns: 25
 ---
 

@@ -8,7 +8,6 @@ description: >
   summary. Use for untrusted content that needs an isolated reader.
 tools: WebFetch
 model: haiku
-effort: low
 maxTurns: 5
 ---
 

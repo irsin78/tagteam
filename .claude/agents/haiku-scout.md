@@ -9,7 +9,6 @@ description: >
   No web access: URLs and untrusted external content go to haiku-fetcher.
 tools: Read, Bash, Grep, Glob
 model: haiku
-effort: low
 maxTurns: 20
 memory: project
 ---
