@@ -88,6 +88,7 @@ usage() {
     echo '       codex-run.sh --status <RUN_ID>' >&2
     echo '       codex-run.sh --wait <RUN_ID> [-t SECONDS<=570]' >&2
     echo '       -m/-e default from .claude/model-bindings.json (+ .local.json, local wins); -e max requires -b; worker ultra is denied' >&2
+    echo '       -t above 570 requires -b (the Bash tool caps a foreground call at 600 s)' >&2
     echo 'HARNESS_DENIED: bad invocation (a typo is a policy error, not an availability failure)' >&2
     exit 4
 }
@@ -258,6 +259,17 @@ case "$TIMEOUT" in
         echo "HARNESS_DENIED: -t must be a positive integer number of seconds (got '$TIMEOUT')" >&2
         exit 4 ;;
 esac
+# Foreground-only cap: the parent's Bash tool kills a call at 600 s, so a
+# longer budget only makes sense detached (-b), where the nohup child keeps
+# the full -t. The detached child re-runs with the same args, -b included.
+# Fail closed: an oversized digit string makes [ -le ] error out, so the
+# cap denies anything it cannot prove to be <= 570 (seven digits, about
+# 115 days, is the most GNU timeout needs even detached).
+case "$TIMEOUT" in ????????*) echo "HARNESS_DENIED: -t $TIMEOUT is too large (at most 7 digits)" >&2; exit 4 ;; esac
+if [ "$DETACH" -ne 1 ] && ! [ "$TIMEOUT" -le 570 ] 2>/dev/null; then
+    echo "HARNESS_DENIED: -t $TIMEOUT exceeds the 570 s foreground cap (the Bash tool kills a call at 600 s); add -b to run detached with this budget and poll with --wait" >&2
+    exit 4
+fi
 
 [ -n "$PROMPT_FILE" ] || usage          # no -p at all is a bad invocation (exit 4)
 if [ ! -s "$PROMPT_FILE" ]; then

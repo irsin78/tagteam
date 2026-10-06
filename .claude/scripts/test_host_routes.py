@@ -1163,7 +1163,11 @@ class AssessmentRoutes(unittest.TestCase):
             with self.subTest(host=host):
                 route = routes.resolve(self.data, host, 'implement', assess=assessment)
                 self.assertEqual((route['worker_id'], route['band'], route['tier']), (expected, 'A', 'A'))
-                self.assertEqual(route['needs_detached'], detached)
+                # The seed estimates suggest a -t above the launchers' foreground
+                # cap, so even the foreground-latency row runs detached.
+                self.assertGreater(route['suggested_timeout_s'], routes.FOREGROUND_TIMEOUT_CAP_S)
+                self.assertTrue(route['needs_detached'])
+                self.assertIn('exceeds the 570 s foreground cap', route['reason'])
                 self.assertEqual(route['latency_class'], 'foreground')
                 self.assertTrue(route['floor_met'])
                 self.assertFalse(route['tier_fallback'])
@@ -1217,7 +1221,11 @@ class AssessmentRoutes(unittest.TestCase):
             self.assertEqual(route['band'], 'A')
             self.assertFalse(route['floor_met'])
             self.assertTrue(route['tier_fallback'])
-            self.assertFalse(route['needs_detached'])
+            # Detached only because the suggested -t exceeds the foreground cap,
+            # not because the fallback row is slow.
+            self.assertTrue(route['needs_detached'])
+            self.assertNotIn('only available detached', route['reason'])
+            self.assertIn('exceeds the 570 s foreground cap', route['reason'])
 
     def test_decide_first_and_plan_first_are_advisory(self):
         open_task = routes.resolve(self.data, 'codex', 'implement', assess=self.assess(open=2))
@@ -1279,7 +1287,16 @@ class ScoredRoutes(unittest.TestCase):
                         assessment['volume'] = volume
                     route = self.route(data, assess=assessment)
                     self.assertEqual(route['suggested_timeout_s'], expected)
-                    self.assertTrue(route['reason'].endswith(f'; suggested -t {expected}'))
+                    self.assertIn(f'; suggested -t {expected}', route['reason'])
+                    # Above the launchers' foreground cap the route is detached:
+                    # a foreground -t over 570 is HARNESS_DENIED by every launcher.
+                    if expected > routes.FOREGROUND_TIMEOUT_CAP_S:
+                        self.assertTrue(route['needs_detached'])
+                        self.assertTrue(route['reason'].endswith(
+                            f'; suggested -t {expected} (exceeds 570 s foreground cap; run with -b --wait)'.replace('exceeds 570', 'exceeds the 570')))
+                    else:
+                        self.assertFalse(route['needs_detached'])
+                        self.assertTrue(route['reason'].endswith(f'; suggested -t {expected}'))
                     canonical = ','.join(f'{key}={assessment[key]}' for key in records.ASSESSMENT_KEYS
                                          if key in assessment)
                     self.assertEqual(route['launch_env'], dict(HARNESS_BAND=route['band'],
@@ -1295,6 +1312,7 @@ class ScoredRoutes(unittest.TestCase):
         route = self.route(data, direct_band='B')
         self.assertEqual(route['decision'], 'direct')
         self.assertEqual(route['suggested_timeout_s'], 1380)
+        self.assertTrue(route['needs_detached'])
 
     def test_launch_environment_omits_unknown_assessment(self):
         route = self.route(assess=None)

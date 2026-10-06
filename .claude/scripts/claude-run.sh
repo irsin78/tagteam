@@ -54,6 +54,7 @@ timing_init "$LAUNCH_CLOCK"
 
 usage() {
     echo 'Usage: claude-run.sh -p <prompt-file> [-m MODEL] [-e EFFORT] [-a implement|web] [-s workspace-write|read-only] [-v VERIFY_SCRIPT_FILE] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b]' >&2
+    echo '       -t above 570 requires -b (the Bash tool caps a foreground call at 600 s)' >&2
     echo '       claude-run.sh --status <RUN_ID>' >&2
     echo '       claude-run.sh --wait <RUN_ID> [-t SECONDS<=570]' >&2
     echo '       -m/-e default from .claude/model-bindings.json (+ .local.json, local wins); -e max requires -b' >&2
@@ -142,7 +143,9 @@ case "$EFFORT" in
     max)
         # Same rule as codex: the slowest setting runs detached only, so a
         # foreground call cannot be killed at the Bash tool's 600 s cap
-        # after burning the quota.
+        # after burning the quota. The -t cap below is foreground-only for
+        # the same reason: a detached run may take the long budget Fable and
+        # Astra need (minutes-long single requests are normal at high effort).
         if [ "$DETACH" -ne 1 ]; then
             echo "HARNESS_DENIED: -e max requires -b (detached run); rerun with -b and poll with --wait" >&2
             exit 4
@@ -158,7 +161,14 @@ case "$LOG_DIR" in
     ""|/*|~*|*:*|*\\*|..|../*|*/..|*/../*) echo "HARNESS_DENIED: -l must be a repo-relative directory without parent traversal" >&2; exit 4 ;;
 esac
 case "$TIMEOUT" in ""|*[!0-9]*|0*) echo "HARNESS_DENIED: -t must be a positive integer" >&2; exit 4 ;; esac
-[ "$TIMEOUT" -le 570 ] || { echo "HARNESS_DENIED: -t must be <= 570 (the Bash tool caps a call at 600 s)" >&2; exit 4; }
+# Fail closed: an oversized digit string makes [ -le ] error out, so the
+# cap denies anything it cannot prove to be <= 570 (seven digits, about
+# 115 days, is the most GNU timeout needs even detached).
+case "$TIMEOUT" in ????????*) echo "HARNESS_DENIED: -t $TIMEOUT is too large (at most 7 digits)" >&2; exit 4 ;; esac
+if [ "$DETACH" -ne 1 ] && ! [ "$TIMEOUT" -le 570 ] 2>/dev/null; then
+    echo "HARNESS_DENIED: -t $TIMEOUT exceeds the 570 s foreground cap (the Bash tool kills a call at 600 s); add -b to run detached with this budget and poll with --wait" >&2
+    exit 4
+fi
 if [ "$VERIFY_GIVEN" -eq 1 ]; then
     # -v takes a PATH, never a command string (same rule as codex-run.sh):
     # keep the starting bytes in parent memory, never in a writable log file.

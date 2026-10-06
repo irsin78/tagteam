@@ -1549,6 +1549,46 @@ run_capture max-wait bash "$CODEX_RUN" --wait maxdetach -t 60
 ok=0; [ "$maxd_rc" -eq 0 ] && has "$maxd_out" '^RUN_ID: maxdetach$' && [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE.*effort=max' && has "$LAST_OUT" 'effort=max \(explicit\)' && ok=1
 expect_case "codex max with -b runs detached and completes" "$ok" "detach=$maxd_rc wait=$LAST_RC"
 
+# A budget above the 570 s foreground cap is accepted only detached: the
+# parent's Bash tool kills a foreground call at 600 s, so every launcher
+# refuses it before any CLI call and points at -b.
+for launcher in "$CODEX_RUN" "$CLAUDE_RUN" "$AGY_RUN"; do
+    fresh_case
+    rm -f "$TEST_ROOT"/codex-args.log "$TEST_ROOT"/claude-args.log "$TEST_ROOT"/agy-args.log
+    run_capture long-foreground env STUB_ACTION=none bash "$launcher" -p prompt.txt -t 900
+    ok=0
+    [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -t 900 exceeds the 570 s foreground cap' \
+        && has "$LAST_OUT" 'add -b to run detached' && ! has "$LAST_OUT" '^DETACHED:' \
+        && [ ! -e "$TEST_ROOT/codex-args.log" ] && [ ! -e "$TEST_ROOT/claude-args.log" ] && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+    expect_case "$(basename "$launcher") refuses foreground -t 900 before any CLI call" "$ok" "exit=$LAST_RC"
+    # An oversized digit string must fail closed in both modes: bash cannot
+    # compare it, and GNU timeout could not take it either.
+    for mode_args in "" "-b"; do
+        fresh_case
+        rm -f "$TEST_ROOT"/codex-args.log "$TEST_ROOT"/claude-args.log "$TEST_ROOT"/agy-args.log
+        run_capture long-oversized env STUB_ACTION=none bash "$launcher" -p prompt.txt -t 9223372036854775808 $mode_args
+        ok=0
+        [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -t 9223372036854775808 is too large' && ! has "$LAST_OUT" '^DETACHED:' \
+            && [ ! -e "$TEST_ROOT/codex-args.log" ] && [ ! -e "$TEST_ROOT/claude-args.log" ] && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+        expect_case "$(basename "$launcher") refuses an oversized -t${mode_args:+ with $mode_args}" "$ok" "exit=$LAST_RC"
+    done
+done
+for tool in codex claude agy; do
+    fresh_case
+    rm -f "$TEST_ROOT"/agy-args.log
+    case "$tool" in codex) launcher=$CODEX_RUN ;; claude) launcher=$CLAUDE_RUN ;; *) launcher=$AGY_RUN ;; esac
+    run_capture "long-detach-$tool" env STUB_ACTION=none HARNESS_RUN_ID="longbudget$tool" bash "$launcher" -p prompt.txt -b -t 900
+    long_rc=$LAST_RC; long_out=$LAST_OUT
+    run_capture "long-wait-$tool" bash "$launcher" --wait "longbudget$tool" -t 60
+    ok=0
+    [ "$long_rc" -eq 0 ] && has "$long_out" "^RUN_ID: longbudget$tool\$" && [ "$LAST_RC" -eq 0 ] \
+        && has "$LAST_OUT" '^STATUS: DONE' && state_field_is "longbudget$tool" state done && ok=1
+    # agy passes the budget through to the CLI, so the stub's args log shows
+    # that the full 900 s reached the worker rather than a clamped value.
+    [ "$tool" != agy ] || grep -Fq -- '--print-timeout 900s' "$TEST_ROOT/agy-args.log" || ok=0
+    expect_case "$tool -b accepts -t 900 and completes detached" "$ok" "detach=$long_rc wait=$LAST_RC"
+done
+
 # Signal forwarding and aborted state. Skip only when the platform cannot
 # deliver/observe POSIX signals through its Bash process layer.
 fresh_case

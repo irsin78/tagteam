@@ -14,6 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'hooks'))
 from stop_gate import find_bash, mission_marker  # noqa: E402
 
 REVIEW_ROLES = ('plan_review', 'review_gate', 'review_deep')
+# Launchers accept -t above this only with -b (the parent's Bash tool kills a
+# foreground call at 600 s); kept in sync with the launchers' foreground cap.
+FOREGROUND_TIMEOUT_CAP_S = 570
 
 
 def merge(base, local):
@@ -789,6 +792,12 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             minutes += estimates['delegate_overhead'][volume]['minutes']
             route['suggested_timeout_s'] = max(570, math.ceil(minutes * 1.5 * 60) + 300)
             route['reason'] += f"; suggested -t {route['suggested_timeout_s']}"
+            # The launchers accept -t above 570 only detached (-b): the parent's
+            # Bash tool kills a foreground call at 600 s. A suggestion past the
+            # cap therefore makes the route detached, whatever the TTFT class said.
+            if route['suggested_timeout_s'] > FOREGROUND_TIMEOUT_CAP_S:
+                route['needs_detached'] = True
+                route['reason'] += f' (exceeds the {FOREGROUND_TIMEOUT_CAP_S} s foreground cap; run with -b --wait)'
     return route
 
 

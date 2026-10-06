@@ -57,7 +57,10 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
    Use routed JSON values for MODEL/EFFORT. Run `.sh` with Git Bash even from
    PowerShell, never WindowsApps WSL bash.
    Export the router's `launch_env` and pass `-t suggested_timeout_s` to record
-   band, assessment and role without hand-typing; use detached `-b` for `max`.
+   band, assessment and role without hand-typing; use detached `-b` for `max` and
+   whenever `needs_detached` is true, including a suggestion above 570 s: every
+   launcher refuses a foreground `-t` above 570 (the Bash tool kills a call at
+   600 s) and takes the full budget only detached.
    For null/unspecified Claude effort, omit `-e`; explicit `-m` without `-e`
    uses CLI defaults, not implementation
    defaults. Effective effort is unobservable and reported `unspecified`.

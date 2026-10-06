@@ -33,8 +33,9 @@ the needed behavior; identify uncovered input, output and validation paths.
 
 ## Assign a worker
 Export the router's `launch_env` and pass `-t suggested_timeout_s` to the launcher
-(detached `-b` for `max`), so band, assessment and role are recorded without
-hand-typing. Assessed routes without volume use the small-task estimate for timeout.
+(detached `-b` for `max` and whenever `needs_detached` is true; a suggestion above
+570 s is detached because foreground `-t` is capped there), so band, assessment and
+role are recorded without hand-typing. Assessed routes without volume use the small-task estimate for timeout.
 Choose role -> capability band -> latency class -> risk floor/budget -> specialty
 and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with

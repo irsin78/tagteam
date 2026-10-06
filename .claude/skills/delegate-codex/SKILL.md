@@ -31,7 +31,9 @@ harness-route.py; use its model/effort, not an assumed maximum model.
 
        bash .claude/scripts/codex-run.sh -p <prompt-file> [-m MODEL] [-e EFFORT] [-s SANDBOX] [-v <verify-script>] [-i <image>] [-o <schema.json>] [-t <seconds>]
 
-   Defaults: `workspace-write` / `-t 570`; `-m`/`-e` default from
+   Defaults: `workspace-write` / `-t 570` (a foreground `-t` above 570 is
+   HARNESS_DENIED because the Bash tool kills a call at 600 s; `-b` takes any
+   budget up to 7 digits); `-m`/`-e` default from
    `.claude/model-bindings.json` (+ `.claude/model-bindings.local.json`,
    local workers merge by id): without `-i` → the router's launcher default
    (`harness-route.py --launcher-default --vendor openai --role implement`:

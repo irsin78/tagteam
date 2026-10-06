@@ -34,7 +34,8 @@ the prompt (rules/security-boundary.md).
    (`harness-route.py --launcher-default --vendor google --role implement`:
    band-floor B, foreground, cheapest measured row), passing `-m`/`-e` explicitly.
    Retry settings follow retry-policy.md: one worker attempt per retry, attempt cap 3.
-   Other defaults: `-t 570` / logs in `.claude/agy-logs/`. `-x` lists the
+   Other defaults: `-t 570` (above 570 only with `-b`; the Bash tool kills a
+   foreground call at 600 s) / logs in `.claude/agy-logs/`. `-x` lists the
    absolute output paths the task must produce; the launcher verifies
    they exist, are non-empty, and were written BY THIS RUN (new, or
    mtime/size changed since preflight) — `PRODUCED` / `MISSING` is the
