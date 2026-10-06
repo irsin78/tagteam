@@ -35,8 +35,13 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    the band and excludes the refusing vendor for that route only (it is not
    exhaustion). Security-adjacent tasks (guards, deny patterns, exploit-shaped
    text) are the usual trigger; a refusal on permitted work is a false positive,
-   not a reason to drop the task. The Codex CLI's refusal shape is unobserved;
-   classify it from the run log by hand.
+   not a reason to drop the task. Codex has two shapes: a model-level decline
+   arrives as ordinary final text (observed 2026-10-06: STATUS DONE, exit 0, the
+   message itself says it cannot comply), so read FINAL_MESSAGE before accepting a
+   DONE; an API-level block appears in the run log as
+   `Incomplete response returned, reason: content_filter` (CLI error text, not yet
+   observed live). Classify both as `refusal` by hand; the launcher prints no
+   REFUSAL line for Codex.
 3. A reasoning retry below A raises the floor one band in the same vendor,
    choosing the cheapest eligible row at or above that band in the latency
    class; if none is fast enough, use the cheapest such row detached. If the
