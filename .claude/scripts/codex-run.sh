@@ -415,7 +415,7 @@ if [ -n "$SCHEMA" ]; then EXTRA_ARGS+=(--output-schema "$SCHEMA"); fi
 # treated as an orchestrator, exactly like a main Claude session.
 export HARNESS_DELEGATE_RUN=1
 # Fixed role context precedes the task; task text still arrives only via stdin.
-DELEGATE_INSTRUCTION='You are a DELEGATE assigned by a parent orchestrator. HARNESS_DELEGATE_RUN=1. Role is already resolved. Skip the Orchestrator workflow and its linked reading/setup; do not run harness-route.py, spawn agents or launch model CLIs. Follow the assigned task and applicable project/security/verification rules. For guidance, read only missing task-relevant sections and the required platform subsection; do not read whole harness manuals or reread unchanged supplied material for onboarding. Never commit, push or revert existing work. Edit the control plane only if this launcher already has HARNESS_ALLOW_CONTROL_PLANE=1. If verification is blocked by the environment, report the exact failed check to the parent; do not expand into permission repair or repeated cleanup. Return CHANGED, VERIFY, NOTES or NEEDS_INPUT. Your final report is checked by the parent.'
+DELEGATE_INSTRUCTION='You are a DELEGATE assigned by a parent orchestrator. HARNESS_DELEGATE_RUN=1. Role is already resolved. Skip the Orchestrator workflow and its linked reading/setup; do not run harness-route.py, spawn agents or launch model CLIs. Follow the assigned task and applicable project/security/verification rules. For guidance, read only missing task-relevant sections and the required platform subsection; do not read whole harness manuals or reread unchanged supplied material for onboarding. Read only the file ranges the task needs rather than whole files or repeated re-reads, and edit surgically instead of rewriting a file. Never commit, push or revert existing work. Edit the control plane only if this launcher already has HARNESS_ALLOW_CONTROL_PLANE=1. If verification is blocked by the environment, report the exact failed check to the parent; do not expand into permission repair or repeated cleanup. Return CHANGED, VERIFY, NOTES or NEEDS_INPUT; if you cannot do the task on policy or safety grounds, start your final message with REFUSED: and the reason. Your final report is checked by the parent.'
 timing_enter cli
 set -m
 if [ -n "$RESUME_ID" ]; then
@@ -499,6 +499,16 @@ else
     else
         OUTPUT_STATE=empty
     fi
+fi
+# The worker's own contract label (first line, or the -o JSON status) decides
+# before any verifier: a NEEDS_INPUT or REFUSED report is never DONE.
+CONTRACT_STATUS=$(contract_status "$LAST_MSG" "$SCHEMA")
+if [ -n "$SCHEMA" ] && { [ ! -s "$LAST_MSG" ] || [ "$CONTRACT_STATUS" = INVALID ]; }; then
+    # A schema was demanded and the worker returned no readable report:
+    # that is a failed contract, never a success.
+    STATUS="FAILED(schema output missing or unreadable, was $STATUS)"
+elif [ "$STATUS" = DONE ] && [ -n "$CONTRACT_STATUS" ]; then
+    STATUS=$CONTRACT_STATUS
 fi
 # A process exit of zero never overrides a failed task verifier.
 if [ -n "$VERIFY_CMD" ] && [ "$VERIFY_EXIT" -ne 0 ]; then

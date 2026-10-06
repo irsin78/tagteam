@@ -143,6 +143,13 @@ printf '%s\n' "stub final message" > "${out:-$FIXTURE_ROOT/codex-last-message.lo
 case "${STUB_ACTION:-none}" in
     status-line) printf '%s\n' "$STUB_STATUS_LINE"; exit "${STUB_STATUS_EXIT:-1}" ;;
     touch-project-agent) mkdir -p .agents/agents; echo 'changed project agent' > .agents/agents/project-agent.md ;;
+    needs-input) printf '%s\n' 'NEEDS_INPUT: which config file should carry the flag?' 'I made no file changes.' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
+    refused) printf '%s\n' 'REFUSED: the task asks for hidden reasoning, which I cannot provide.' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
+    label-midbody) printf '%s\n' 'CHANGED: none' 'NOTES: the spec says to return NEEDS_INPUT: when a file is missing; nothing was missing.' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
+    schema-refused) printf '%s\n' '{"status":"REFUSED","changed":[],"verify":"n/a","notes":"declined on policy grounds"}' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
+    schema-invalid) printf '%s\n' 'not json at all' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
+    schema-empty) : > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
+    bom-needs-input) printf '\357\273\277%s\n' 'NEEDS_INPUT: which file (BOM-prefixed)?' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
     quota-status) echo 'ERROR: HTTP 429 Too Many Requests'; exit 1 ;;
     usage-status) echo "ERROR: You've hit your usage limit. Try again later."; exit 1 ;;
     quota-prose) printf '%s\n' 'The model quotes "HTTP 429 Too Many Requests".' '12: ERROR: usage limit exceeded' '> ERROR: HTTP 429 Too Many Requests'; exit 1 ;;
@@ -259,6 +266,10 @@ case "${STUB_ACTION:-none}" in
     quota-prose) echo '{"is_error":false,"result":"HTTP 429 Too Many Requests"}'; exit 0 ;;
     quota-quoted-error) echo '{"is_error":true,"result":"> HTTP 429 Too Many Requests"}'; exit 0 ;;
     errorjson) echo '{"is_error":true,"result":"quota exhausted"}'; exit 0 ;;
+    cached-usage) echo '{"is_error":false,"result":"stub final message","total_cost_usd":4.55401425,"usage":{"input_tokens":194,"output_tokens":20294,"cache_creation_input_tokens":167793,"cache_read_input_tokens":726057}}'; exit 0 ;;
+    needs-input) echo '{"is_error":false,"result":"NEEDS_INPUT: which config file should carry the flag?\nI made no file changes."}'; exit 0 ;;
+    refused) echo '{"is_error":false,"result":"REFUSED: the task asks for hidden reasoning, which I cannot provide."}'; exit 0 ;;
+    label-midbody) echo '{"is_error":false,"result":"CHANGED: none\nNOTES: return NEEDS_INPUT: only when a file is missing; nothing was missing."}'; exit 0 ;;
     refusal) echo '{"type":"result","subtype":"success","is_error":true,"stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction"},"result":"API Error: Sonnet 5.5'"'"'s safeguards flagged this message (https://www.anthropic.com/legal/aup).","num_turns":2}'; exit 1 ;;
     rewind) git update-ref HEAD HEAD~1 ;;
     delete-head) git update-ref -d HEAD ;;
@@ -783,7 +794,7 @@ expect_case "claude availability quota-quoted-error" "$ok" "exit=$LAST_RC"
 fresh_case
 run_capture claude-done env STUB_ACTION=none HARNESS_RUN_ID=claudedone bash "$CLAUDE_RUN" -p prompt.txt
 ok=0
-if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'stub final message'    && has "$LAST_OUT" '^TOKENS: 15$' && state_field_is claudedone state done; then ok=1; fi
+if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'stub final message'    && has "$LAST_OUT" '^TOKENS: 15 \(output=5,cache_read=0,cache_create=0,input=10\)$' && ! has "$LAST_OUT" '^COST_USD:' && state_field_is claudedone state done; then ok=1; fi
 timing_ok "$LAST_OUT" 1 0 || ok=0
 expect_case "claude DONE report and saved state" "$ok" "exit=$LAST_RC"
 
@@ -1033,6 +1044,22 @@ ok=0
 [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED' && has "$LAST_OUT" '^REFUSAL: reasoning_extraction - API Error: ' \
     && ! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
 expect_case "claude safety refusal reports REFUSAL with its category" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-cached-usage env STUB_ACTION=cached-usage bash "$CLAUDE_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^TOKENS: 914338 \(output=20294,cache_read=726057,cache_create=167793,input=194\)$' && has "$LAST_OUT" '^COST_USD: 4.5540$' && ok=1
+expect_case "claude TOKENS carries the cache breakdown and the CLI cost estimate" "$ok" "exit=$LAST_RC"
+
+for label in needs-input:NEEDS_INPUT refused:REFUSED; do
+    fresh_case
+    run_capture "claude-${label%%:*}" env STUB_ACTION="${label%%:*}" bash "$CLAUDE_RUN" -p prompt.txt
+    ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" "^STATUS: ${label#*:} " && ! has "$LAST_OUT" '^STATUS: DONE' && ok=1
+    expect_case "claude first-line ${label#*:} label is reported, not DONE" "$ok" "exit=$LAST_RC"
+done
+fresh_case
+run_capture claude-label-midbody env STUB_ACTION=label-midbody bash "$CLAUDE_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+expect_case "claude label inside the body stays DONE" "$ok" "exit=$LAST_RC"
 
 for bad in "-e banana" "-s danger-full-access" "-e max" "-l /abs/log" "-t 900"; do
     fresh_case
@@ -1489,6 +1516,33 @@ write_bindings "$CASE_REPO/.claude/model-bindings.json" '"gpt-6.1-sol"' '"max"'
 run_capture guard-bindings-max bash "$CODEX_RUN" -p prompt.txt
 ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -e max requires -b.*from the bindings: public' && has "$LAST_OUT" '^BINDINGS: public role=implement model=gpt-6.1-sol effort=max$' && [ ! -e "$TEST_ROOT/codex-args.log" ] && ok=1
 expect_case "codex bindings-sourced max without -b is denied and names the source" "$ok" "exit=$LAST_RC"
+
+# Worker contract labels: a first-line NEEDS_INPUT:/REFUSED: (or the -o JSON
+# status) is never DONE; a label quoted inside the body does not count.
+for label in needs-input:NEEDS_INPUT refused:REFUSED; do
+    fresh_case
+    run_capture "codex-${label%%:*}" env STUB_ACTION="${label%%:*}" bash "$CODEX_RUN" -p prompt.txt
+    ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" "^STATUS: ${label#*:} " && ! has "$LAST_OUT" '^STATUS: DONE' && ok=1
+    expect_case "codex first-line ${label#*:} label is reported, not DONE" "$ok" "exit=$LAST_RC"
+done
+fresh_case
+run_capture codex-label-midbody env STUB_ACTION=label-midbody bash "$CODEX_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+expect_case "codex label inside the body stays DONE" "$ok" "exit=$LAST_RC"
+fresh_case
+run_capture codex-schema-refused env STUB_ACTION=schema-refused bash "$CODEX_RUN" -p prompt.txt -o "$SCRIPT_DIR/codex-report.schema.json"
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: REFUSED ' && has "$LAST_OUT" '^SCHEMA: ' && ok=1
+expect_case "codex -o JSON status REFUSED is reported, not DONE" "$ok" "exit=$LAST_RC"
+for broken in schema-invalid schema-empty; do
+    fresh_case
+    run_capture "codex-$broken" env STUB_ACTION="$broken" bash "$CODEX_RUN" -p prompt.txt -o "$SCRIPT_DIR/codex-report.schema.json"
+    ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(schema output missing or unreadable, was DONE\)' && ok=1
+    expect_case "codex -o with $broken final message is FAILED, not DONE" "$ok" "exit=$LAST_RC"
+done
+fresh_case
+run_capture codex-bom env STUB_ACTION=bom-needs-input bash "$CODEX_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: NEEDS_INPUT ' && ok=1
+expect_case "codex BOM-prefixed first-line label is still read" "$ok" "exit=$LAST_RC"
 
 
 fi

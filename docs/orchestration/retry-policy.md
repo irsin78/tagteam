@@ -26,7 +26,7 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    | `deadline` | `TIMEOUT:` (exit 124) with no partial progress: no CHANGED, no partial VERIFY, task not reached | rerun once with the same settings detached (`-b --wait`) and a longer `-t`; never a promotion |
    | `knowledge` | misuse of an unfamiliar API or library | supply references or a web reader, same settings |
    | `defect` | the verifier caught an implementation defect | corrective resume with the same settings (`-r`), not a promotion |
-   | `refusal` | `REFUSAL:` line (Claude: `is_error` with `stop_reason: refusal`, result starts "API Error: ... safeguards flagged this message") | one attempt on a different vendor at the same band, author separation kept; same model again only after rewording a task text that itself tripped the classifier |
+   | `refusal` | `STATUS: REFUSED` (the worker's first-line `REFUSED:` label or `-o` JSON status, either launcher) or a `REFUSAL:` line (Claude: `is_error` with `stop_reason: refusal`, result starts "API Error: ... safeguards flagged this message") | one attempt on a different vendor at the same band, author separation kept; same model again only after rewording a task text that itself tripped the classifier |
    | `reasoning` | spec understood but approach wrong, repeated verifier failure | promote (3) |
 
    Get the retry route with `harness-route.py --host <host> --role <role>
@@ -35,13 +35,13 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    the band and excludes the refusing vendor for that route only (it is not
    exhaustion). Security-adjacent tasks (guards, deny patterns, exploit-shaped
    text) are the usual trigger; a refusal on permitted work is a false positive,
-   not a reason to drop the task. Codex has two shapes: a model-level decline
-   arrives as ordinary final text (observed 2026-10-06: STATUS DONE, exit 0, the
-   message itself says it cannot comply), so read FINAL_MESSAGE before accepting a
-   DONE; an API-level block appears in the run log as
+   not a reason to drop the task. A model-level decline arrives as final text:
+   workers are told to start it with `REFUSED:`, and both launchers report that
+   first-line label (and a first-line `NEEDS_INPUT:`) as STATUS instead of DONE.
+   A decline without the label still reads DONE, so read FINAL_MESSAGE before
+   accepting one. A Codex API-level block appears in the run log as
    `Incomplete response returned, reason: content_filter` (CLI error text, not yet
-   observed live). Classify both as `refusal` by hand; the launcher prints no
-   REFUSAL line for Codex.
+   observed live); classify it as `refusal` by hand.
 3. A reasoning retry below A raises the floor one band in the same vendor,
    choosing the cheapest eligible row at or above that band in the latency
    class; if none is fast enough, use the cheapest such row detached. If the

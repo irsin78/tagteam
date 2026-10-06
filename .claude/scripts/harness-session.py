@@ -172,9 +172,10 @@ def main():
     mission = commands.add_parser('mission', help='arm or release the current session mission guard')
     mission.add_argument('--session', required=True, help='id from HARNESS MISSION SESSION hook output')
     mission.add_argument('--state', required=True,
-                         choices=('active', 'complete', 'paused', 'needs-input', 'switched'))
+                         choices=('active', 'complete', 'paused', 'needs-input', 'switched', 'waiting'))
     mission.add_argument('--mission', help='project-relative mission folder containing spec.md')
     mission.add_argument('--reason', help='required for pause, decision/authorization wait, or changed request')
+    mission.add_argument('--run', help='waiting: RUN_ID of the detached launcher run (must still be starting/running)')
     budget = commands.add_parser('budget', help='record confirmed session vendor exhaustion')
     budget.add_argument('--session', required=True)
     action = budget.add_mutually_exclusive_group(required=True)
@@ -315,7 +316,7 @@ def main():
         return 0
     if args.command == 'mission':
         try:
-            print(update_mission(os.getcwd(), args.session, args.state, args.mission, args.reason))
+            print(update_mission(os.getcwd(), args.session, args.state, args.mission, args.reason, args.run))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             parser.error(str(exc))
         return 0

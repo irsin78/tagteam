@@ -82,7 +82,12 @@ After the completion evidence is recorded, use the same command with
 for an actual decision, permission or mandatory-dependency wait use
 `--state needs-input --reason "the decision needed and the resume condition"`;
 for a replaced request use `--state switched --reason "the changed request"`,
-and tell the user the reason. Registering and releasing do not replace approval
+and tell the user the reason. While a detached launcher run is still
+starting/running, `--state waiting --run <RUN_ID>` lets the turn end without
+polling; the Stop hook asks that launcher's `--status` (so a killed launcher
+counts as finished) and allows the stop only while the run is live, and once
+it has finished the usual single recovery applies again, so re-arm `active`
+when the report arrives. Registering and releasing do not replace approval
 or verification, and committing or reporting some items is not a reason to
 release.
 

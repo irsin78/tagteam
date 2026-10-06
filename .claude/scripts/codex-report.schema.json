@@ -6,8 +6,8 @@
   "properties": {
     "status": {
       "type": "string",
-      "enum": ["DONE", "FAILED", "NEEDS_INPUT"],
-      "description": "DONE = task complete and verification passed; FAILED = could not complete; NEEDS_INPUT = blocked on a question for the orchestrator"
+      "enum": ["DONE", "FAILED", "NEEDS_INPUT", "REFUSED"],
+      "description": "DONE = task complete and verification passed; FAILED = could not complete; NEEDS_INPUT = blocked on a question for the orchestrator; REFUSED = declined on policy or safety grounds (the launcher reports STATUS REFUSED, never DONE)"
     },
     "changed": {
       "type": "array",

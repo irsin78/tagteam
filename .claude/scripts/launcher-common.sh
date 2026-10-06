@@ -177,6 +177,46 @@ retry_header_check() {
     return 0
 }
 
+# Worker output contract (entry instructions, Every role): the FIRST non-blank
+# line of the final message may carry a status label. `NEEDS_INPUT:` and
+# `REFUSED:` make the run not-DONE even when the CLI exited 0 (observed
+# 2026-10-06: a Codex decline began "NEEDS_INPUT:" and still read as DONE).
+# With a JSON schema (-o) the `status` field is authoritative instead. Only the
+# first line counts, so a label quoted inside the body never flips a result.
+# Prints the status word, nothing when the message carries no label, or
+# INVALID when a schema was requested and the message is not JSON with a
+# known status (the launcher turns INVALID and an empty message into FAILED).
+contract_status() {
+    local file=$1 schema=${2:-} first
+    [ -s "$file" ] || return 0
+    # -a: a stray NUL or non-UTF-8 byte must not hide the label behind grep's
+    # binary-file detection; the BOM a Windows editor may prepend is dropped.
+    first=$(grep -a -m1 -v '^[[:space:]]*$' "$file" | tr -d '\r')
+    first=${first#$'\xEF\xBB\xBF'}
+    first=${first#"${first%%[![:space:]]*}"}
+    if [ -n "$schema" ]; then
+        local py
+        py=$(command -v python 2>/dev/null || command -v python3 2>/dev/null) || return 0
+        "$py" - "$file" <<'PY' 2>/dev/null
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding='utf-8-sig'))
+    status = data.get('status') if isinstance(data, dict) else None
+    if status in ('NEEDS_INPUT', 'REFUSED', 'FAILED'):
+        print(status)
+    elif status != 'DONE':
+        print('INVALID')
+except (OSError, ValueError, TypeError, UnicodeDecodeError):
+    print('INVALID')
+PY
+        return 0
+    fi
+    case "$first" in
+        NEEDS_INPUT:*) echo NEEDS_INPUT ;;
+        REFUSED:*) echo REFUSED ;;
+    esac
+}
+
 retry_header_echo() {
     [ -n "${ASSESS_HEADER:-}" ] && echo "ASSESS: $ASSESS_HEADER"
     [ -n "${HARNESS_TASK:-}" ] && echo "TASK: $HARNESS_TASK"

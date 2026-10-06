@@ -199,6 +199,87 @@ def mission_tests():
                 check(result.returncode == 0 and 'Previous mission guard released' in result.stdout)
                 check(not path.exists())
 
+        def waiting(d):
+            # A live detached run lets the turn end; a finished, stale or missing
+            # run restores the usual single recovery; arming requires a live run.
+            # Liveness is the launcher's own --status classification: a young
+            # `starting` record counts as live, a `running` record with a dead
+            # PID does not. Each blocked Stop consumes the recovery, so sub-cases
+            # release the marker with a UserPromptSubmit and re-arm.
+            import time
+            state_dir = os.path.join(d, 'runs')
+            os.makedirs(os.path.join(state_dir, 'testtree'))
+            env = dict(mission_env(), HARNESS_STATE_DIR=state_dir, HARNESS_TREE_KEY='testtree')
+            record = os.path.join(state_dir, 'testtree', 'state-20261006T000000Z-1.json')
+            run_id = '20261006T000000Z-1'
+
+            def record_state(value, age=0):
+                started = int(time.time()) - age
+                with open(record, 'w', encoding='utf-8') as handle:
+                    json.dump({'run_id': run_id, 'tool': 'codex', 'state': value,
+                               'launcher_pid': 999999, 'child_pid': None, 'launcher_stime': '', 'child_stime': '',
+                               'started': '2026-10-06T00:00:00Z', 'started_epoch': started,
+                               'updated': '2026-10-06T00:00:00Z', 'updated_epoch': started, 'exit': None,
+                               'status': '', 'report': '', 'cwd': d, 'budget': 570, 'sandbox': 'read-only'}, handle)
+
+            def waiting_invoke(**changes):
+                return run(d, json.dumps(dict(payload, **changes)), env=env, args=args)
+
+            def fresh_wait():
+                run(d, json.dumps({'session_id': 'orchestrator-1', 'hook_event_name': 'UserPromptSubmit',
+                                   'prompt': 'continue'}), env=env, args=args + ('--new-prompt',))
+                arm(d)
+                record_state('starting')  # young handoff window: live without a real PID
+                check(mission_command(d, '--state', 'waiting', '--run', run_id, env=env).returncode == 0)
+
+            # Arming needs an armed mission and a live run.
+            arm(d)
+            check(mission_command(d, '--state', 'waiting', env=env).returncode != 0)
+            check(mission_command(d, '--state', 'waiting', '--run', run_id, env=env).returncode != 0)
+            record_state('done')
+            check(mission_command(d, '--state', 'waiting', '--run', run_id, env=env).returncode != 0)
+            check(mission_command(d, '--state', 'waiting', '--run', '../escape', env=env).returncode != 0)
+            # Live run: the turn may end, repeatedly, without consuming the recovery.
+            fresh_wait()
+            result = waiting_invoke()
+            check(allowed(result) and 'HARNESS MISSION waiting: run %s is still running' % run_id in result.stdout)
+            check(allowed(waiting_invoke()))
+            # The record is resolved from the payload's cwd even when the hook
+            # process runs elsewhere (HARNESS_TREE_KEY pins the tree here, but the
+            # lookup must not depend on the process directory).
+            elsewhere = tempfile.mkdtemp()
+            try:
+                moved = subprocess.run([sys.executable, HOOK, *args], cwd=elsewhere, capture_output=True, text=True,
+                                       input=json.dumps(dict(payload, cwd=d)), env=env)
+                check(allowed(moved) and 'is still running' in moved.stdout)
+            finally:
+                shutil.rmtree(elsewhere, ignore_errors=True)
+            marker_record = json.loads(mission_marker(d, 'orchestrator-1').read_text(encoding='utf-8'))
+            check(marker_record.get('state') == 'waiting' and marker_record.get('run') == run_id)
+            # Finished run: the wait is over, one recovery, then the usual cap.
+            record_state('done')
+            finished = waiting_invoke()
+            check(blocked(finished) and 'the wait is over' in finished.stderr + finished.stdout)
+            check(allowed(waiting_invoke()) and 'Recovery limit reached' in waiting_invoke(stop_hook_active=True).stdout)
+            # Stale run: recorded running, dead old PID -> the launcher classifies it
+            # aborted and the wait is over.
+            fresh_wait()
+            record_state('running', age=3600)
+            stale = waiting_invoke()
+            check(blocked(stale) and 'the wait is over' in stale.stderr + stale.stdout)
+            check(json.loads(open(record, encoding='utf-8').read()).get('state') == 'aborted')
+            # Missing record and a marker without a run both end the wait.
+            fresh_wait()
+            os.remove(record)
+            gone = waiting_invoke()
+            check(blocked(gone) and 'not recorded' in gone.stderr + gone.stdout)
+            fresh_wait()
+            path = mission_marker(d, 'orchestrator-1')
+            marker_record = json.loads(path.read_text(encoding='utf-8'))
+            marker_record.pop('run')
+            path.write_text(json.dumps(marker_record), encoding='utf-8')
+            check(blocked(waiting_invoke()))
+
         def budget_survives_prompt(d):
             arm(d)
             recorded = subprocess.run([sys.executable, SESSION, 'budget', '--session', 'orchestrator-1',
@@ -236,6 +317,7 @@ def mission_tests():
             ('Codex-style synthetic prompt keeps host continuation cap', resumed),
             ('malformed new-prompt input never invokes verifier or rejects user', malformed_prompt),
             ('budget record survives a new prompt and completion clears it', budget_survives_prompt),
+            ('waiting on a live detached run allows stop; a finished run restores recovery', waiting),
             ('different session unaffected', lambda d: (arm(d, 'other-session'),
                                                        check(allowed(invoke(d))))),
             ('native subagent unaffected', lambda d: (arm(d), check(allowed(invoke(d, agent_id='worker'))))),

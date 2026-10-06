@@ -144,7 +144,9 @@ harness-route.py; use its model/effort, not an assumed maximum model.
 
 ## Exit codes
 
-- 0 = DONE, clean. 1 = FAILED or SCOPE_WARNING — read the report.
+- 0 = DONE, clean. 1 = FAILED, NEEDS_INPUT, REFUSED or SCOPE_WARNING — read the
+  report. NEEDS_INPUT/REFUSED come from the worker's first-line label (or the
+  `-o` JSON `status`); REFUSED routes as the `refusal` retry class.
 - 2 = CODEX_UNAVAILABLE (binary/prompt-file problem) → codex fallback
   applies at the required capability/risk floor (delegation matrix). Required
   independent review cannot use an implementation fallback.

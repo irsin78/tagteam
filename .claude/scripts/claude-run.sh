@@ -298,7 +298,7 @@ export HARNESS_DELEGATE_RUN=1
 export CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1
 # Constant role instruction, never interpolated task text. Remove Agent/Task
 # tools so a standalone Claude worker cannot recursively orchestrate.
-DELEGATE_INSTRUCTION='You are a DELEGATE assigned by a parent orchestrator. HARNESS_DELEGATE_RUN=1. Role is already resolved. Skip the Orchestrator workflow and its linked reading/setup; do not run harness-route.py, spawn agents or launch model CLIs. Follow the assigned task and applicable project/security/verification rules. For guidance, read only missing task-relevant sections and the required platform subsection; do not read whole harness manuals or reread unchanged supplied material for onboarding. Never commit, push or revert existing work. Edit the control plane only if this launcher already has HARNESS_ALLOW_CONTROL_PLANE=1. If verification is blocked by the environment, report the exact failed check to the parent; do not expand into permission repair or repeated cleanup. Return CHANGED, VERIFY, NOTES or NEEDS_INPUT; CHANGED and VERIFY must match the actual files and command output.'
+DELEGATE_INSTRUCTION='You are a DELEGATE assigned by a parent orchestrator. HARNESS_DELEGATE_RUN=1. Role is already resolved. Skip the Orchestrator workflow and its linked reading/setup; do not run harness-route.py, spawn agents or launch model CLIs. Follow the assigned task and applicable project/security/verification rules. For guidance, read only missing task-relevant sections and the required platform subsection; do not read whole harness manuals or reread unchanged supplied material for onboarding. Read only the file ranges the task needs rather than whole files or repeated re-reads, and edit surgically instead of rewriting a file. Never commit, push or revert existing work. Edit the control plane only if this launcher already has HARNESS_ALLOW_CONTROL_PLANE=1. If verification is blocked by the environment, report the exact failed check to the parent; do not expand into permission repair or repeated cleanup. Return CHANGED, VERIFY, NOTES or NEEDS_INPUT; if you cannot do the task on policy or safety grounds, start your final message with REFUSED: and the reason. CHANGED and VERIFY must match the actual files and command output.'
 # The web role is the process-mode twin of the haiku-fetcher subagent, which
 # a `claude -p` run never loads. Its rules are therefore carried here as a
 # constant (never interpolated task text), so the process worker gets the
@@ -383,6 +383,8 @@ PY
 )
 fi
 TOKENS=unknown
+TOKEN_BREAKDOWN=
+COST_USD=unknown
 API_REPORTED_MS=unknown
 WEB_STATE=-
 [ "$WORKER_ROLE" != web ] || WEB_STATE=unparsed
@@ -449,12 +451,27 @@ if isinstance(api_ms, bool) or not isinstance(api_ms, (int, float)) or not math.
     api_ms = "unknown"
 else:
     api_ms = int(api_ms)
-print("VALID", total if total else "unknown", api_ms, web)
+# Claude's total counts cache reads and cache writes, which Codex's "tokens
+# used" does not, so the breakdown and the CLI's own cost estimate are what
+# make a Claude run comparable with an OpenAI run (and with itself over time).
+def count(key):
+    value = usage.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+parts = {name: count(key) for name, key in (("output", "output_tokens"), ("cache_read", "cache_read_input_tokens"),
+                                            ("cache_create", "cache_creation_input_tokens"), ("input", "input_tokens"))}
+breakdown = "-"
+if parts["output"] is not None or parts["input"] is not None:
+    breakdown = ",".join("%s=%d" % (name, value or 0) for name, value in parts.items())
+cost = data.get("total_cost_usd")
+cost = "%.4f" % cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0 else "unknown"
+print("VALID", total if total else "unknown", api_ms, web, breakdown, cost)
 PY
 )
     case "$FINAL_TEXT" in VALID*)
         OUTPUT_VALID=1
-        read -r _ TOKENS API_REPORTED_MS WEB_STATE <<< "${FINAL_TEXT%$'\r'}" ;;
+        read -r _ TOKENS API_REPORTED_MS WEB_STATE TOKEN_BREAKDOWN COST_USD <<< "${FINAL_TEXT%$'\r'}"
+        [ "$TOKEN_BREAKDOWN" != - ] || TOKEN_BREAKDOWN=
+        : "${COST_USD:=unknown}" ;;
     esac
 fi
 
@@ -495,6 +512,12 @@ STOP_GATE_LEFT=
 if [ "$CLAUDE_EXIT" -eq 0 ] && [ "$OUTPUT_VALID" -eq 1 ] && [ -s "$LAST_MSG" ]; then
     STATUS=DONE
     OUTPUT_STATE=non-empty
+    # The worker's own contract label on the first line decides before any
+    # verifier (the web role has its structured contract instead).
+    if [ "$WORKER_ROLE" = implement ]; then
+        CONTRACT_STATUS=$(contract_status "$LAST_MSG")
+        [ -z "$CONTRACT_STATUS" ] || STATUS=$CONTRACT_STATUS
+    fi
 else
     STATUS=FAILED
     OUTPUT_STATE=$([ -s "$RUN_JSON" ] && echo non-empty || echo empty)
@@ -580,7 +603,8 @@ report() {
     if [ -n "$CP_NOTICE" ]; then
         echo "CONTROL_PLANE_NOTICE: session-owned files changed: $CP_NOTICE (snapshot: $SETTINGS_LOCAL_SNAP)"
     fi
-    echo "TOKENS: $TOKENS"
+    echo "TOKENS: $TOKENS${TOKEN_BREAKDOWN:+ ($TOKEN_BREAKDOWN)}"
+    [ "$COST_USD" = unknown ] || echo "COST_USD: $COST_USD"
     timing_report
     echo "API_REPORTED_MS: $API_REPORTED_MS (Claude-reported API duration; overlaps cli_ms)"
     if [ "$VERIFY_GIVEN" -eq 1 ]; then

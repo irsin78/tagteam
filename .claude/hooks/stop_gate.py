@@ -20,6 +20,57 @@ import tempfile
 
 
 MARKER_RELATIVE_PATH = os.path.join(".claude", ".stop-gate")
+RUN_ID_PATTERN = r'[A-Za-z0-9TZ_-]+'
+LIVE_RUN_STATES = ('starting', 'running')
+
+
+def launcher_run_state(cwd, run_id):
+    """Classified state of a launcher run (running/done/aborted/...), or None.
+
+    The record lives outside the workspace (run-state.sh) and only the launcher
+    writes it, but a recorded 'running' is not proof of life: a launcher killed
+    without its traps leaves the word behind. So the hook asks that launcher's
+    own `--status`, which applies the same PID-identity and starting-grace
+    classification the busy guard uses (and persists `aborted` for dead runs).
+    Unreadable record, missing launcher or no Git Bash all read as None, which
+    the callers treat as 'not live' (fail closed).
+    """
+    import re
+    if not isinstance(run_id, str) or not re.fullmatch(RUN_ID_PATTERN, run_id):
+        return None
+    scripts = Path(__file__).resolve().parent.parent / 'scripts'
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    # state_directory() keys the tree from the process cwd; the hook's tree is
+    # the supplied cwd (the same one --status runs in), so resolve both there.
+    previous = os.getcwd()
+    try:
+        os.chdir(cwd)
+        from harness_records import state_directory
+        record = json.loads((state_directory() / ('state-%s.json' % run_id)).read_text(encoding='utf-8'))
+        tool = record.get('tool') if isinstance(record, dict) else None
+    except (ImportError, OSError, ValueError, TypeError):
+        return None
+    finally:
+        try:
+            os.chdir(previous)
+        except OSError:
+            pass
+    if tool not in ('codex', 'claude', 'agy'):
+        return None
+    launcher = scripts / ('%s-run.sh' % tool)
+    bash = find_bash()
+    if not bash or not launcher.is_file():
+        return None
+    try:
+        # The launchers print UTF-8 (arrows and dashes in their notes); the
+        # locale default would make the reader thread fail and hand back None.
+        result = subprocess.run([bash, '--', str(launcher), '--status', run_id], cwd=cwd,
+                                capture_output=True, encoding='utf-8', errors='replace', timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r'^STATE: ([a-z]+)', result.stdout, re.MULTILINE)
+    return match.group(1) if match else None
 
 
 def mission_marker(cwd, session_id):
@@ -30,7 +81,7 @@ def mission_marker(cwd, session_id):
     return Path(cwd) / '.claude' / '.mission-open' / (key + '.json')
 
 
-def update_mission(cwd, session_id, state, mission=None, reason=None):
+def update_mission(cwd, session_id, state, mission=None, reason=None, run=None):
     """Explicit orchestrator bookkeeping, not proof of consent or acceptance."""
     marker = mission_marker(cwd, session_id)
     if marker is None or os.environ.get('HARNESS_DELEGATE_RUN') == '1':
@@ -51,6 +102,17 @@ def update_mission(cwd, session_id, state, mission=None, reason=None):
         if not reason or not reason.strip() or not previous.get('mission'):
             raise ValueError('an armed mission and a concrete pause/wait/switch reason are required')
         previous.update(state=state, reason=reason.strip())
+    elif state == 'waiting':
+        # Waiting on a detached launcher run is not announcing: the Stop hook
+        # lets the turn end while that run is still live, so the orchestrator
+        # need not busy-wait. The run must exist and be live right now.
+        if not previous.get('mission'):
+            raise ValueError('waiting requires an armed mission')
+        live = launcher_run_state(cwd, run)
+        if live not in LIVE_RUN_STATES:
+            raise ValueError('waiting requires --run <RUN_ID> of a launcher run that is still starting/running'
+                             + (' (state: %s)' % live if live else ''))
+        previous.update(state=state, run=run, reason='')
     else:
         raise ValueError('unknown mission state')
     # Re-arming within the same prompt must not reset the recovery allowance.
@@ -100,9 +162,19 @@ def evaluate_mission(cwd, data):
             raise ValueError('missing mission path')
         if state in ('paused', 'needs-input', 'switched') and record.get('reason'):
             return 0, 'HARNESS MISSION %s: %s\n' % (state, record['reason'])
+        prefix = ''
+        if state == 'waiting':
+            live = launcher_run_state(cwd, record.get('run'))
+            if live in LIVE_RUN_STATES:
+                return 0, ('HARNESS MISSION waiting: run %s is still %s; re-arm with --state active '
+                           'when its report arrives.\n' % (record.get('run'), live))
+            # The run finished (or vanished): the wait is over and the mission is
+            # active again, with the usual single recovery.
+            prefix = 'run %s is %s, so the wait is over. ' % (record.get('run'), live or 'not recorded')
+            state = 'active'
         if state != 'active':
             raise ValueError('invalid mission state or missing reason')
-        message = ('MISSION_INCOMPLETE: %s is still active. Announcing the next step is not '
+        message = ('MISSION_INCOMPLETE: ' + prefix + '%s is still active. Announcing the next step is not '
                    'performing it. Continue the confirmed work; clear the mission only after '
                    'acceptance, or record a real pause, missing decision/authorization/dependency, '
                    'or changed request with harness-session.py mission and explain it to the user.' % mission)

@@ -68,7 +68,8 @@ replace PreToolUse guards.
 
 ## Every role
 Workers implement the assignment, never spawn agents or launch model CLIs, and
-return CHANGED / VERIFY / NOTES, or NEEDS_INPUT for a missing requirement.
+return CHANGED / VERIFY / NOTES, NEEDS_INPUT for a missing requirement, or a
+first-line REFUSED: when the task cannot be done on policy or safety grounds.
 If the environment blocks verification, return the changes and the exact failed
 check to the parent; do not expand into permission repair or cleanup.
 If `.claude/.stop-gate` is present, run

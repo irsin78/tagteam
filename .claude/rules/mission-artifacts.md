@@ -39,7 +39,10 @@ Use the id from HARNESS MISSION SESSION (UserPromptSubmit), not a worker or anot
 session. New user input releases the old guard; re-arm when continuing the mission,
 including after a status answer. On acceptance use `--state complete`; for an explicit
 pause, real blocker/decision/authorization wait or replaced request use `--state paused`,
-`needs-input` or `switched` with `--reason` and explain it to the user. Keep the actual
+`needs-input` or `switched` with `--reason` and explain it to the user. While a detached
+launcher run is live, `--state waiting --run <RUN_ID>` lets the turn end instead of
+polling; re-arm `active` when its report arrives (a finished run restores the guard).
+Keep the actual
 remaining items/evidence in the mission, not a second checklist. No session-id output
 means automatic recovery is unavailable; do not invent an id or claim enforcement.
 This guard gives one recovery, not completion proof; details: docs/missions/README.md.
