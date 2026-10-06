@@ -259,6 +259,7 @@ case "${STUB_ACTION:-none}" in
     quota-prose) echo '{"is_error":false,"result":"HTTP 429 Too Many Requests"}'; exit 0 ;;
     quota-quoted-error) echo '{"is_error":true,"result":"> HTTP 429 Too Many Requests"}'; exit 0 ;;
     errorjson) echo '{"is_error":true,"result":"quota exhausted"}'; exit 0 ;;
+    refusal) echo '{"type":"result","subtype":"success","is_error":true,"stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction"},"result":"API Error: Sonnet 5.5'"'"'s safeguards flagged this message (https://www.anthropic.com/legal/aup).","num_turns":2}'; exit 1 ;;
     rewind) git update-ref HEAD HEAD~1 ;;
     delete-head) git update-ref -d HEAD ;;
     emptyjson) echo '{"result":""}'; exit 0 ;;
@@ -1022,6 +1023,16 @@ for action in rewind delete-head; do
     [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: .*SCOPE_WARNING' && has "$LAST_OUT" '^HEAD_CHANGED:' && ok=1
     expect_case "Claude detects $action even without new commits" "$ok" "exit=$LAST_RC"
 done
+
+# A model safety refusal (observed envelope, 2026-10-06) is FAILED with a
+# REFUSAL: line naming the category, so the parent can route it as the
+# `refusal` retry class instead of a defect or a success.
+fresh_case
+run_capture claude-refusal env STUB_ACTION=refusal bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED' && has "$LAST_OUT" '^REFUSAL: reasoning_extraction - API Error: ' \
+    && ! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+expect_case "claude safety refusal reports REFUSAL with its category" "$ok" "exit=$LAST_RC"
 
 for bad in "-e banana" "-s danger-full-access" "-e max" "-l /abs/log" "-t 900"; do
     fresh_case

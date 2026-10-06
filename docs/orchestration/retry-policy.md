@@ -23,12 +23,20 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    | `availability` | auth/quota error, unsupported-model 400 | matrix fallback, `budget --exhausted` |
    | `spec` | NEEDS_INPUT, or the worker guessed what the spec omits | supply inputs, same settings |
    | `scope` | timeout after partial progress, only part of the change landed | split the task, same settings |
+   | `deadline` | `TIMEOUT:` (exit 124) with no partial progress: no CHANGED, no partial VERIFY, task not reached | rerun once with the same settings detached (`-b --wait`) and a longer `-t`; never a promotion |
    | `knowledge` | misuse of an unfamiliar API or library | supply references or a web reader, same settings |
    | `defect` | the verifier caught an implementation defect | corrective resume with the same settings (`-r`), not a promotion |
+   | `refusal` | `REFUSAL:` line (Claude: `is_error` with `stop_reason: refusal`, result starts "API Error: ... safeguards flagged this message") | one attempt on a different vendor at the same band, author separation kept; same model again only after rewording a task text that itself tripped the classifier |
    | `reasoning` | spec understood but approach wrong, repeated verifier failure | promote (3) |
 
    Get the retry route with `harness-route.py --host <host> --role <role>
    --retry-from <worker_id> --retry-reason <class> --attempt N`.
+   `deadline` keeps the worker and returns `needs_detached: true`; `refusal` keeps
+   the band and excludes the refusing vendor for that route only (it is not
+   exhaustion). Security-adjacent tasks (guards, deny patterns, exploit-shaped
+   text) are the usual trigger; a refusal on permitted work is a false positive,
+   not a reason to drop the task. The Codex CLI's refusal shape is unobserved;
+   classify it from the run log by hand.
 3. A reasoning retry below A raises the floor one band in the same vendor,
    choosing the cheapest eligible row at or above that band in the latency
    class; if none is fast enough, use the cheapest such row detached. If the

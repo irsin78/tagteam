@@ -27,6 +27,9 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
    - Record it with `python .claude/scripts/harness-session.py budget --session <id> --exhausted <vendor>` (comma-separated vendors are accepted).
    - Set `HARNESS_SESSION_ID=<id>` for later router calls; they rank that vendor last and select an available candidate, or report the selected exhausted route unavailable.
    - When the user says the quota is back, run `python .claude/scripts/harness-session.py budget --session <id> --clear`.
+   - A `REFUSAL: <category> - <text>` line (claude-run.sh, model safety refusal) is
+     not exhaustion: route it as the `refusal` retry class (retry-policy.md), the
+     same band on another vendor, and do not record `--exhausted`.
 
 2. First read only "Direct work or delegation" in
    `docs/orchestration/delegation-matrix.md`;

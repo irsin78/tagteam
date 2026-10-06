@@ -17,6 +17,11 @@ REVIEW_ROLES = ('plan_review', 'review_gate', 'review_deep')
 # Launchers accept -t above this only with -b (the parent's Bash tool kills a
 # foreground call at 600 s); kept in sync with the launchers' foreground cap.
 FOREGROUND_TIMEOUT_CAP_S = 570
+# retry-policy.md section 2. Only `reasoning` promotes; `deadline` keeps the
+# worker and runs it detached with a longer budget; `refusal` keeps the band
+# and excludes the refusing vendor for this route only.
+RETRY_REASONS = ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning', 'defect',
+                 'deadline', 'refusal')
 
 
 def merge(base, local):
@@ -543,7 +548,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('retry requires --retry-from and --retry-reason')
     if retry_from and (worker or attempt < 1):
         raise ValueError('retry requires positive --attempt and cannot combine with --worker')
-    if retry_reason and retry_reason not in ('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning', 'defect'):
+    if retry_reason and retry_reason not in RETRY_REASONS:
         raise ValueError('invalid retry reason')
     by_id = {w['id']: w for w in data['workers']}
     for ident in (worker, retry_from):
@@ -558,14 +563,25 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             exclusion(previous, role, host, True, data, root, env) or
             (role in SEPARATED_ROLES and previous['vendor'] in authors)):
         raise ValueError('retry worker is not eligible for role/host/authors')
-    keep = previous and retry_reason != 'reasoning' and not (
+    keep = previous and retry_reason not in ('reasoning', 'refusal') and not (
         retry_reason == 'availability' and previous['vendor'] in exhausted)
+    refused_vendor = None
+    if previous and retry_reason == 'refusal':
+        # A safety refusal is vendor- and task-specific, not exhaustion: keep the
+        # band (never below the role floor), drop that vendor from this route
+        # only, keep author separation.
+        refused_vendor = previous['vendor']
+        order = data['bands']['order']
+        if not tier and order.index(previous['tier']) > order.index(floor):
+            floor = previous['tier']
     explicit = worker or (retry_from if keep else None)
     candidates = [w for w in data['workers'] if role in w['roles'] and
                   (explicit is None or w['id'] == explicit)]
     skipped, eligible, diagnostic = [], [], []
     for w in candidates:
         reason = exclusion(w, role, host, explicit is not None, data, root, env)
+        if not reason and refused_vendor and w['vendor'] == refused_vendor:
+            reason = 'vendor refused this task (retry-policy refusal)'
         if not reason and explicit is None and w.get('scored') is False:
             reason = 'unscored requires explicit --worker'
         if not reason and scoring and (w.get('metrics') or {}).get('cost') is None:
@@ -721,7 +737,13 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
               f"{named['id']} ({metrics.get('index')}, ${metrics.get('cost')}, {metrics.get('ttft_s')}s)")
     if fallback:
         reason = f"no row meets band {floor} in {latency}; best available is {selected['id']}"
-    if keep or retry_reason == 'availability':
+    if retry_reason == 'deadline':
+        needs_detached = True
+        reason = ('deadline retry keeps the worker; rerun detached (-b --wait) with a longer -t; '
+                  + reason)
+    elif retry_reason == 'refusal':
+        reason = f'refusal retry: vendor {refused_vendor} refused this task; same band, other vendor; ' + reason
+    elif keep or retry_reason == 'availability':
         reason = f'retry keeps settings; fix {retry_reason}; ' + reason
     elif previous:
         reason = 'reasoning retry; ' + reason
@@ -811,7 +833,7 @@ def main():
     parser.add_argument('--tier', choices=tuple('SABCDE'), help='capability band floor')
     parser.add_argument('--latency', choices=('interactive', 'foreground', 'detached'))
     parser.add_argument('--retry-from')
-    parser.add_argument('--retry-reason', choices=('infra', 'availability', 'spec', 'scope', 'knowledge', 'reasoning', 'defect'))
+    parser.add_argument('--retry-reason', choices=RETRY_REASONS)
     parser.add_argument('--attempt', type=int, default=0)
     parser.add_argument('--assess', help='five required 0|1|2 ratings and optional volume=0|1|2')
     parser.add_argument('--recent-failure', action='store_true', help='recent reasoning failure in the same area; raises assessed band once')

@@ -361,6 +361,27 @@ except (OSError, ValueError, TypeError):
 PY
 )
 fi
+# A safety refusal is a distinct outcome (retry-policy.md `refusal`): observed
+# 2026-10-06 as is_error=true, subtype=success, stop_reason=refusal and a
+# result starting "API Error: <model>'s safeguards flagged this message".
+# Only stop_reason is trusted; the prose is reported for the parent to read.
+REFUSAL=""
+if [ -n "$PY" ] && [ -s "$RUN_JSON" ]; then
+    REFUSAL=$("$PY" - "$RUN_JSON" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+    if isinstance(data, dict) and data.get("stop_reason") == "refusal":
+        details = data.get("stop_details") or {}
+        category = details.get("category") if isinstance(details, dict) else None
+        text = data.get("result") if isinstance(data.get("result"), str) else ""
+        text = " ".join(text.split())[:160]
+        print(f"REFUSAL: {category or 'unspecified'} - {text or 'no result text'}")
+except (OSError, ValueError, TypeError):
+    pass
+PY
+)
+fi
 TOKENS=unknown
 API_REPORTED_MS=unknown
 WEB_STATE=-
@@ -526,6 +547,7 @@ report() {
     echo "STATUS: $STATUS (claude_exit=$CLAUDE_EXIT, output=$OUTPUT_STATE, mode=$PERMISSION_MODE, model=$MODEL, effort=${EFFORT:-unspecified})"
     retry_header_echo
     [ -z "$AVAILABILITY" ] || echo "$AVAILABILITY"
+    [ -z "$REFUSAL" ] || echo "$REFUSAL"
     echo "$BINDINGS_LINE"
     echo "RUN_ID: $RUN_ID (state: $(state_file "$RUN_ID"), report: $REPORT_FILE)"
     if [ "$CLAUDE_EXIT" -eq 124 ]; then

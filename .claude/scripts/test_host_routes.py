@@ -206,6 +206,35 @@ class HostRoutes(unittest.TestCase):
             routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
                            retry_reason='reasoning', attempt=3)
 
+    def test_deadline_retry_keeps_worker_and_runs_detached(self):
+        result = routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
+                                retry_reason='deadline', attempt=1)
+        self.assertEqual(result['worker_id'], 'opus55-high')
+        self.assertTrue(result['needs_detached'])
+        self.assertIn('deadline retry keeps the worker; rerun detached (-b --wait) with a longer -t', result['reason'])
+        self.assertEqual(result['tier'], 'A')
+
+    def test_refusal_retry_keeps_band_and_switches_vendor_without_exhaustion(self):
+        # Claude host, OpenAI worker refused: the other vendor at the same band.
+        result = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-high',
+                                author_vendors=['google'], retry_reason='refusal', attempt=1)
+        self.assertEqual(result['vendor'], 'claude')
+        self.assertEqual(result['band'], 'B')
+        self.assertIn('refusal retry: vendor openai refused this task', result['reason'])
+        self.assertIn('sol61-high', [w['id'] for w in result['skipped']])
+        self.assertTrue(any(w['reason'].startswith('vendor refused') for w in result['skipped']))
+        self.assertNotIn('exhausted', result['reason'])
+        # An S refusal moves to the other S lane, not down a band.
+        result = routes.resolve(self.data, 'codex', 'implement', retry_from='astra-high',
+                                author_vendors=['google'], retry_reason='refusal', attempt=1)
+        self.assertEqual((result['worker_id'], result['band']), ('fable-high', 'S'))
+        # Author separation still holds: with every remaining vendor an author, the
+        # route is flagged as not independent and unavailable, never a silent self-review.
+        result = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-high',
+                                author_vendors=['claude', 'google'], retry_reason='refusal', attempt=1)
+        self.assertFalse(result['separation_satisfied'])
+        self.assertFalse(result['available'])
+
     def test_nonreasoning_retries_keep_settings_and_availability_reselects(self):
         for reason in ('infra', 'availability', 'spec', 'scope', 'knowledge', 'defect'):
             result = routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
