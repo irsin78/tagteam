@@ -5,7 +5,10 @@ Orchestrator only, not auto-loaded; resolve session-role.md first. Workers skip 
 ## Direct work or delegation
 Compare direct work and eligible workers using the single score for money and waiting time
 below. Offer direct implementation/writing with `--direct-band <S|A|B|C|D|E>`;
-the orchestrator's band must meet the assessed floor. Before editing directly,
+the orchestrator's band must meet the assessed floor. Add `--grounded` when the
+affected code, interfaces and checks are already inspected (a scout brief or a
+preceding review): the direct estimate is scaled by the provisional
+`direct_grounded_factor` and the run is tagged for later calibration. Before editing directly,
 inspect the actual affected code, interfaces and checks to establish grounded
 scope and verification; request wording, file count and optimistic time estimates
 are not that evidence. If a direct change grows

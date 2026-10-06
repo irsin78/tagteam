@@ -406,14 +406,23 @@ def assessment_floor(data, role, assess, recent_failure):
                 applied=applied, recent_failure=recent_failure or False), reason
 
 
-def worker_estimate(row, estimates, volume, reports):
+def worker_estimate(row, estimates, volume, reports, read_only=False):
+    """Minutes a worker run takes: per-row seed, else matching DONE records, else formula.
+
+    Records match on model and effort and on the run's sandbox class (read-only
+    runs are several times shorter than write runs in this tree's history).
+    Records carrying an ASSESS header are used when their volume matches;
+    records without one (the common case, since the header depends on the
+    orchestrator exporting launch_env) count as volume-unscoped evidence when
+    the scoped set is too small.
+    """
     from harness_records import parse_assessment_header, time_number
     if volume in row.get('estimates', {}):
         seed = row['estimates'][volume]
         return time_number(seed['usd']), time_number(seed['minutes']), 'seed'
     policy = estimates['worker']
     usd = metric(row, 'cost') * policy['task_units'][volume]
-    elapsed = []
+    elapsed, unscoped = [], []
     for _, fields, _ in reports:
         try:
             status = fields.get('STATUS', '')
@@ -426,21 +435,30 @@ def worker_estimate(row, estimates, volume, reports):
                 settings.setdefault(key, value)
             if settings.get('model') != row['model'] or settings.get('effort') != (row.get('effort') or 'unspecified'):
                 continue
-            if parse_assessment_header(fields.get('ASSESS', '')).get('volume') != int(volume):
+            # codex-run.sh writes sandbox=, claude-run.sh writes mode=plan for read-only.
+            record_read_only = bool(re.search(r'\b(?:sandbox=read-only|mode=plan)\b', status))
+            if record_read_only != bool(read_only):
+                continue
+            assessed = parse_assessment_header(fields['ASSESS']).get('volume') if fields.get('ASSESS') else None
+            if assessed is not None and assessed != int(volume):
                 continue
             duration = re.fullmatch(r'([0-9]+(?:\.[0-9]+)?)s', fields.get('ELAPSED', ''))
             if duration:
                 seconds = time_number(float(duration[1]))
                 if seconds <= 30 * 24 * 60 * 60:
-                    elapsed.append(seconds / 60)
+                    (elapsed if assessed is not None else unscoped).append(seconds / 60)
         except (ValueError, TypeError, KeyError, OverflowError):
             continue
-    if len(elapsed) >= max(1, policy['min_records']):
+    minimum = max(1, policy['min_records'])
+    if len(elapsed) >= minimum:
         return usd, statistics.median(elapsed), 'records'
+    if len(elapsed) + len(unscoped) >= minimum:
+        return usd, statistics.median(elapsed + unscoped), 'records-unscoped'
     ttft = (row.get('metrics') or {}).get('ttft_s')
     factor = 1 if ttft is None else math.sqrt(ttft / policy['reference_ttft_s'])
     lower, upper = policy['speed_clamp']
-    return usd, policy['base_minutes'][volume] * min(upper, max(lower, factor)), 'seed'
+    base = policy.get('readonly_base_minutes', policy['base_minutes']) if read_only else policy['base_minutes']
+    return usd, base[volume] * min(upper, max(lower, factor)), 'seed'
 
 
 def score_option(option, usd, minutes, minutes_source, time_cost, exponent):
@@ -510,7 +528,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             retry_reason=None, attempt=0, allow_ultra=False, assess=None,
             recent_failure=False, direct_band=None, time_mode=None,
             time_tolerance_min=None, time_cost=None, paths=None, time_refocus=None,
-            time_slope=None):
+            time_slope=None, grounded=False):
     validate_bindings(data)
     root = Path.cwd() if root is None else Path(root)
     env = os.environ if env is None else env
@@ -698,14 +716,22 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         overhead = estimates['delegate_overhead'][volume]
         priorities = {}
         for row in score_rows:
-            usd, minutes, source = worker_estimate(row, estimates, volume, reports)
+            usd, minutes, source = worker_estimate(row, estimates, volume, reports,
+                                                   read_only=role not in ('implement', 'write'))
             scores.append(score_option(row['id'], overhead['usd'] + usd,
                                        overhead['minutes'] + minutes, source, effective_time, exponent))
             priorities[row['id']] = (row['vendor'] in exhausted, row.get('trust') == 'low')
         if (direct_band is not None and role in ('implement', 'write')
                 and data['bands']['order'].index(direct_band) >= data['bands']['order'].index(floor)):
             direct = estimates['direct'][volume]
-            scores.append(score_option('direct', direct['usd'], direct['minutes'], 'seed', effective_time, exponent))
+            # The direct seed assumes the orchestrator still has to find the scope.
+            # --grounded says it already inspected the affected code, interfaces
+            # and checks (scout brief or a preceding review), so the remaining
+            # direct work is a fraction of the seed. The factor is a provisional
+            # seed in bindings; direct records tagged HARNESS_GROUNDED calibrate it.
+            factor = estimates.get('direct_grounded_factor', 1) if grounded else 1
+            scores.append(score_option('direct', direct['usd'] * factor, direct['minutes'] * factor,
+                                       'seed-grounded' if grounded else 'seed', effective_time, exponent))
             priorities['direct'] = ({'codex': 'openai', 'claude': 'claude'}[host] in exhausted, False)
         ranked_scores = score_order(scores, priorities)
         worker_scores = [score for score in ranked_scores if score['option'] != 'direct']
@@ -801,17 +827,22 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                             if role in REVIEW_ROLES else '; selected vendor is declared exhausted; follow fallback policy')
     if assessment is not None:
         from harness_records import ASSESSMENT_KEYS
-        route['launch_env'] = dict(HARNESS_BAND=floor, HARNESS_ROLE=role,
+        if grounded:
+            route['reason'] += f"; direct grounded x{estimates.get('direct_grounded_factor', 1) if estimates else 1}"
+        route['launch_env'] = dict(HARNESS_BAND=floor, HARNESS_ROLE=role, **({'HARNESS_GROUNDED': '1'} if grounded else {}),
                                   HARNESS_ASSESS=','.join(
                                       f'{key}={assess[key]}' for key in ASSESSMENT_KEYS if key in assess))
         estimates = data['selection_policy'].get('estimates')
         # Without volume, use the small-task seed; timeout always covers the
         # selected worker, even when the cost comparison favors direct work.
+        # Only the worker's own minutes count: the parent's delegate overhead
+        # (prompt writing, inspection) belongs to the cost score, not to the
+        # budget the launcher enforces on the worker.
         # Estimates are optional in bindings: without them there is no suggestion.
         if estimates:
             volume = str(assess.get('volume', 0))
-            _, minutes, _ = worker_estimate(selected, estimates, volume, reports)
-            minutes += estimates['delegate_overhead'][volume]['minutes']
+            _, minutes, _ = worker_estimate(selected, estimates, volume, reports,
+                                            read_only=role not in ('implement', 'write'))
             route['suggested_timeout_s'] = max(570, math.ceil(minutes * 1.5 * 60) + 300)
             route['reason'] += f"; suggested -t {route['suggested_timeout_s']}"
             # The launchers accept -t above 570 only detached (-b): the parent's
@@ -839,6 +870,8 @@ def main():
     parser.add_argument('--recent-failure', action='store_true', help='recent reasoning failure in the same area; raises assessed band once')
     parser.add_argument('--paths', help='comma-separated project-relative affected paths for recent failure history')
     parser.add_argument('--direct-band', choices=tuple('SABCDE'), help='orchestrator capability band; offer direct implement/write')
+    parser.add_argument('--grounded', action='store_true',
+                        help='the orchestrator already inspected the affected code, interfaces and checks; scales the direct estimate by selection_policy.estimates.direct_grounded_factor')
     parser.add_argument('--time-mode', choices=('attended', 'background', 'unattended'))
     parser.add_argument('--time-tolerance-min', type=float)
     parser.add_argument('--time-cost', type=float, help='convex waiting-cost coefficient k in USD')
@@ -894,7 +927,7 @@ def main():
                         args.tier, args.author_vendor, args.worker, latency=args.latency,
                         retry_from=args.retry_from, retry_reason=args.retry_reason, attempt=args.attempt,
                         assess=args.assess, recent_failure=args.recent_failure, paths=args.paths,
-                        direct_band=args.direct_band, time_mode=args.time_mode,
+                        direct_band=args.direct_band, grounded=args.grounded, time_mode=args.time_mode,
                         time_tolerance_min=args.time_tolerance_min, time_cost=args.time_cost,
                         time_refocus=args.time_refocus, time_slope=args.time_slope)
         route['shell'] = find_bash()

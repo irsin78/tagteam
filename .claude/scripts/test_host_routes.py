@@ -1041,6 +1041,11 @@ class AssessmentRoutes(unittest.TestCase):
     def setUp(self):
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
         self.data = routes.merge_bindings(public, {})
+        # Routes here must not read this machine's run history: volume-unscoped
+        # DONE records would otherwise replace the seed minutes under test.
+        empty_history = patch.object(records, 'state_directory', return_value=HERE / 'unused-score-history')
+        empty_history.start()
+        self.addCleanup(empty_history.stop)
 
     def assess(self, **ratings):
         return dict(dict(open=0, tangle=0, precedent=0, verifier=0, consequence=0), **ratings)
@@ -1250,11 +1255,11 @@ class AssessmentRoutes(unittest.TestCase):
             self.assertEqual(route['band'], 'A')
             self.assertFalse(route['floor_met'])
             self.assertTrue(route['tier_fallback'])
-            # Detached only because the suggested -t exceeds the foreground cap,
-            # not because the fallback row is slow.
-            self.assertTrue(route['needs_detached'])
+            # The fallback row is not slow: detachment, if any, comes only from a
+            # suggested -t above the foreground cap.
             self.assertNotIn('only available detached', route['reason'])
-            self.assertIn('exceeds the 570 s foreground cap', route['reason'])
+            self.assertEqual(route['needs_detached'],
+                             route['suggested_timeout_s'] > routes.FOREGROUND_TIMEOUT_CAP_S)
 
     def test_decide_first_and_plan_first_are_advisory(self):
         open_task = routes.resolve(self.data, 'codex', 'implement', assess=self.assess(open=2))
@@ -1331,7 +1336,7 @@ class ScoredRoutes(unittest.TestCase):
                     self.assertEqual(route['launch_env'], dict(HARNESS_BAND=route['band'],
                                      HARNESS_ASSESS=canonical, HARNESS_ROLE='implement'))
 
-    def test_timeout_covers_worker_and_overhead_when_direct_wins(self):
+    def test_timeout_covers_the_worker_only_even_when_direct_wins(self):
         data = json.loads(json.dumps(self.data))
         for row in data['workers']:
             for seed in row.get('estimates', {}).values():
@@ -1340,8 +1345,60 @@ class ScoredRoutes(unittest.TestCase):
         data['selection_policy']['estimates']['direct']['0'].update(usd=0, minutes=0)
         route = self.route(data, direct_band='B')
         self.assertEqual(route['decision'], 'direct')
-        self.assertEqual(route['suggested_timeout_s'], 1380)
+        # 10 worker minutes * 1.5 * 60 + 300; the 2 overhead minutes stay out.
+        self.assertEqual(route['suggested_timeout_s'], 1200)
         self.assertTrue(route['needs_detached'])
+
+    def test_grounded_scales_the_direct_estimate_and_tags_the_launch_environment(self):
+        data = json.loads(json.dumps(self.data))
+        data['selection_policy']['estimates']['direct_grounded_factor'] = 0.5
+        plain = self.route(data, direct_band='B')
+        grounded = self.route(data, direct_band='B', grounded=True)
+        plain_direct = self.scores(plain)['direct']
+        grounded_direct = self.scores(grounded)['direct']
+        self.assertEqual((grounded_direct['usd'], grounded_direct['minutes']),
+                         (plain_direct['usd'] * 0.5, plain_direct['minutes'] * 0.5))
+        self.assertEqual(grounded_direct['minutes_source'], 'seed-grounded')
+        self.assertIn('direct grounded x0.5', grounded['reason'])
+        self.assertEqual(grounded['launch_env'].get('HARNESS_GROUNDED'), '1')
+        self.assertNotIn('HARNESS_GROUNDED', plain['launch_env'])
+        # Without the seed the flag is inert (factor 1) rather than an error.
+        data['selection_policy']['estimates'].pop('direct_grounded_factor')
+        inert = self.route(data, direct_band='B', grounded=True)
+        self.assertEqual(self.scores(inert)['direct']['usd'], plain_direct['usd'])
+        # Worker options are untouched by the flag.
+        self.assertEqual(self.scores(grounded)['fast']['usd'], self.scores(plain)['fast']['usd'])
+
+    def test_read_only_roles_use_read_only_seeds_and_records(self):
+        data = json.loads(json.dumps(self.data))
+        for row in data['workers']:
+            row.pop('estimates', None)
+        worker = data['selection_policy']['estimates']['worker']
+        worker['base_minutes'] = {'0': 10, '1': 10, '2': 10}
+        worker['readonly_base_minutes'] = {'0': 2, '1': 2, '2': 2}
+        worker['speed_clamp'] = [1, 1]
+        row = next(w for w in data['workers'] if w['id'] == 'fast')
+        estimates = data['selection_policy']['estimates']
+        self.assertEqual(routes.worker_estimate(row, estimates, '0', [])[1:], (10, 'seed'))
+        self.assertEqual(routes.worker_estimate(row, estimates, '0', [], read_only=True)[1:], (2, 'seed'))
+        fields = dict(STATUS='DONE (model=fixture-model, effort=high)', ELAPSED='240s')
+        ro = dict(fields, STATUS='DONE (codex_exit=0, output=non-empty, sandbox=read-only, model=fixture-model, effort=high)')
+        plan = dict(fields, STATUS='DONE (claude_exit=0, output=non-empty, mode=plan, model=fixture-model, effort=high)')
+        reports = [('a', ro, None), ('b', plan, None), ('c', fields, None), ('d', dict(fields, ELAPSED='480s'), None)]
+        # Read-only records never feed a write estimate and vice versa.
+        self.assertEqual(routes.worker_estimate(row, estimates, '0', reports)[1:], (6, 'records-unscoped'))
+        self.assertEqual(routes.worker_estimate(row, estimates, '0', reports, read_only=True)[1:], (4, 'records-unscoped'))
+        # Records without an ASSESS header are volume-unscoped evidence; scoped ones win when enough.
+        scoped = dict(fields, ASSESS='open=0 tangle=1 precedent=0 verifier=0 consequence=0 volume=0', ELAPSED='60s')
+        other = dict(scoped, ASSESS='open=0 tangle=1 precedent=0 verifier=0 consequence=0 volume=2')
+        self.assertEqual(routes.worker_estimate(row, estimates, '0', reports + [('e', scoped, None)])[1:], (4, 'records-unscoped'))
+        self.assertEqual(routes.worker_estimate(row, estimates, '0', reports + [('e', scoped, None), ('f', scoped, None)])[1:], (1, 'records'))
+        self.assertEqual(routes.worker_estimate(row, estimates, '0', [('e', other, None)] * 3)[1:], (10, 'seed'))
+        # A review route reads the read-only seed into its timeout.
+        with patch.object(routes, 'worker_estimate', wraps=routes.worker_estimate) as spy:
+            self.route(data, role='review_deep', author_vendors=['google'])
+            self.assertTrue(spy.call_args_list)
+            self.assertTrue(all(call.kwargs.get('read_only') is True for call in spy.call_args_list))
 
     def test_launch_environment_omits_unknown_assessment(self):
         route = self.route(assess=None)

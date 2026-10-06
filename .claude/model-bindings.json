@@ -402,7 +402,7 @@
       }
     },
     "estimates": {
-      "note": "Provisional seed values from one measurement run per cell (delegate_overhead and worker values: thin-orchestration runs of 2026-10-02 with the worker advisor cost excluded, because the Claude launcher disables the advisor for workers); direct and delegate_overhead were measured with an A-band orchestrator. Volume 0 small, 1 medium, 2 large. Repeated matching DONE run records replace formula worker minutes.",
+      "note": "Provisional seed values from one measurement run per cell (delegate_overhead and worker values: thin-orchestration runs of 2026-10-02 with the worker advisor cost excluded, because the Claude launcher disables the advisor for workers); direct and delegate_overhead were measured with an A-band orchestrator. Volume 0 small, 1 medium, 2 large. Repeated matching DONE run records replace formula worker minutes; records are matched on model, effort and sandbox class (read-only vs write), and records without an ASSESS header count as volume-unscoped evidence. readonly_base_minutes (read-only roles: decide, plan_review, review_gate, review_deep, explore, web) seeded 2026-10-06 from this tree's DONE records: read-only median 1.9 min (n=33), write median 5.9 min (n=19). suggested_timeout_s covers worker minutes only; delegate_overhead stays in the cost score.",
       "direct": {
         "0": {"usd": 3.8, "minutes": 6.5},
         "1": {"usd": 6.8, "minutes": 13.8},
@@ -416,10 +416,13 @@
       "worker": {
         "task_units": {"0": 0.5, "1": 1, "2": 2.5},
         "base_minutes": {"0": 6, "1": 9, "2": 19},
+        "readonly_base_minutes": {"0": 2, "1": 3, "2": 5},
         "reference_ttft_s": 58,
         "speed_clamp": [0.5, 3],
         "min_records": 2
       },
+      "direct_grounded_factor": 0.5,
+      "direct_grounded_note": "Provisional seed (2026-10-06, one observation: a change scoped by a preceding review took minutes directly while the seed-based score recommended a 43-minute detached delegation). Applied to the direct usd and minutes when the router runs with --grounded; direct records carry HARNESS_GROUNDED=1 so the factor can be re-estimated from them.",
       "history_days": 14
     },
     "cross_lane_s": true

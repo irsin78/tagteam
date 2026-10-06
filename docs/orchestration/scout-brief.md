@@ -18,6 +18,8 @@ verification Tier 0/1/2 for `consequence`. Volume 0 means one or two files well
 under ~150 changed lines; 1 is medium; 2 means many files/modules, ~1000+ lines.
 Pass all five ratings plus volume to `--assess`, in that order, and pass the
 affected paths comma-separated to `--paths`. Declare the orchestrator's own band
-with `--direct-band` when direct implementation/writing is an eligible option.
+with `--direct-band` when direct implementation/writing is an eligible option, and
+add `--grounded` when the brief (or a preceding review) already established the
+affected paths, checks and precedent.
 Keep the brief and confirmed acceptance questions in the worker's task packet;
 delegate diagnosis and implementation together when the score says delegate.
