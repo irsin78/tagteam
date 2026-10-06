@@ -9,7 +9,7 @@
       "host": "Claude Code",
       "quota": "Claude plan",
       "catalog": {
-        "checked": "2026-09-29",
+        "checked": "2026-10-06",
         "probed": [
           "claude-opus-5-5 (claude -p --model claude-opus-5-5: OK, modelUsage=claude-opus-5-5)",
           "opus alias (claude -p --model opus: resolves to claude-opus-5-5)",
@@ -27,14 +27,14 @@
       "cli": "codex",
       "launcher": ".claude/scripts/codex-run.sh",
       "quota": "ChatGPT plan",
-      "guidance_checked": "2026-09-09",
+      "guidance_checked": "2026-10-06",
       "guidance_sources": [
         "https://developers.openai.com/api/docs/guides/latest-model",
         "https://developers.openai.com/api/docs/models/gpt-6-astra",
         "https://learn.chatgpt.com/docs/models",
         "https://learn.chatgpt.com/docs/config-file/config-reference"
       ],
-      "effort_note": "The Astra API lists low/medium/high/xhigh/max explicitly. Codex app Ultra is an automatic sub-agent mode; the delegation launcher and router refuse it under the no-redelegation contract. max is -b only. The enumeration in the official config-reference is separate and does not replace a measured success on the installed CLI. The human main session's model and mode are never changed.",
+      "effort_note": "The Astra API lists low/medium/high/xhigh/max explicitly (model page re-read 2026-10-06; API default medium per the latest-model guide). The Codex models page (2026-10-06) says \"Start with Light for Astra\", \"Start with High for Luna\" and, for GPT-6.1 Sol, the client default; Light is an app label absent from the config-reference enumeration, so its mapping to model_reasoning_effort=low is unverified. The S lane keeps high/xhigh by design (escalation rung, not an everyday worker). Codex app Ultra is an automatic sub-agent mode; the delegation launcher and router refuse it under the no-redelegation contract. max is -b only. The enumeration in the official config-reference is separate and does not replace a measured success on the installed CLI. The human main session's model and mode are never changed.",
       "catalog": {
         "checked": "2026-10-01",
         "source": "~/.codex/models_cache.json (codex-cli 0.159.3, cache fetched 2026-10-01T01:19Z)",
