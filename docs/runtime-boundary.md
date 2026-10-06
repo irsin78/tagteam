@@ -255,6 +255,8 @@ text reaches Bash on stdin, not argv (Windows re-parses argv and turns `\\` into
 runs from the project root with its own stdin at EOF; use root-relative paths, not
 `BASH_SOURCE`. Invocation errors and NUL bytes fail verification. This is not same-user OS
 isolation, nor does it freeze files/dependencies the verifier reads.
+The agy task prompt, unlike Claude's stdin prompt, travels as the `-p` argument (agy reads
+stdin only in stream-json mode), so it is visible in the process list; keep secrets out of it.
 
 The local read path does not take a workspace snapshot. A report's
 `CHANGED: not measured` is not an observation of no change. When change
