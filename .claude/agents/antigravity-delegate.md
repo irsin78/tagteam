@@ -10,6 +10,7 @@ description: >
   the current host's implementation fallback.
 tools: Bash, Read
 model: haiku
+effort: medium
 maxTurns: 10
 ---
 

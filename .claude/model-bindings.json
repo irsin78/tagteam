@@ -1037,7 +1037,7 @@
       "updated": "2026-10-12",
       "catalog_checked": "2026-10-12",
       "status": "active",
-      "note": "Isolation worker (explore / web). Haiku 5.5 (released 2026-10-07) replaces Haiku 4.5 and is a reasoning model with effort levels; no non-reasoning row on AA. AA 10-12 index / cost per task / first chunk: low 29 / $0.02 / 9.7s, medium 34 / $0.05 / 13.4s, high 38 / $0.08 / 22.7s, xhigh 41 / $0.12 / 57.1s, max 43 / $0.21 / ~290s. Pinned to low: an isolation read needs speed, not depth. Opus 5.5 low (42 / $0.55 / 7s) stays the choice when a D read needs judgment. Haiku 4.5 was 17 / $0.21 / 23.1s. No FrontierSWE row yet; primary only (metrics stay provisional). In-process agents use the haiku alias without an effort pin, so their effective effort is the CLI default.",
+      "note": "Isolation worker (explore / web). Haiku 5.5 (released 2026-10-07) replaces Haiku 4.5 and is a reasoning model with effort levels; no non-reasoning row on AA. AA 10-12 index / cost per task / first chunk: low 29 / $0.02 / 9.7s, medium 34 / $0.05 / 13.4s, high 38 / $0.08 / 22.7s, xhigh 41 / $0.12 / 57.1s, max 43 / $0.21 / ~290s. Pinned to low: an isolation read needs speed, not depth. Opus 5.5 low (42 / $0.55 / 7s) stays the choice when a D read needs judgment. Haiku 4.5 was 17 / $0.21 / 23.1s. No FrontierSWE row yet; primary only (metrics stay provisional). In-process agents use the haiku alias with effort pinned in frontmatter: haiku-scout / haiku-fetcher low, codex-delegate / antigravity-delegate medium (mid-run judgment).",
       "intelligence_index": 29,
       "effective_cost": 0.02,
       "id": "haiku55",
