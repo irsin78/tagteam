@@ -331,7 +331,7 @@ class HostRoutes(unittest.TestCase):
             def explore(**kw):
                 return routes.resolve(data, 'codex', 'explore', root=root, env=env, **kw)
             missing = explore(tier='C')
-            self.assertEqual(missing['worker_id'], 'haiku45')
+            self.assertEqual(missing['worker_id'], 'haiku55')
             self.assertFalse(missing['floor_met'])
             self.assertTrue(any('agy_grant' in x['reason'] for x in missing['skipped']))
             settings.write_text(json.dumps({'permissions': {'allow': ['write_file(*)']}}))
@@ -342,11 +342,11 @@ class HostRoutes(unittest.TestCase):
             data = routes.merge_bindings(data, {'vendors': {'local': {'endpoint': {'base_url': 'http://localhost', 'model': 'auto'}}}})
             self.assertEqual(explore(worker='local-reader', latency='detached')['worker_id'], 'local-reader')
             settings.write_text(json.dumps({'permissions': {'allow': ['write_file_other(*)']}}))
-            data = routes.merge_bindings(data, {'workers_local': [{'id': 'haiku45', 'requires': {'binary': 'test-reader'}}]})
+            data = routes.merge_bindings(data, {'workers_local': [{'id': 'haiku55', 'requires': {'binary': 'test-reader'}}]})
             with patch.object(routes.shutil, 'which', return_value=None):
                 with self.assertRaises(IndexError): explore()
             with patch.object(routes.shutil, 'which', return_value='/bin/test-reader'):
-                self.assertEqual(explore()['worker_id'], 'haiku45')
+                self.assertEqual(explore()['worker_id'], 'haiku55')
 
     def test_workers_local_recursive_merge_and_array_replacement(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -363,7 +363,7 @@ class HostRoutes(unittest.TestCase):
             added = dict(base, id='other-reader', tier_cell=False, roles={'explore': 3})
             override = {'workers': [base], 'workers_local': [added]}
             (folder / 'model-bindings.local.json').write_text(json.dumps(override))
-            self.assertEqual([w['id'] for w in routes.load_bindings(temp)['workers']], ['haiku45', 'other-reader'])
+            self.assertEqual([w['id'] for w in routes.load_bindings(temp)['workers']], ['haiku55', 'other-reader'])
 
     def test_explicit_worker_and_host_priorities(self):
         with self.assertRaisesRegex(ValueError, 'unknown worker'):
@@ -629,7 +629,7 @@ for line in sys.stdin:
                 self.assertEqual(route['claude_role'], 'web')
                 self.assertEqual(route['model'], self.cell('E', 'claude')['model'])
                 self.assertEqual(route['sandbox'], 'read-only')
-                self.assertEqual(route['worker_id'], 'haiku45')
+                self.assertEqual(route['worker_id'], 'haiku55')
                 self.assertEqual(route['tier_fallback'], tier == 'D')
 
     def test_advisory_is_other_vendor_and_readonly(self):
@@ -1057,7 +1057,7 @@ class AssessmentRoutes(unittest.TestCase):
             'B': {'opus55-medium', 'sol61-xhigh', 'sol61-high', 'sol61-medium'},
             'C': {'sonnet55-medium', 'flash-medium'},
             'D': {'luna6-high', 'flash-low', 'local-reader'},
-            'E': {'haiku45', 'luna6-low'},
+            'E': {'haiku55', 'luna6-low'},
         }
         self.assertEqual(len(self.data['workers']), 18)
         for band, ids in expected.items():
