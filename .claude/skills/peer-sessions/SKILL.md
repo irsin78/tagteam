@@ -5,9 +5,11 @@ description: EXPERIMENTAL — run one mission across two desktop sessions (desig
 
 # Peer sessions (experimental)
 
-Status: experimental. The procedure below is what survived three independent reviews of a
-development-workspace trial series in 2026-10 (small internal tasks, two Claude desktop
-sessions on one machine). Not measured: a real plan-limit pause and resume, worker
+Status: experimental. The procedure below is the reduced scope that the third independent
+review of a development-workspace trial series (2026-10, small internal tasks, two Claude
+desktop sessions on one machine) judged promotable once conflicting role instructions were
+removed; the full package with an exec-driven relay and proxy commits was blocked three
+times and is excluded (section 11). Not measured: a real plan-limit pause and resume, worker
 NEEDS_INPUT/REFUSED inside the loop, vendor exhaustion, three or more lanes, compaction in
 a long phase. No throughput or cost advantage is claimed; the event log measures, it does
 not promise.
@@ -122,6 +124,9 @@ delivery id the transport reports or a sender-generated unique id, and log the s
 
 ## 5. The event log is the truth; messages only wake the peer
 
+`tools/peer-event.py` is not part of the default install: copy it (and `tools/test_peer_event.py`)
+from the template's `tools/` into the project's `tools/` when adopting this skill.
+
 Log every send, receipt, idle notice, guard re-arm, merge, evaluation, verdict, stop and
 cost at the moment it happens:
 
@@ -188,9 +193,11 @@ One phase: investigate → design → implement → evaluate → verdict. Rework
   verifier, author separation yes/no); F table (id, blocking/advisory, content, evidence,
   handling); for code tasks at Tier 1 or above a mutation table (one deliberate break per A
   item and the test that failed — a test that survives its mutation leaves that A item
-  unverified and raises a blocking F). Independence follows `rules/verification-tiering.md`:
-  Tier 1 a `review_gate` from a vendor other than every author, Tier 2 a `review_deep` at
-  band B or above; the designer's own review is never marked independent.
+  unverified and raises a blocking F). Independence: this loop requires, for Tier 1 changes, a
+  `review_gate` from a vendor other than every author (stricter than
+  `rules/verification-tiering.md`, which asks for one independent review when uncertainty
+  remains or the project requires it) and, for Tier 2, the rule's `review_deep` at band B or
+  above; the designer's own review is never marked independent.
 - Citation rule: the next design must cite every unmet/unverified A id and every blocking F
   id with its handling; otherwise the design is incomplete and is not sent.
 - Stop conditions: all A met and none unverified (done); "no improvement" for two

@@ -60,6 +60,7 @@ missions. Merge existing settings/instructions without overwriting.
 | Local reads | `.claude/scripts/local-run.sh`, `local-read.py` | Declare only when using a local endpoint |
 | Enhanced WSL isolation | `.claude/scripts/lane-sensitive.sh`, `.claude/sandbox-sensitive.json` | When selecting a separate isolation lane |
 | Statistics, cleanup, Codex diagnostics | Needed files among `.claude/scripts/harness-stats.sh`, `harness-clean.py`, `check-codex-sandbox.sh` | Explicitly invoked tools. Statistics require shared `harness_records.py`; diagnostics require shared `workspace-snapshot.py` |
+| Peer sessions (experimental) | `.claude/skills/peer-sessions/SKILL.md`, `tools/peer-event.py` (+ `tools/test_peer_event.py`), `docs/peer-sessions.md` | Only when one mission runs across two desktop sessions; copy the tool into the project's `tools/` together with the skill (it is not part of the default install) |
 
 | Maintenance only | Application in consuming projects |
 |---|---|

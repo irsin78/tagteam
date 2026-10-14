@@ -16,6 +16,7 @@ loopback HTTP server.
 python -B -m unittest discover -s .claude/hooks -p 'test_*.py'
 python -B .claude/hooks/test_stop_gate.py
 python -B -m unittest discover -s .claude/scripts -p 'test_*.py'
+python -B -m unittest discover -s tools -p 'test_*.py'
 bash .claude/scripts/test_launchers.sh --list
 bash .claude/scripts/test_launchers.sh --group codex,claude
 ```
