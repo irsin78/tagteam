@@ -1050,20 +1050,20 @@ class AssessmentRoutes(unittest.TestCase):
     def assess(self, **ratings):
         return dict(dict(open=0, tangle=0, precedent=0, verifier=0, consequence=0), **ratings)
 
-    def test_catalog_contains_exactly_the_18_supported_rows(self):
+    def test_catalog_contains_exactly_the_19_supported_rows(self):
         expected = {
             'S': {'fable-high', 'fable-xhigh', 'astra-high', 'astra-xhigh'},
-            'A': {'opus55-xhigh', 'opus55-high', 'sol61-max'},
+            'A': {'opus55-xhigh', 'opus55-high', 'sol61-max', 'argon-high'},
             'B': {'opus55-medium', 'sol61-xhigh', 'sol61-high', 'sol61-medium'},
             'C': {'sonnet55-medium', 'flash-medium'},
             'D': {'luna6-high', 'flash-low', 'local-reader'},
             'E': {'haiku55', 'luna6-low'},
         }
-        self.assertEqual(len(self.data['workers']), 18)
+        self.assertEqual(len(self.data['workers']), 19)
         for band, ids in expected.items():
             self.assertEqual({w['id'] for w in self.data['workers'] if w['tier'] == band}, ids)
-        # Only Gemini Flash is a last resort (cross-check 2026-10-06, user decision).
-        self.assertEqual({w['id'] for w in self.data['workers'] if w.get('trust') == 'low'}, {'flash-medium', 'flash-low'})
+        # Gemini rows are a last resort (Flash: cross-check 2026-10-06, user decision; Argon: no evidence yet).
+        self.assertEqual({w['id'] for w in self.data['workers'] if w.get('trust') == 'low'}, {'flash-medium', 'flash-low', 'argon-high'})
         self.assertNotIn('trust_note', self.data['selection_policy'])
         self.assertNotIn('promotion_delta', self.data['selection_policy'])
         self.assertEqual(routes.launcher_default(self.data, 'openai', 'image_verify')['id'], 'sol61-medium')

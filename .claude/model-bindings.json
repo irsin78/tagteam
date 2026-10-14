@@ -2,7 +2,7 @@
   "schema_version": 3,
   "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-10-12",
+  "updated": "2026-10-14",
   "catalog_checked": "2026-10-01",
   "vendors": {
     "claude": {
@@ -58,10 +58,13 @@
       "launcher": ".claude/scripts/agy-run.sh",
       "quota": "Google AI plan",
       "catalog": {
-        "checked": "2026-10-01",
-        "source": "agy models (agy 1.2.14)",
+        "checked": "2026-10-14",
+        "source": "agy models (agy 1.3.4)",
         "listed": [
           "gemini-3.8-flash (high/medium/low)"
+        ],
+        "plan_gated": [
+          "gemini-4-argon (Google API id; absent from agy models on the checking account, so availability depends on the Google AI plan)"
         ]
       }
     },
@@ -1110,6 +1113,47 @@
         "date": "2026-09-30",
         "result": "OK",
         "cli": "agy"
+      },
+      "trust": "low"
+    },
+    {
+      "tier": "A",
+      "vendor": "google",
+      "model": "gemini-4-argon",
+      "effort": "high",
+      "ttft_s": null,
+      "output_speed_tps": null,
+      "endpoint": "agy-cli",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis"
+      ],
+      "updated": "2026-10-14",
+      "catalog_checked": "2026-10-14",
+      "status": "unverified",
+      "note": "Plan-gated: Gemini 4 Argon (released 2026-09-30) is offered only on some Google AI plans. Unverified rows need an explicit --worker, so routing keeps Gemini 3.8 Flash by default. Where `agy models` lists it, enable it in model-bindings.local.json with workers_local {\"id\": \"argon-high\", \"status\": \"active\", \"probe\": {...}} and the measured agy model id if it differs. AA 10-14: high only, 53 / $1.99 per task; speed and first chunk not shown (values read through an LLM summary). agy has no command grant, so it cannot run tests; verification stays codex-side. No FrontierSWE or real-run evidence yet, so trust is low.",
+      "intelligence_index": 53,
+      "effective_cost": 1.99,
+      "id": "argon-high",
+      "tier_cell": true,
+      "roles": {
+        "write": 5
+      },
+      "launcher": ".claude/scripts/agy-run.sh",
+      "metrics": {
+        "index": 53,
+        "cost": 1.99,
+        "ttft_s": null,
+        "tps": null,
+        "source": "artificial_analysis",
+        "read": "2026-10-14",
+        "secondary_pass1": null,
+        "provisional": true
+      },
+      "probe": {
+        "date": "2026-10-14",
+        "result": "NOT LISTED: absent from agy models (agy 1.3.4) on the checking account; plan-gated",
+        "cli": "agy 1.3.4"
       },
       "trust": "low"
     },
