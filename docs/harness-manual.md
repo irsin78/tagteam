@@ -22,7 +22,7 @@ entire manual for onboarding.
 .claude/
   agents/     Six subagent definitions (2 external CLI + 4 Claude)
   rules/      Shared policies: roles, verification, security boundaries (Claude auto-loads; Codex reads through AGENTS.md)
-  skills/     Recipes loaded only when needed (codex delegation, agy delegation, safety guard verification)
+  skills/     Recipes loaded only when needed (codex delegation, agy delegation, safety guard verification, peer sessions — experimental)
   hooks/      Host-specific hooks and regression tests for dangerous commands, startup, stop, delegation results
   scripts/    codex·agy·claude·local delegation launchers (preflight/invocation/postflight), control-plane hashes, WSL isolation lane helpers
   settings.json · sandbox-sensitive.json · model-bindings.json (tier table) · model-bindings.local.json.example (local override skeleton; .local.json is gitignored)
@@ -198,6 +198,9 @@ explicit cross-host handoff contracts.
   Codex also follows AGENTS.md's explicit read path. Examples:
   [Mission operation](missions/README.md).
 - Recipes: `skills/delegate-codex/SKILL.md`, `skills/delegate-agy/SKILL.md`.
+  Experimental two-session handoff (design/judgment ↔ implementation over desktop
+  messages): `skills/peer-sessions/SKILL.md`, operating notes `docs/peer-sessions.md`,
+  event log `tools/peer-event.py`. It adds a procedure, no permissions.
   Entry instructions resolve roles and required reading.
 
 ### Rationale for rules and scope of reconsideration
