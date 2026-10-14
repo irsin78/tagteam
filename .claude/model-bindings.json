@@ -64,7 +64,7 @@
           "gemini-3.8-flash (high/medium/low)"
         ],
         "plan_gated": [
-          "gemini-4-argon (Google API id; absent from agy models on the checking account, so availability depends on the Google AI plan)"
+          "gemini-4-argon (Google API id; agy 1.3.4 model menu shows Gemini 4 Argon as Unavailable: Ultra plan only on 2026-10-14; absent from `agy models` on a non-Ultra account)"
         ]
       }
     },
@@ -1131,7 +1131,7 @@
       "updated": "2026-10-14",
       "catalog_checked": "2026-10-14",
       "status": "unverified",
-      "note": "Plan-gated: Gemini 4 Argon (released 2026-09-30) is offered only on some Google AI plans. Unverified rows need an explicit --worker, so routing keeps Gemini 3.8 Flash by default. Where `agy models` lists it, enable it in model-bindings.local.json with workers_local {\"id\": \"argon-high\", \"status\": \"active\", \"probe\": {...}} and the measured agy model id if it differs. AA 10-14: high only, 53 / $1.99 per task; speed and first chunk not shown (values read through an LLM summary). agy has no command grant, so it cannot run tests; verification stays codex-side. No FrontierSWE or real-run evidence yet, so trust is low.",
+      "note": "Plan-gated: Gemini 4 Argon (released 2026-09-30) is Ultra-plan only in agy as of 2026-10-14 (model menu: Unavailable, available to Ultra plan subscribers); a wider rollout (e.g. Pro) is expected by the user but unconfirmed. Unverified rows need an explicit --worker, so routing keeps Gemini 3.8 Flash by default. Where the plan includes it (`agy models` lists it), enable it in model-bindings.local.json with workers_local {\"id\": \"argon-high\", \"status\": \"active\", \"probe\": {...}} and the measured agy model id if it differs. AA 10-14: high only, 53 / $1.99 per task; speed and first chunk not shown (values read through an LLM summary). agy has no command grant, so it cannot run tests; verification stays codex-side. No FrontierSWE or real-run evidence yet, so trust is low.",
       "intelligence_index": 53,
       "effective_cost": 1.99,
       "id": "argon-high",
@@ -1152,7 +1152,7 @@
       },
       "probe": {
         "date": "2026-10-14",
-        "result": "NOT LISTED: absent from agy models (agy 1.3.4) on the checking account; plan-gated",
+        "result": "UNAVAILABLE: agy 1.3.4 model menu lists Gemini 4 Argon as Ultra plan only; absent from agy models on a non-Ultra account",
         "cli": "agy 1.3.4"
       },
       "trust": "low"
