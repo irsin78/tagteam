@@ -384,7 +384,8 @@ class HostRoutes(unittest.TestCase):
         budget = 'exhausted:openai,claude'
         self.assertEqual(routes.budget_for(self.data, {'HARNESS_BUDGET': budget}), budget)
         result = routes.resolve(self.data, 'claude', 'write', budget=budget, latency='detached')
-        self.assertEqual(result['worker_id'], 'flash-medium')
+        # Argon (no trust low) precedes the trust-low Flash rows once other vendors are exhausted.
+        self.assertEqual(result['worker_id'], 'argon-high')
         self.assertTrue(result['available'])
         result = routes.resolve(self.data, 'claude', 'write', budget=budget + ',google', latency='detached')
         self.assertFalse(result['available'])
@@ -1062,8 +1063,10 @@ class AssessmentRoutes(unittest.TestCase):
         self.assertEqual(len(self.data['workers']), 19)
         for band, ids in expected.items():
             self.assertEqual({w['id'] for w in self.data['workers'] if w['tier'] == band}, ids)
-        # Gemini rows are a last resort (Flash: cross-check 2026-10-06, user decision; Argon: no evidence yet).
-        self.assertEqual({w['id'] for w in self.data['workers'] if w.get('trust') == 'low'}, {'flash-medium', 'flash-low', 'argon-high'})
+        # Gemini Flash is a last resort (cross-check 2026-10-06, user decision); Argon is
+        # active without trust low (rollout + FrontierSWE evidence, 2026-10-17), so it is the agy write default.
+        self.assertEqual({w['id'] for w in self.data['workers'] if w.get('trust') == 'low'}, {'flash-medium', 'flash-low'})
+        self.assertEqual(routes.launcher_default(self.data, 'google', 'write')['id'], 'argon-high')
         self.assertNotIn('trust_note', self.data['selection_policy'])
         self.assertNotIn('promotion_delta', self.data['selection_policy'])
         self.assertEqual(routes.launcher_default(self.data, 'openai', 'image_verify')['id'], 'sol61-medium')

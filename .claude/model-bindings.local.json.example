@@ -52,6 +52,5 @@
       "scored": false
     }
   ],
-  "plan_gated_comment": "Plan-gated rows (status unverified, e.g. argon-high) are skipped unless --worker names them. When your plan includes the model (argon-high: Ultra only as of 2026-10-14; `agy models` lists it), add {\"id\": \"argon-high\", \"status\": \"active\", \"probe\": {\"date\": \"YYYY-MM-DD\", \"result\": \"OK\", \"cli\": \"agy <version>\"}} to workers_local; otherwise routing keeps Gemini 3.8 Flash.",
   "personal_judgement_comment": "Keep personal judgement here: for example, set trust: low in a workers_local row or override selection_policy.assessment for project needs."
 }
