@@ -54,7 +54,7 @@ class HostRoutes(unittest.TestCase):
 
     def test_cli_assessment_sets_start_floor_and_records_ratings(self):
         assessment = 'consequence=1,verifier=1,precedent=0,tangle=2,open=1'
-        for recent, band, ident in [(False, 'A', 'opus55-high'), (True, 'S', 'fable-high')]:
+        for recent, band, ident in [(False, 'A', 'opus55-high'), (True, 'S', 'fable-medium')]:
             stream = io.StringIO()
             extra = ['--recent-failure'] if recent else []
             with patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
@@ -154,54 +154,58 @@ class HostRoutes(unittest.TestCase):
             self.assertTrue(all(self.data['bands']['order'].index(w['tier']) >=
                                 self.data['bands']['order'].index(band) for w in rows))
         for host, model in [('codex', 'claude-fable-5-1'), ('claude', 'gpt-6-astra')]:
-            for latency, effort in [('foreground', 'high'), ('detached', 'xhigh')]:
+            for latency, effort in [('foreground', 'medium'), ('detached', 'medium')]:
                 result = routes.resolve(self.data, host, 'implement', tier='S', latency=latency)
                 self.assertEqual((result['model'], result['effort']), (model, effort))
                 self.assertTrue(result['floor_met'])
 
     def test_latency_and_cost_tie(self):
-        data = self.override('opus55-medium', tier='C', tier_cell=False,
-                             metrics={'cost': .55, 'ttft_s': 14.3})
+        data = routes.merge_bindings(self.data, {'workers_local': [
+            dict(id='opus55-medium', tier='C', tier_cell=False, metrics={'cost': .95, 'ttft_s': 14.3}),
+            dict(id='sonnet55-high', metrics={'ttft_s': 1.3})]})
         for latency in ('foreground', 'interactive'):
             result = routes.resolve(data, 'codex', 'implement', tier='C', latency=latency)
-            self.assertEqual(result['worker_id'], 'sonnet55-medium')
+            self.assertEqual(result['worker_id'], 'sonnet55-high')
             self.assertEqual('opus55-medium' in result['eligible'], latency == 'foreground')
         result = routes.resolve(data, 'codex', 'implement', tier='C')
-        self.assertIn('ties: sonnet55-medium, opus55-medium', result['reason'])
+        self.assertIn('ties: sonnet55-high, opus55-medium', result['reason'])
         result = routes.resolve(self.data, 'claude', 'implement', latency='detached')
         self.assertIn('sol61-max', result['eligible'])
         self.assertTrue(result['floor_met'])
 
     def test_unverified_and_unscored_never_enter_fallback(self):
         active = routes.resolve(self.data, 'claude', 'implement')
-        self.assertEqual(active['worker_id'], 'sol61-medium')
+        self.assertEqual(active['worker_id'], 'sol61-high')
         self.assertTrue(active['floor_met'])
-        result = routes.resolve(self.sol61_unverified(), 'claude', 'implement')
-        self.assertEqual(result['worker_id'], 'luna6-high')
-        self.assertFalse(result['floor_met'])
-        self.assertIn('no row meets band B in foreground', result['reason'])
-        self.assertFalse(any(ident.startswith('sol61-') for ident in result['eligible']))
+        # With every ordinary OpenAI row unverified no independent worker is left: the
+        # router refuses instead of silently promoting an unverified or unscored row.
+        with self.assertRaisesRegex(IndexError, 'no eligible worker'):
+            routes.resolve(self.sol61_unverified(), 'claude', 'implement')
         unscored = routes.merge_bindings(self.sol61_unverified(), {'workers_local': [
             {'id': 'sol61-medium', 'status': 'active', 'scored': False}]})
-        self.assertNotIn('sol61-medium', routes.resolve(unscored, 'claude', 'implement')['eligible'])
+        with self.assertRaisesRegex(IndexError, 'no eligible worker'):
+            routes.resolve(unscored, 'claude', 'implement')
         explicit = routes.resolve(unscored, 'claude', 'implement', worker='sol61-medium')
         self.assertEqual(explicit['worker_id'], 'sol61-medium')
         self.assertFalse(explicit['floor_met'])
 
     def test_reasoning_retries_promote_then_choose_s(self):
         for previous, attempt, expected in [('opus55-medium', 1, 'opus55-high'),
-                                             ('opus55-high', 2, 'fable-high')]:
+                                             ('opus55-high', 2, 'fable-medium')]:
             result = routes.resolve(self.data, 'codex', 'implement', retry_from=previous,
                                     retry_reason='reasoning', attempt=attempt)
             self.assertEqual(result['worker_id'], expected)
-        detached = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-medium',
+        flat = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-medium',
+                              retry_reason='reasoning', attempt=1)
+        self.assertEqual((flat['worker_id'], flat['band']), ('sol61-high', 'B'))
+        self.assertFalse(flat['needs_detached'])
+        detached = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-high',
                                   retry_reason='reasoning', attempt=1)
         self.assertEqual(detached['worker_id'], 'sol61-max')
         self.assertTrue(detached['needs_detached'])
-        flat = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-xhigh',
-                              retry_reason='reasoning', attempt=1)
-        self.assertEqual(flat['worker_id'], 'sol61-max')
-        self.assertEqual(flat['band'], 'A')
+        top = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-max',
+                             retry_reason='reasoning', attempt=2)
+        self.assertEqual((top['worker_id'], top['band']), ('astra-medium', 'S'))
         with self.assertRaisesRegex(ValueError, 'attempt cap reached'):
             routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
                            retry_reason='reasoning', attempt=3)
@@ -225,9 +229,9 @@ class HostRoutes(unittest.TestCase):
         self.assertTrue(any(w['reason'].startswith('vendor refused') for w in result['skipped']))
         self.assertNotIn('exhausted', result['reason'])
         # An S refusal moves to the other S lane, not down a band.
-        result = routes.resolve(self.data, 'codex', 'implement', retry_from='astra-high',
+        result = routes.resolve(self.data, 'codex', 'implement', retry_from='astra-medium',
                                 author_vendors=['google'], retry_reason='refusal', attempt=1)
-        self.assertEqual((result['worker_id'], result['band']), ('fable-high', 'S'))
+        self.assertEqual((result['worker_id'], result['band']), ('fable-medium', 'S'))
         # Author separation still holds: with every remaining vendor an author, the
         # route is flagged as not independent and unavailable, never a silent self-review.
         result = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-high',
@@ -267,18 +271,18 @@ class HostRoutes(unittest.TestCase):
 
     def test_provisional_precedes_cost_and_unscored_promotion_is_excluded(self):
         data = self.override('sol61-medium', status='active', probe={'result': 'OK'})
-        ordinary = routes.resolve(data, 'claude', 'implement')
+        ordinary = routes.resolve(data, 'claude', 'implement', tier='C')
         self.assertEqual(ordinary['worker_id'], 'sol61-medium')
         self.assertTrue(ordinary['floor_met'])
         data = routes.merge_bindings(data, {'workers_local': [
             {'id': 'sol61-high', 'status': 'active', 'probe': {'result': 'OK'},
              'metrics': {'provisional': False, 'secondary_pass1': .7}}]})
-        result = routes.resolve(data, 'claude', 'implement')
+        result = routes.resolve(data, 'claude', 'implement', tier='C')
         self.assertEqual(result['worker_id'], 'sol61-high')
         unscored = self.override('sol61-max', scored=False)
         result = routes.resolve(unscored, 'claude', 'implement', retry_from='sol61-high',
                                 retry_reason='reasoning', attempt=1)
-        self.assertEqual(result['worker_id'], 'astra-high')
+        self.assertEqual(result['worker_id'], 'astra-medium')
         self.assertNotIn('sol61-max', result['eligible'])
 
     def test_retry_argument_validation_and_removed_step(self):
@@ -294,7 +298,7 @@ class HostRoutes(unittest.TestCase):
         self.assertIn('unrecognized arguments: --step', result.stderr)
 
     def test_tier_prefers_nonexhausted_vendor(self):
-        for budget, expected in [('normal', 'astra-high'), ('exhausted:openai', 'fable-high')]:
+        for budget, expected in [('normal', 'astra-medium'), ('exhausted:openai', 'fable-medium')]:
             result = routes.resolve(self.data, 'claude', 'implement', tier='S',
                                     author_vendors=['google'], budget=budget)
             self.assertEqual(result['worker_id'], expected)
@@ -368,17 +372,20 @@ class HostRoutes(unittest.TestCase):
     def test_explicit_worker_and_host_priorities(self):
         with self.assertRaisesRegex(ValueError, 'unknown worker'):
             routes.resolve(self.data, 'claude', 'implement', worker='absent')
-        pending = self.sol61_unverified()
+        pending = self.override('sol61-high', status='unverified')
         implicit = routes.resolve(pending, 'claude', 'implement')
         self.assertIn({'id': 'sol61-high', 'reason': 'status unverified requires explicit --worker'}, implicit['skipped'])
+        self.assertEqual((implicit['worker_id'], implicit['floor_met']), ('sol61-medium', False))
         self.assertEqual(routes.resolve(pending, 'claude', 'implement', worker='sol61-high')['worker_id'], 'sol61-high')
         data = routes.merge_bindings(self.data, {'workers_local': [dict(
             id='sol61-high', roles={'implement': {'priority': 150, 'hosts': ['claude']}})]})
         result = routes.resolve(data, 'codex', 'implement', author_vendors=['claude'])
         self.assertEqual(result['worker_id'], 'sol61-medium')
+        self.assertFalse(result['floor_met'])
         self.assertIn({'id': 'sol61-high', 'reason': 'host is not eligible'}, result['skipped'])
         data = self.override('sol61-high', status='conditional')
-        self.assertEqual(routes.resolve(data, 'claude', 'implement')['worker_id'], 'sol61-medium')
+        demoted = routes.resolve(data, 'claude', 'implement')
+        self.assertEqual((demoted['worker_id'], demoted['floor_met']), ('sol61-medium', False))
 
     def test_multiple_exhausted_vendors_and_diagnostic(self):
         budget = 'exhausted:openai,claude'
@@ -413,7 +420,7 @@ class HostRoutes(unittest.TestCase):
     def test_launcher_default_cli_works_for_delegates(self):
         env = dict(os.environ, HARNESS_DELEGATE_RUN='1')
         command = [sys.executable, str(HERE / 'harness-route.py'), '--launcher-default']
-        for vendor, role, expected in [('openai', 'implement', 'gpt-6.1-sol medium'),
+        for vendor, role, expected in [('openai', 'implement', 'gpt-6.1-sol high'),
                                        ('openai', 'image_verify', 'gpt-6.1-sol medium'),
                                        ('claude', 'implement', 'claude-opus-5-5 medium')]:
             # Launchers run from the project root; bindings resolve from that cwd.
@@ -663,7 +670,7 @@ for line in sys.stdin:
         self.assertNotIn('sol61-max', result['eligible'])
 
     def test_task_tier_selects_efficient_binding_on_both_hosts(self):
-        for host, ident, tier in [('codex', 'sonnet55-medium', 'C'), ('claude', 'sol61-medium', 'B')]:
+        for host, ident, tier in [('codex', 'sonnet55-high', 'C'), ('claude', 'sol61-medium', 'C')]:
             result = routes.resolve(self.data, host, 'implement', tier='C')
             self.assertEqual(result['worker_id'], ident)
             self.assertEqual(result['band'], 'C')
@@ -732,7 +739,7 @@ for line in sys.stdin:
         self.assertEqual(result['vendor'], 'claude')
 
     def test_specialty_author_and_local_review_override(self):
-        data = self.override('opus55-high', model='project-reviewer')
+        data = self.override('opus55-medium', model='project-reviewer')
         result = routes.resolve(data, 'claude', 'review_deep', author_vendors=['openai'])
         self.assertTrue(result['available'])
         self.assertEqual(result['model'], 'project-reviewer')
@@ -970,6 +977,73 @@ for line in sys.stdin:
             self.assertEqual(output.read_bytes(), before)
 
 
+class AuthorTierRoutes(unittest.TestCase):
+    """Reviews take the actual author's band on another vendor (user decision 2026-10-19)."""
+
+    def setUp(self):
+        public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
+        self.data = routes.merge_bindings(public, {})
+
+    def test_same_band_other_vendor_for_every_review_role(self):
+        cells = {('claude', 'S'): 'astra-medium', ('claude', 'B'): 'sol61-high', ('claude', 'C'): 'sol61-medium',
+                 ('codex', 'S'): 'fable-medium', ('codex', 'B'): 'opus55-medium', ('codex', 'C'): 'sonnet55-high'}
+        order = self.data['bands']['order']
+        for role in routes.REVIEW_ROLES:
+            floor_min = self.data['roles'][role]['band_floor']
+            for host, band in cells:
+                author = {'claude': 'claude', 'codex': 'openai'}[host]
+                floor = max((band, floor_min), key=order.index)
+                with self.subTest(role=role, host=host, band=band):
+                    route = routes.resolve(self.data, host, role, author_vendors=[author], author_tier=band)
+                    self.assertEqual((route['worker_id'], route['band'], route['floor_met']),
+                                     (cells[(host, floor)], floor, True))
+                    self.assertEqual(route['author_tier'], band)
+                    self.assertTrue(route['reason'].startswith(f'author band {band} -> review floor {floor}'))
+                    self.assertNotEqual(route['vendor'], author)
+
+    def test_author_band_below_the_role_floor_keeps_the_floor(self):
+        for role, floor in [('review_deep', 'B'), ('plan_review', 'B'), ('review_gate', 'C')]:
+            route = routes.resolve(self.data, 'claude', role, author_vendors=['claude'], author_tier='E')
+            self.assertEqual(route['band'], floor)
+            self.assertTrue(route['floor_met'])
+
+    def test_a_band_openai_review_runs_detached_instead_of_dropping_a_band(self):
+        route = routes.resolve(self.data, 'claude', 'plan_review', author_vendors=['claude'], author_tier='A')
+        self.assertEqual((route['worker_id'], route['band'], route['floor_met']), ('sol61-max', 'A', True))
+        self.assertTrue(route['needs_detached'])
+        self.assertIn('author band A is only available detached', route['reason'])
+        # Without the derivation the same request degrades to a lower band in the foreground.
+        plain = routes.resolve(self.data, 'claude', 'plan_review', author_vendors=['claude'], tier='A')
+        self.assertEqual((plain['worker_id'], plain['floor_met']), ('sol61-high', False))
+
+    def test_explicit_tier_wins_and_misuse_is_rejected(self):
+        route = routes.resolve(self.data, 'claude', 'review_deep', author_vendors=['claude'],
+                               author_tier='S', tier='B')
+        self.assertEqual((route['worker_id'], route['band']), ('sol61-high', 'B'))
+        self.assertEqual(route['author_tier'], 'S')
+        with self.assertRaisesRegex(ValueError, 'only for review roles'):
+            routes.resolve(self.data, 'claude', 'implement', author_tier='B')
+        with self.assertRaisesRegex(ValueError, 'cannot be combined with --author-tier'):
+            routes.resolve(self.data, 'claude', 'review_deep', author_vendors=['claude'],
+                           author_tier='B', worker='sol61-high')
+        with self.assertRaisesRegex(ValueError, 'invalid author tier'):
+            routes.resolve(self.data, 'claude', 'review_deep', author_vendors=['claude'], author_tier='Z')
+        data = routes.merge_bindings(self.data, {'roles': {'review': {'author_tier_rule': 'below'}}})
+        with self.assertRaisesRegex(ValueError, 'unsupported author_tier_rule'):
+            routes.resolve(data, 'claude', 'review_deep', author_vendors=['claude'], author_tier='B')
+
+    def test_cli_accepts_author_tier_and_echoes_it(self):
+        stream = io.StringIO()
+        with patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
+                routes, 'find_bash', return_value='bash'), patch.object(
+                routes, 'budget_for', return_value='normal'), patch.object(sys, 'argv', [
+                'harness-route.py', '--host', 'claude', '--role', 'review_gate', '--author-vendor', 'claude',
+                '--author-tier', 'B']), contextlib.redirect_stdout(stream):
+            self.assertEqual(routes.main(), 0)
+        output = json.loads(stream.getvalue())
+        self.assertEqual((output['worker_id'], output['author_tier'], output['band']), ('sol61-high', 'B', 'B'))
+
+
 class ReviewFollowUps(unittest.TestCase):
     """Review r1 notes: a failed S row is never repeated; null metrics never crash."""
 
@@ -977,15 +1051,12 @@ class ReviewFollowUps(unittest.TestCase):
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
         self.data = routes.merge_bindings(public, {})
 
-    def test_failed_s_row_steps_to_detached_effort_then_cross_lane(self):
-        first = routes.resolve(self.data, 'codex', 'implement', retry_from='fable-high',
+    def test_failed_s_row_crosses_lanes_because_the_s_lane_has_one_effort(self):
+        first = routes.resolve(self.data, 'codex', 'implement', retry_from='fable-medium',
                                retry_reason='reasoning', attempt=1)
-        self.assertEqual(first['worker_id'], 'fable-xhigh')
-        self.assertTrue(first['needs_detached'])
-        second = routes.resolve(self.data, 'codex', 'implement', retry_from='fable-xhigh',
-                                retry_reason='reasoning', attempt=2)
-        self.assertEqual(second['worker_id'], 'astra-high')
-        self.assertTrue(second['cross_lane_s'])
+        self.assertEqual((first['worker_id'], first['effort']), ('astra-medium', 'medium'))
+        self.assertTrue(first['cross_lane_s'])
+        self.assertFalse(first['needs_detached'])
 
     def test_null_metrics_override_is_rejected_not_crashed(self):
         with self.assertRaises(ValueError):
@@ -1012,7 +1083,7 @@ class ReviewFollowUps(unittest.TestCase):
             routes.resolve(data, 'claude', 'implement', worker='only-max', latency='detached')
 
     def test_promotion_needing_detached_says_so_in_reason(self):
-        route = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-medium',
+        route = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-high',
                                retry_reason='reasoning', attempt=1)
         self.assertEqual(route['worker_id'], 'sol61-max')
         self.assertTrue(route['needs_detached'])
@@ -1050,18 +1121,29 @@ class AssessmentRoutes(unittest.TestCase):
     def assess(self, **ratings):
         return dict(dict(open=0, tangle=0, precedent=0, verifier=0, consequence=0), **ratings)
 
-    def test_catalog_contains_exactly_the_19_supported_rows(self):
+    def test_catalog_contains_exactly_the_21_supported_rows(self):
         expected = {
-            'S': {'fable-high', 'fable-xhigh', 'astra-high', 'astra-xhigh'},
-            'A': {'opus55-xhigh', 'opus55-high', 'sol61-max', 'argon-high'},
-            'B': {'opus55-medium', 'sol61-xhigh', 'sol61-high', 'sol61-medium'},
-            'C': {'sonnet55-medium', 'flash-medium'},
-            'D': {'luna6-high', 'flash-low', 'local-reader'},
-            'E': {'haiku55', 'luna6-low'},
+            'S': {'fable-medium', 'fable-high', 'fable-xhigh', 'astra-medium', 'astra-high', 'astra-xhigh'},
+            'A': {'opus55-high', 'opus55-xhigh', 'sol61-max', 'sol61-xhigh', 'argon-high'},
+            'B': {'opus55-medium', 'sol61-high'},
+            'C': {'sonnet55-high', 'sol61-medium', 'flash-medium'},
+            'D': {'sonnet55-medium', 'sol61-low', 'flash-low', 'local-reader'},
+            'E': {'haiku55'},
         }
-        self.assertEqual(len(self.data['workers']), 19)
+        self.assertEqual(len(self.data['workers']), 21)
         for band, ids in expected.items():
             self.assertEqual({w['id'] for w in self.data['workers'] if w['tier'] == band}, ids)
+        # One Claude cell and one OpenAI cell per band (user decision 2026-10-19); the
+        # higher-effort rows stay conditional, reachable only with an explicit --worker.
+        cells = {(w['tier'], w['vendor']): w['id'] for w in self.data['workers'] if w.get('tier_cell')}
+        self.assertEqual({cells[(b, 'claude')] for b in 'SABCDE'},
+                         {'fable-medium', 'opus55-high', 'opus55-medium', 'sonnet55-high', 'sonnet55-medium', 'haiku55'})
+        self.assertEqual({cells[(b, 'openai')] for b in 'SABCD'},
+                         {'astra-medium', 'sol61-max', 'sol61-high', 'sol61-medium', 'sol61-low'})
+        self.assertEqual({w['id'] for w in self.data['workers'] if w['status'] == 'conditional'},
+                         {'fable-high', 'fable-xhigh', 'astra-high', 'astra-xhigh', 'opus55-xhigh', 'sol61-xhigh'})
+        self.assertEqual((self.data['bands']['S']['foreground_effort'], self.data['bands']['S']['detached_effort']),
+                         ('medium', 'medium'))
         # Gemini rows are a last resort (Flash: cross-check 2026-10-06, user decision; Argon: no evidence yet).
         self.assertEqual({w['id'] for w in self.data['workers'] if w.get('trust') == 'low'}, {'flash-medium', 'flash-low', 'argon-high'})
         self.assertNotIn('trust_note', self.data['selection_policy'])
@@ -1075,7 +1157,7 @@ class AssessmentRoutes(unittest.TestCase):
             if row.get('scored') is not False:
                 row['metrics']['index'] /= 100
         data = routes.merge_bindings(data, {})
-        for host, previous, expected in [('claude', 'sol61-medium', 'sol61-max'),
+        for host, previous, expected in [('claude', 'sol61-high', 'sol61-max'),
                                           ('codex', 'opus55-medium', 'opus55-high')]:
             self.assertEqual(routes.resolve(data, host, 'implement')['worker_id'], previous)
             promoted = routes.resolve(data, host, 'implement', retry_from=previous,
@@ -1083,13 +1165,13 @@ class AssessmentRoutes(unittest.TestCase):
             self.assertEqual(promoted['worker_id'], expected)
             self.assertTrue(promoted['floor_met'])
 
-    def test_judgement_roles_use_high_rows_on_both_hosts(self):
-        for host, author, expected in [('claude', 'claude', 'sol61-high'),
-                                        ('codex', 'openai', 'opus55-high')]:
+    def test_judgement_roles_use_the_b_cell_of_the_other_vendor_on_both_hosts(self):
+        for host, author, expected, effort in [('claude', 'claude', 'sol61-high', 'high'),
+                                                ('codex', 'openai', 'opus55-medium', 'medium')]:
             for role in ('decide', 'plan_review', 'review_deep'):
                 with self.subTest(host=host, role=role):
                     route = routes.resolve(self.data, host, role, author_vendors=[author])
-                    self.assertEqual((route['worker_id'], route['effort'], route['band']), (expected, 'high', 'B'))
+                    self.assertEqual((route['worker_id'], route['effort'], route['band']), (expected, effort, 'B'))
                     self.assertTrue(route['floor_met'])
 
     def test_all_assessment_mapping_cells_and_both_sources_of_each_maximum(self):
@@ -1106,9 +1188,9 @@ class AssessmentRoutes(unittest.TestCase):
                                          computed=band, applied=band, recent_failure=False))
                         self.assertTrue(route['reason'].startswith(f'assessed difficulty {difficulty}'))
                         if band == 'S':
-                            self.assertEqual(route['worker_id'], 'fable-high')
+                            self.assertEqual(route['worker_id'], 'fable-medium')
                         else:
-                            self.assertNotIn(route['worker_id'], ('fable-high', 'fable-xhigh'))
+                            self.assertNotIn(route['worker_id'], ('fable-medium', 'fable-high', 'fable-xhigh'))
         route = routes.resolve(self.data, 'codex', 'implement', assess=self.assess(tangle=2, verifier=1))
         self.assertTrue(route['reason'].startswith('assessed difficulty 2 (tangle), exposure 1 -> band A;'))
 
@@ -1138,7 +1220,7 @@ class AssessmentRoutes(unittest.TestCase):
 
     def test_tier_worker_and_retry_override_the_assessed_start_floor(self):
         hardest = self.assess(open=2, tangle=2, consequence=2)
-        for tier, expected in [('C', 'sonnet55-medium'), ('B', 'opus55-medium'), ('S', 'fable-high')]:
+        for tier, expected in [('C', 'sonnet55-high'), ('B', 'opus55-medium'), ('S', 'fable-medium')]:
             plain = routes.resolve(self.data, 'codex', 'implement', tier=tier)
             route = routes.resolve(self.data, 'codex', 'implement', tier=tier, assess=hardest, recent_failure=True)
             self.assertEqual((route['band'], route['worker_id']), (tier, expected))
@@ -1182,7 +1264,7 @@ class AssessmentRoutes(unittest.TestCase):
         self.assertEqual(route['worker_id'], 'opus55-high')
 
     def test_no_volume_keeps_cheapest_settings_for_nonzero_assessments(self):
-        for host, expected in [('claude', 'sol61-medium'), ('codex', 'opus55-medium')]:
+        for host, expected in [('claude', 'sol61-high'), ('codex', 'opus55-medium')]:
             for budget in ('normal', 'tight'):
                 with self.subTest(host=host, budget=budget):
                     route = routes.resolve(self.data, host, 'implement', budget=budget,
@@ -1219,7 +1301,7 @@ class AssessmentRoutes(unittest.TestCase):
         for options in ({}, {'tier': 'A'}, {'tier': 'A', 'assess': self.assess(tangle=2, verifier=1)}):
             with self.subTest(options=options):
                 route = routes.resolve(data, 'claude', 'implement', **options)
-                self.assertEqual(route['worker_id'], 'sol61-medium')
+                self.assertEqual(route['worker_id'], 'sol61-high')
                 self.assertFalse(route['needs_detached'])
                 self.assertFalse(route['floor_met'])
                 self.assertNotIn('assessment_floor', route)
@@ -1227,26 +1309,25 @@ class AssessmentRoutes(unittest.TestCase):
     def test_assessed_floor_chooses_the_cheapest_detached_row_and_keeps_s_lane_efforts(self):
         data = routes.merge_bindings(self.data, {'workers_local': [
             {'id': 'opus55-high', 'metrics': {'ttft_s': 90}},
-            {'id': 'opus55-xhigh', 'metrics': {'cost': .5}}]})
+            {'id': 'opus55-xhigh', 'status': 'active', 'metrics': {'cost': .5}}]})
         route = routes.resolve(data, 'codex', 'implement', assess=self.assess(tangle=2, verifier=1))
         self.assertEqual(route['worker_id'], 'opus55-xhigh')
         self.assertTrue(route['needs_detached'])
         self.assertTrue(route['floor_met'])
-        for host, foreground, detached in [('claude', 'astra-high', 'astra-xhigh'),
-                                           ('codex', 'fable-high', 'fable-xhigh')]:
+        for host, cell in [('claude', 'astra-medium'), ('codex', 'fable-medium')]:
             route = routes.resolve(self.data, host, 'implement', latency='interactive',
                                    assess=self.assess(tangle=2, verifier=2))
-            self.assertEqual(route['worker_id'], foreground)
+            self.assertEqual(route['worker_id'], cell)
             self.assertTrue(route['floor_met'])
-            self.assertTrue(route['needs_detached'])
-            data = routes.merge_bindings(self.data, {'workers_local': [{'id': foreground, 'status': 'conditional'}]})
-            route = routes.resolve(data, host, 'implement', assess=self.assess(tangle=2, verifier=2))
-            self.assertEqual(route['worker_id'], detached)
-            self.assertTrue(route['floor_met'])
-            self.assertTrue(route['needs_detached'])
+            slow = next(w for w in self.data['workers'] if w['id'] == cell)['metrics']['ttft_s'] > 10
+            self.assertEqual(route['needs_detached'], slow)
+            # The S lane has a single (medium) effort: without its cell nothing else is S.
+            data = routes.merge_bindings(self.data, {'workers_local': [{'id': cell, 'status': 'conditional'}]})
+            with self.assertRaisesRegex(IndexError, 'no eligible worker'):
+                routes.resolve(data, host, 'implement', assess=self.assess(tangle=2, verifier=2))
 
     def test_assessed_floor_falls_back_only_when_no_eligible_row_meets_it_anywhere(self):
-        for host, vendor, expected in [('claude', 'openai', 'sol61-medium'), ('codex', 'claude', 'opus55-medium')]:
+        for host, vendor, expected in [('claude', 'openai', 'sol61-high'), ('codex', 'claude', 'opus55-medium')]:
             data = routes.merge_bindings(self.data, {'workers_local': [
                 {'id': w['id'], 'status': 'conditional'} for w in self.data['workers']
                 if w['vendor'] == vendor and w['tier'] == 'A']})
@@ -1278,9 +1359,9 @@ class AssessmentRoutes(unittest.TestCase):
 
     def test_fallback_uses_band_then_cost_even_when_indices_disagree(self):
         data = routes.merge_bindings(self.data, {'workers_local': [
-            {'id': 'sol61-medium', 'metrics': {'index': 1}},
+            {'id': 'sol61-medium', 'tier': 'B', 'tier_cell': False, 'metrics': {'index': 1}},
             {'id': 'sol61-high', 'metrics': {'index': 9999}},
-            {'id': 'luna6-high', 'metrics': {'index': 99999}},
+            {'id': 'sol61-low', 'metrics': {'index': 99999}},
             {'id': 'sol61-max', 'status': 'conditional'}]})
         route = routes.resolve(data, 'claude', 'implement', tier='A')
         self.assertEqual(route['worker_id'], 'sol61-medium')
@@ -1983,16 +2064,15 @@ class RelativeRetries(unittest.TestCase):
 
     def test_each_relative_band_step_on_both_hosts(self):
         cases = [
-            ('claude', 'luna6-low', None, 'D', 'luna6-high', False),
-            ('claude', 'luna6-high', None, 'C', 'sol61-medium', False),
-            ('claude', 'sol61-medium', 'C', 'B', 'sol61-high', False),
-            ('claude', 'sol61-medium', None, 'A', 'sol61-max', True),
-            ('claude', 'sol61-max', None, 'S', 'astra-high', False),
+            ('claude', 'sol61-low', None, 'C', 'sol61-medium', False),
+            ('claude', 'sol61-medium', None, 'B', 'sol61-high', False),
+            ('claude', 'sol61-high', None, 'A', 'sol61-max', True),
+            ('claude', 'sol61-max', None, 'S', 'astra-medium', False),
             ('codex', 'opus55-medium', 'E', 'D', 'sonnet55-medium', False),
-            ('codex', 'opus55-medium', 'D', 'C', 'sonnet55-medium', False),
-            ('codex', 'sonnet55-medium', None, 'B', 'opus55-medium', False),
+            ('codex', 'opus55-medium', 'D', 'C', 'sonnet55-high', False),
+            ('codex', 'sonnet55-high', None, 'B', 'opus55-medium', False),
             ('codex', 'opus55-medium', None, 'A', 'opus55-high', False),
-            ('codex', 'opus55-high', None, 'S', 'fable-high', False),
+            ('codex', 'opus55-high', None, 'S', 'fable-medium', False),
         ]
         for host, previous, previous_band, floor, expected, detached in cases:
             data = self.data if previous_band is None else routes.merge_bindings(self.data, {
@@ -2011,7 +2091,7 @@ class RelativeRetries(unittest.TestCase):
         for host, previous, fast, slow in cases:
             data = routes.merge_bindings(self.data, {'workers_local': [
                 {'id': fast, 'tier': 'A', 'tier_cell': False, 'metrics': {'cost': 2, 'ttft_s': 20}},
-                {'id': slow, 'metrics': {'cost': .5}}]})
+                {'id': slow, 'status': 'active', 'metrics': {'cost': .5}}]})
             self.assertEqual(self.retry(data, host, previous)['worker_id'], fast)
             data = routes.merge_bindings(data, {'workers_local': [{'id': fast, 'metrics': {'ttft_s': 90}}]})
             route = self.retry(data, host, previous)
@@ -2020,8 +2100,8 @@ class RelativeRetries(unittest.TestCase):
             self.assertIn('run with -b --wait', route['reason'])
 
     def test_no_higher_ordinary_row_steps_to_same_lane_s(self):
-        for host, previous, vendor, expected in [('claude', 'sol61-medium', 'openai', 'astra-high'),
-                                                  ('codex', 'opus55-medium', 'claude', 'fable-high')]:
+        for host, previous, vendor, expected in [('claude', 'sol61-high', 'openai', 'astra-medium'),
+                                                  ('codex', 'opus55-medium', 'claude', 'fable-medium')]:
             data = routes.merge_bindings(self.data, {'workers_local': [
                 {'id': w['id'], 'status': 'conditional'} for w in self.data['workers']
                 if w['vendor'] == vendor and w['tier'] == 'A']})
@@ -2029,24 +2109,22 @@ class RelativeRetries(unittest.TestCase):
             self.assertEqual((route['band'], route['worker_id']), ('S', expected))
 
     def test_a_to_s_uses_foreground_effort_and_marks_detached_for_a_slow_class(self):
-        for host, previous, expected in [('claude', 'sol61-max', 'astra-high'),
-                                          ('codex', 'opus55-high', 'fable-high')]:
-            for latency, detached in [('interactive', True), ('foreground', False), ('detached', False)]:
+        for host, previous, expected in [('claude', 'sol61-max', 'astra-medium'),
+                                          ('codex', 'opus55-high', 'fable-medium')]:
+            ttft = next(w for w in self.data['workers'] if w['id'] == expected)['metrics']['ttft_s']
+            for latency, detached in [('interactive', ttft > 10), ('foreground', ttft > 60), ('detached', False)]:
                 route = self.retry(self.data, host, previous, latency=latency)
                 self.assertEqual(route['worker_id'], expected)
                 self.assertEqual(route['needs_detached'], detached)
 
-    def test_s_foreground_to_detached_then_one_cross_lane_on_both_hosts(self):
-        for host, first, detached, cross in [('claude', 'astra-high', 'astra-xhigh', 'fable-high'),
-                                            ('codex', 'fable-high', 'fable-xhigh', 'astra-high')]:
+    def test_s_row_crosses_lanes_once_on_both_hosts(self):
+        for host, first, cross in [('claude', 'astra-medium', 'fable-medium'),
+                                   ('codex', 'fable-medium', 'astra-medium')]:
             for role in ('implement', 'write'):
                 for latency in ('foreground', 'detached'):
-                    second = self.retry(self.data, host, first, role=role, latency=latency)
-                    self.assertEqual((second['worker_id'], second['latency_class']), (detached, 'detached'))
-                    self.assertTrue(second['needs_detached'])
-                    for attempt in (2, 3):
-                        route = self.retry(self.data, host, detached, role=role, attempt=attempt, latency=latency)
-                        self.assertEqual((route['worker_id'], route['effort'], route['band']), (cross, 'high', 'S'))
+                    for attempt in (1, 2, 3):
+                        route = self.retry(self.data, host, first, role=role, attempt=attempt, latency=latency)
+                        self.assertEqual((route['worker_id'], route['effort'], route['band']), (cross, 'medium', 'S'))
                         self.assertTrue(route['cross_lane_s'])
                         self.assertFalse(route['separation_satisfied'])
                         self.assertTrue(route['available'])
@@ -2079,22 +2157,22 @@ class RelativeRetries(unittest.TestCase):
     def test_google_author_sequence_stops_before_cross_lane_and_never_cycles_back(self):
         options = dict(author_vendors=['google'], latency='detached')
         first = routes.resolve(self.data, 'claude', 'implement', tier='S', **options)
-        self.assertEqual(first['worker_id'], 'astra-xhigh')
+        self.assertEqual(first['worker_id'], 'astra-medium')
         self.assertTrue(first['separation_satisfied'])
         self.assertNotIn('cross_lane_s', first)
         with self.assertRaisesRegex(ValueError, 'S row already failed at its detached effort'):
             self.retry(self.data, 'claude', first['worker_id'], **options)
         # An independent lane remains available through explicit routing under the orchestrator's cap.
-        manual = routes.resolve(self.data, 'claude', 'implement', worker='fable-high', **options)
+        manual = routes.resolve(self.data, 'claude', 'implement', worker='fable-medium', **options)
         self.assertTrue(manual['separation_satisfied'])
         self.assertNotIn('cross_lane_s', manual)
-        second = self.retry(self.data, 'claude', manual['worker_id'], attempt=2, **options)
-        self.assertEqual(second['worker_id'], 'fable-xhigh')
-        self.assertTrue(second['separation_satisfied'])
-        self.assertNotIn('cross_lane_s', second)
         with self.assertRaisesRegex(ValueError, 'S row already failed at its detached effort'):
-            self.retry(self.data, 'claude', second['worker_id'], attempt=3, **options)
-        for host, previous in [('claude', 'astra-xhigh'), ('codex', 'fable-xhigh')]:
+            self.retry(self.data, 'claude', manual['worker_id'], attempt=2, **options)
+        # Higher S efforts are conditional rows: explicit only, never an automatic step.
+        explicit = routes.resolve(self.data, 'claude', 'implement', worker='astra-high', **options)
+        self.assertEqual((explicit['worker_id'], explicit['effort']), ('astra-high', 'high'))
+        self.assertFalse(explicit['floor_met'])
+        for host, previous in [('claude', 'astra-medium'), ('codex', 'fable-medium')]:
             for role in ('implement', 'write'):
                 with self.subTest(host=host, role=role), self.assertRaisesRegex(
                         ValueError, 'S row already failed at its detached effort'):
@@ -2110,38 +2188,35 @@ class RelativeRetries(unittest.TestCase):
                                        attempt=1, author_vendors=[author])
 
     def test_cap_allows_only_cross_lane_s_as_the_extra_attempt(self):
-        for host, ordinary, foreground, detached in [('claude', 'sol61-medium', 'astra-high', 'astra-xhigh'),
-                                                     ('codex', 'opus55-medium', 'fable-high', 'fable-xhigh')]:
-            for previous, attempt in [(ordinary, 3), (foreground, 3), (detached, 4)]:
+        for host, ordinary, top in [('claude', 'sol61-high', 'astra-medium'),
+                                    ('codex', 'opus55-medium', 'fable-medium')]:
+            for previous, attempt in [(ordinary, 3), (top, 4)]:
                 with self.subTest(host=host, previous=previous, attempt=attempt), self.assertRaisesRegex(
                         ValueError, 'attempt cap reached'):
                     self.retry(self.data, host, previous, attempt=attempt)
-            self.assertTrue(self.retry(self.data, host, detached, attempt=3)['cross_lane_s'])
+            self.assertTrue(self.retry(self.data, host, top, attempt=3)['cross_lane_s'])
             with self.assertRaisesRegex(ValueError, 'attempt cap reached'):
-                routes.resolve(self.data, host, 'implement', retry_from=detached, retry_reason='infra', attempt=3)
+                routes.resolve(self.data, host, 'implement', retry_from=top, retry_reason='infra', attempt=3)
 
     def test_cross_lane_disabled_restores_detached_s_refusal(self):
         data = routes.merge_bindings(self.data, {'selection_policy': {'cross_lane_s': False}})
-        for host, foreground, detached in [('claude', 'astra-high', 'astra-xhigh'),
-                                           ('codex', 'fable-high', 'fable-xhigh')]:
-            self.assertEqual(self.retry(data, host, foreground)['worker_id'], detached)
+        for host, cell in [('claude', 'astra-medium'), ('codex', 'fable-medium')]:
             with self.assertRaisesRegex(ValueError, 'S row already failed at its detached effort'):
-                self.retry(data, host, detached, attempt=2)
+                self.retry(data, host, cell)
 
     def test_s_with_no_further_effort_crosses_without_repeating_itself(self):
-        for host, foreground, detached, expected in [('claude', 'astra-high', 'astra-xhigh', 'fable-high'),
-                                                     ('codex', 'fable-high', 'fable-xhigh', 'astra-high')]:
-            data = dict(self.data, workers=[w for w in self.data['workers'] if w['id'] != detached])
-            route = self.retry(data, host, foreground)
+        for host, cell, expected in [('claude', 'astra-medium', 'fable-medium'),
+                                     ('codex', 'fable-medium', 'astra-medium')]:
+            route = self.retry(self.data, host, cell)
             self.assertEqual(route['worker_id'], expected)
             self.assertTrue(route['cross_lane_s'])
-            # A lane can also configure the same effort for foreground and detached.
+            # A detached effort above the cell exists only as a conditional row: still no automatic step.
             data = routes.merge_bindings(self.data, {'bands': {'S': {'detached_effort': 'high'}}})
-            self.assertEqual(self.retry(data, host, foreground)['worker_id'], expected)
+            self.assertEqual(self.retry(data, host, cell)['worker_id'], expected)
 
     def test_cross_lane_keeps_host_requirements_exhaustion_and_tight_budget(self):
-        for host, previous, cross, vendor in [('claude', 'astra-xhigh', 'fable-high', 'claude'),
-                                               ('codex', 'fable-xhigh', 'astra-high', 'openai')]:
+        for host, previous, cross, vendor in [('claude', 'astra-medium', 'fable-medium', 'claude'),
+                                               ('codex', 'fable-medium', 'astra-medium', 'openai')]:
             for budget in ('tight', 'exhausted:' + vendor):
                 route = self.retry(self.data, host, previous, attempt=3, budget=budget)
                 self.assertEqual(route['worker_id'], cross)

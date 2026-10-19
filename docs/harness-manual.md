@@ -50,9 +50,10 @@ Schema v3 gives each worker (one row per model/effort) an `id`, `vendor`, `model
 `effort`, `tier` (band `S|A|B|C|D|E`), `roles`, `status`, `probe` and `launcher` (or
 `native: true`), plus `metrics` (`index`, `cost`, `ttft_s`, `tps`, `secondary_pass1` with
 `secondary_effort`/`secondary_source`/`secondary_read`, optional `eci`, `provisional`) or `scored: false` for rows the router never picks automatically.
-Top-level `bands` (capability labels independent of index; S is fixed by vendor line:
-Fable on the Claude lane, Astra on the OpenAI lane), assessment policy and `latency`
-(interactive/foreground TTFT limits) drive selection. OpenAI image verification
+Top-level `bands` (capability labels independent of index, one Claude and one OpenAI
+cell per band; S is fixed by vendor line at medium effort: Fable on the Claude lane, Astra
+on the OpenAI lane), assessment policy and `latency` (interactive/foreground TTFT limits)
+drive selection. Reviews take the author's band on the other vendor (`--author-tier`). OpenAI image verification
 defaults to GPT-6.1 Sol/medium; Opus 5.5/high remains the second image worker.
 Role priorities are positive integers or per-host maps and remain for host eligibility
 and `--worker`; a role can also contain `priority`, `hosts` and `requires`. `tier_cell`
@@ -86,9 +87,9 @@ another delegation. Reader inputs and local model `auto` behavior are defined in
 | Role | Default route and selection criteria |
 |---|---|
 | Orchestration and decisions | Keep the host the user started. Choose a tier matching the judgment required |
-| Implementation | Claude orchestration routes to the OpenAI lane; Codex orchestration routes to the Claude lane. The router picks the cheapest row meeting band floor B in the latency class. Explicitly lower the floor for mechanical work |
+| Implementation | Claude orchestration routes to the OpenAI lane (B cell: GPT-6.1 Sol high); Codex orchestration routes to the Claude lane (B cell: Opus 5.5 medium). The router picks the cheapest row meeting band floor B in the latency class. Explicitly lower the floor for mechanical work |
 | Writing, HTML, experimental code | Match the tier to the audience and task. Apply binding exceptions for specialties such as HTML |
-| Review | Verify according to risk. Choose gate and deep-review routes per host |
+| Review | Verify according to risk. Pass `--author-tier` with the author's band: the same band on the other vendor (gate floor C, deep review floor B) |
 | Image verification | Explicit binding in `roles.image_verify`. Does not always match the orchestrator/implementer's vendor |
 | Exploration, logs, external documents | Handle a few file lookups directly. Explicitly select D for simple extraction, C/B for structural or dependency analysis. Web isolation is a separate requirement |
 | Build/test execution | Run checks needed for the task and inspect exit codes/results. Explicitly save large output to logs |
@@ -401,8 +402,8 @@ Transport economics values waiting roughly 1.5–2 times in-vehicle time as a [d
 None of these sources measures the shipped dollar values or three-minute threshold.
 
 Example: a Claude host with eligible A-band direct work and B-floor implementation, using shipped seeds, normal availability/trust, and no matching history. The best
-worker is `sol61-medium`: worker money is `0.21 * task_units[volume]`; minutes are
-`base_minutes[volume] * clamp(sqrt(5.7/58), 0.5, 3)`; add delegate overhead to both.
+worker is `sol61-high`: worker money is `0.32 * task_units[volume]`; minutes are
+`base_minutes[volume] * clamp(sqrt(58/58), 0.5, 3)`; add delegate overhead to both.
 
 | Task/option | Money; minutes | Attended total | Unattended total |
 |---|---|---|---|

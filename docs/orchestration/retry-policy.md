@@ -45,11 +45,11 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
 3. A reasoning retry below A raises the floor one band in the same vendor,
    choosing the cheapest eligible row at or above that band in the latency
    class; if none is fast enough, use the cheapest such row detached. If the
-   vendor has no higher ordinary row, or A fails, use its S lane at foreground
-   effort (Fable for Claude, Astra for OpenAI). A failed S foreground effort
-   steps to that lane's detached effort. After detached S fails, or when no
-   further S effort exists, implementation and writing may take one cross-lane S
-   attempt at foreground effort, only when the other vendor is an artifact author.
+   vendor has no higher ordinary row, or A fails, use its S lane (Fable for
+   Claude, Astra for OpenAI, both at medium effort). The S lane has one automatic
+   effort; higher S efforts are conditional rows the user selects explicitly. After
+   S fails, implementation and writing may take one cross-lane S attempt, only
+   when the other vendor is an artifact author; otherwise the orchestrator decides.
    Advice and review roles never waive author separation. That single attempt's
    result must be reviewed by a different vendor than the implementer. A further
    reasoning retry from an author's cross-lane S row is refused; the orchestrator

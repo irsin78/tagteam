@@ -16,8 +16,9 @@ Check paths, dependencies, ownership and verification commands directly; use
 a scout when its saved work exceeds the coordination cost (delegation matrix).
 
 If review is useful, resolve harness-route.py --host <current-host>
---role plan_review --author-vendor <actual-designer>, with --tier B for a
-bounded judgment or A when needed. Repeat the author flag for coauthors.
+--role plan_review --author-vendor <actual-designer> --author-tier <designer band>
+(the reviewer takes the same band on another vendor); pass --tier only to
+override that. Repeat the author flag for coauthors.
 Supply intent, spec confirmation status, plan, key decisions and an exact
 question; use verification-tiering.md's bounded evidence-packet contract.
 If material is inaccessible, provide it or report the limitation; do not accept

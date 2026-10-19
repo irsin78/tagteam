@@ -44,12 +44,18 @@ and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
 measured index/cost/TTFT and per-host role priorities; declare optional workers
 with `status: optional` and `requires`.
-Bands are capability labels independent of leaderboard index values: A strong
-judgment; B general implementation (default implementation floor); C closed-spec
-work and review gates; D mechanical/bulk; E isolation reader. S: Each vendor's
-top-line model. The start tier for the hardest assessed tasks and the last
-escalation rung after A fails. Defined by vendor line, not by index. Its lanes
-remain Fable for Claude and Astra for OpenAI; S rows require an S floor.
+Bands are capability labels independent of leaderboard index values, with one
+Claude cell and one OpenAI cell per band (`tier_cell`, user decision 2026-10-19):
+S Fable 5.1 medium / Astra medium (each vendor's top line at medium effort; the
+start tier for the hardest assessed tasks and the last escalation rung after A
+fails; defined by vendor line, not by index; S rows require an S floor); A strong
+judgment, Opus 5.5 high / GPT-6.1 Sol max; B general implementation and its
+review (default implementation floor), Opus 5.5 medium / Sol high; C closed-spec
+work and review gates, Sonnet 5.5 high / Sol medium; D mechanical/bulk, Sonnet 5.5
+medium / Sol low; E isolation reader, Haiku 5.5 medium. Higher efforts of the same
+models (high/xhigh/max) are `conditional` rows: never selected automatically,
+only with an explicit `--worker` when the user asks for them. Sol max is
+detached-only, so A-band OpenAI work and reviews run with `-b --wait`.
 Latency: interactive (TTFT <=10s), foreground (<=60s),
 detached (no limit, `-b --wait`; effort max/ultra rows are detached only).
 The router applies hard constraints, author separation and the band floor first.
@@ -70,7 +76,10 @@ Use `python .claude/scripts/harness-route.py --host <claude|codex> --role <role>
 from the project root; pass its model, effort and sandbox to the launcher recipe.
 Role floors without assessment: implement/decide/plan_review/review_deep B,
 write/review_gate C, image_verify D, explore/web E. Pass --tier C for closed mechanical implementation,
-A for stronger judgment. Explore also needs task grading: raise it with --tier C/B
+A for stronger judgment. Reviews pass `--author-tier <band>` with the actual
+author's band: the reviewer is the same band on another vendor (`roles.review.
+author_tier_rule`), never below the role floor; an explicit `--tier` overrides it,
+and a band only available detached returns `needs_detached` instead of a lower band. Explore also needs task grading: raise it with --tier C/B
 for structure/dependency reasoning; the E floor is not a recommendation for every
 exploration. Tiny lookups stay in the main session.
 Native workers need explicit supported model/effort; include inheritance cost

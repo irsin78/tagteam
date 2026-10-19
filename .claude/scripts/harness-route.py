@@ -528,7 +528,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             retry_reason=None, attempt=0, allow_ultra=False, assess=None,
             recent_failure=False, direct_band=None, time_mode=None,
             time_tolerance_min=None, time_cost=None, paths=None, time_refocus=None,
-            time_slope=None, grounded=False):
+            time_slope=None, grounded=False, author_tier=None):
     validate_bindings(data)
     root = Path.cwd() if root is None else Path(root)
     env = os.environ if env is None else env
@@ -543,7 +543,24 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('invalid author vendor')
     if worker is not None and tier is not None:
         raise ValueError('--worker cannot be combined with --tier')
-    floor = tier or data['roles'][role]['band_floor']
+    derived_tier = None
+    if author_tier is not None:
+        # The reviewer takes the actual author's band on another vendor
+        # (roles.review.author_tier_rule, user decision 2026-10-19). An explicit
+        # --tier wins; the role band_floor stays the minimum.
+        if role not in REVIEW_ROLES:
+            raise ValueError('--author-tier is only for review roles')
+        if author_tier not in data['bands']['order']:
+            raise ValueError('invalid author tier')
+        if worker is not None:
+            raise ValueError('--worker cannot be combined with --author-tier')
+        if tier is None:
+            rule = data['roles'].get('review', {}).get('author_tier_rule', 'same')
+            if rule != 'same':
+                raise ValueError('unsupported author_tier_rule: ' + str(rule))
+            order = data['bands']['order']
+            derived_tier = max((author_tier, data['roles'][role]['band_floor']), key=order.index)
+    floor = tier or derived_tier or data['roles'][role]['band_floor']
     assessment, assessment_reason = None, ''
     reports = []
     if assess is not None and tier is None and worker is None and retry_from is None:
@@ -682,12 +699,19 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             else:
                 chosen.append(w)
     assessed_detached = False
-    if not chosen and assessment is not None:
+    derived_detached = False
+    if not chosen and (assessment is not None or derived_tier is not None):
+        # An assessed or author-derived band is a requirement, not a preference:
+        # prefer a detached row of that band over a lower band in this class.
         chosen = [w for w in pool if (within_band(w, data, floor, latency) or
                                      within_band(w, data, floor, 'detached')) and
                   (allow_ultra or w['vendor'] != 'openai' or w.get('effort') != 'ultra')]
         if chosen:
-            assessed_detached = needs_detached = True
+            needs_detached = True
+            if assessment is not None:
+                assessed_detached = True
+            else:
+                derived_detached = True
     floor_met = bool(chosen)
     score_rows = list(chosen)
     fallback = False
@@ -701,7 +725,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                      -data['bands']['order'].index(w['tier']), metric(w, 'cost'), metric(w, 'ttft_s')))
     if not ordered:
         raise IndexError('no eligible worker meets latency and hard constraints')
-    if cross_lane_s or assessed_detached:
+    if cross_lane_s or assessed_detached or derived_detached:
         eligible_ids = {w['id'] for w in ordered}
         skipped = [item for item in skipped if item['id'] not in eligible_ids]
     cheapest = selected = ordered[0]
@@ -754,6 +778,8 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         label = f'detached (scored row exceeds {latency} latency; run with -b --wait)'
     elif assessed_detached:
         label = f'detached (assessed band {floor} is only available detached; run with -b --wait)'
+    elif derived_detached:
+        label = f'detached (author band {floor} is only available detached; run with -b --wait)'
     elif needs_detached:
         label = ('detached (S effort step; run with -b --wait)' if s_retry_effort == 'detached' else
                  f'detached (no {latency} row meets band {floor} promotion; run with -b --wait)')
@@ -795,6 +821,9 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                  floor_met=floor_met, reason=reason, needs_detached=needs_detached,
                  eligible=[w['id'] for w in ordered], worker_id=selected['id'], skipped=skipped,
                  tier_fallback=not floor_met, available=(separation_ok or cross_lane_s) and vendor not in exhausted)
+    if author_tier is not None:
+        route['author_tier'] = author_tier
+        route['reason'] = f'author band {author_tier} -> review floor {floor}; ' + route['reason']
     if scoring:
         route['decision'] = 'direct' if ranked_scores and ranked_scores[0]['option'] == 'direct' else 'delegate'
         route['time_cost'] = {key: round(value, 2) if type(value) in (int, float) else value
@@ -879,6 +908,8 @@ def main():
     parser.add_argument('--time-slope', type=float, help='USD per tolerance interval after switching away')
     parser.add_argument('--author-vendor', action='append', choices=('openai', 'claude', 'google', 'local'),
                         help='actual author of the design (implement/write/advice) or review target; repeat for coauthors; required for reviews')
+    parser.add_argument('--author-tier', choices=tuple('SABCDE'),
+                        help='band of the actual author; reviews take the same band on another vendor unless --tier is given')
     args = parser.parse_args()
     if args.assess is not None:
         try:
@@ -929,7 +960,8 @@ def main():
                         assess=args.assess, recent_failure=args.recent_failure, paths=args.paths,
                         direct_band=args.direct_band, grounded=args.grounded, time_mode=args.time_mode,
                         time_tolerance_min=args.time_tolerance_min, time_cost=args.time_cost,
-                        time_refocus=args.time_refocus, time_slope=args.time_slope)
+                        time_refocus=args.time_refocus, time_slope=args.time_slope,
+                        author_tier=args.author_tier)
         route['shell'] = find_bash()
         if route['shell'] is None:
             native_review = (args.role in REVIEW_ROLES and route['available'] and route['separation_satisfied'] and

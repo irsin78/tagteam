@@ -194,7 +194,8 @@ One phase: investigate → design → implement → evaluate → verdict. Rework
   handling); for code tasks at Tier 1 or above a mutation table (one deliberate break per A
   item and the test that failed — a test that survives its mutation leaves that A item
   unverified and raises a blocking F). Independence: this loop requires, for Tier 1 changes, a
-  `review_gate` from a vendor other than every author (stricter than
+  `review_gate` from a vendor other than every author, routed with `--author-tier`
+  so the reviewer takes the author's band (stricter than
   `rules/verification-tiering.md`, which asks for one independent review when uncertainty
   remains or the project requires it) and, for Tier 2, the rule's `review_deep` at band B or
   above; the designer's own review is never marked independent.
