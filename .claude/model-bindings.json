@@ -141,7 +141,7 @@
       "round_limit": 2,
       "round_limit_note": "Normally one round; second only for a blocker. Confirmation counts; no recurring whole-repo review.",
       "author_tier_rule": "same",
-      "author_tier_note": "harness-route.py --author-tier <band> derives the review floor from the actual author's band: the same band on a different vendor for plan_review, review_gate and review_deep (user decision 2026-10-19). An explicit --tier overrides it; the role band_floor still applies as a minimum. When no foreground row meets a derived band (A-band OpenAI = Sol max), the router returns the detached row with needs_detached rather than a lower band."
+      "author_tier_note": "harness-route.py --author-tier <band> derives the review floor from the actual author's band: the same band on a different vendor for plan_review, review_gate and review_deep (user decision 2026-10-19). An explicit --tier overrides it; the role band_floor still applies as a minimum. When no foreground row meets a derived band (A-band OpenAI = Sol xhigh, TTFT above the foreground class), the router returns the detached row with needs_detached rather than a lower band."
     },
     "image_verify": {
       "tier": [
@@ -199,7 +199,7 @@
       "write",
       "decide"
     ],
-    "note": "by_orchestrator orders cross-vendor candidates (write/decide, and implementation when --vendor names another vendor or the default vendor is exhausted); with implementation_default = same the implementation lane is the host's own vendor. The HTML specialty is kept.",
+    "note": "by_orchestrator orders cross-vendor candidates (write/decide, and implementation when --vendor names another vendor or the default vendor is exhausted); with implementation_default = same the implementation lane is the host's own vendor. OpenAI lane shape: Astra (S), GPT-6.1 Sol (A/B/C), GPT-6 Luna (D/E), mirroring Fable / Opus / Sonnet / Haiku. The HTML specialty is kept.",
     "implementation_vendor": "same: the design author's vendor (host vendor, or the previous worker's vendor on a retry); the route reports same_vendor: true, separation_satisfied: false. --vendor <other> crosses; reviews never accept --vendor. Set implementation_default to \"other\" to restore cross-vendor implementation as the default.",
     "implementation_default": "same"
   },
@@ -892,47 +892,14 @@
       }
     },
     {
-      "id": "sol61-max",
-      "model": "gpt-6.1-sol",
-      "vendor": "openai",
-      "effort": "max",
-      "tier": "A",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": true,
-      "metrics": {
-        "index": 52,
-        "cost": 0.72,
-        "ttft_s": 205.9,
-        "tps": 69,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-10-01",
-        "result": "OK (model probed at medium/high; same model and account)",
-        "cli": "codex-cli 0.159.3"
-      },
-      "roles": {
-        "implement": 105,
-        "write": 105,
-        "decide": 105,
-        "plan_review": 105,
-        "review_gate": 105,
-        "review_deep": 105
-      }
-    },
-    {
       "id": "sol61-xhigh",
       "model": "gpt-6.1-sol",
       "vendor": "openai",
       "effort": "xhigh",
       "tier": "A",
-      "status": "conditional",
+      "status": "active",
       "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": false,
+      "tier_cell": true,
       "metrics": {
         "index": 51,
         "cost": 0.39,
@@ -955,6 +922,39 @@
         "plan_review": 104,
         "review_gate": 104,
         "review_deep": 104
+      }
+    },
+    {
+      "id": "sol61-max",
+      "model": "gpt-6.1-sol",
+      "vendor": "openai",
+      "effort": "max",
+      "tier": "A",
+      "status": "conditional",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": false,
+      "metrics": {
+        "index": 52,
+        "cost": 0.72,
+        "ttft_s": 205.9,
+        "tps": 69,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": null,
+        "provisional": true
+      },
+      "probe": {
+        "date": "2026-10-01",
+        "result": "OK (model probed at medium/high; same model and account)",
+        "cli": "codex-cli 0.159.3"
+      },
+      "roles": {
+        "implement": 105,
+        "write": 105,
+        "decide": 105,
+        "plan_review": 105,
+        "review_gate": 105,
+        "review_deep": 105
       }
     },
     {
@@ -1169,6 +1169,36 @@
       ]
     },
     {
+      "id": "luna6-high",
+      "model": "gpt-6-luna",
+      "vendor": "openai",
+      "effort": "high",
+      "tier": "D",
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": true,
+      "metrics": {
+        "index": 32,
+        "cost": 0.03,
+        "ttft_s": 15.2,
+        "tps": 124,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": null,
+        "provisional": true,
+        "note": "restored 2026-10-20 as the D cell (mechanical/bulk): cheapest and fastest OpenAI row"
+      },
+      "probe": {
+        "date": "2026-09-30",
+        "result": "OK",
+        "cli": "codex-cli 0.158.0"
+      },
+      "roles": {
+        "implement": 109,
+        "write": 109
+      }
+    },
+    {
       "id": "sol61-low",
       "model": "gpt-6.1-sol",
       "vendor": "openai",
@@ -1176,7 +1206,7 @@
       "tier": "D",
       "status": "active",
       "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": true,
+      "tier_cell": false,
       "metrics": {
         "index": 42,
         "cost": 0.13,
@@ -1240,6 +1270,42 @@
         "result": "OK",
         "cli": "Claude Code 2.1.296",
         "note": "haiku alias also resolves to claude-haiku-5-5"
+      }
+    },
+    {
+      "id": "luna6-low",
+      "model": "gpt-6-luna",
+      "vendor": "openai",
+      "effort": "low",
+      "tier": "E",
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": true,
+      "metrics": {
+        "index": 21,
+        "cost": 0.0045,
+        "ttft_s": 2.0,
+        "tps": 124,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": null,
+        "provisional": true,
+        "note": "restored 2026-10-20 as the E cell: isolation reader on the Codex host (explore), no web"
+      },
+      "probe": {
+        "date": "2026-09-30",
+        "result": "OK",
+        "cli": "codex-cli 0.158.0"
+      },
+      "roles": {
+        "implement": 111,
+        "write": 111,
+        "explore": {
+          "priority": 3,
+          "hosts": [
+            "codex"
+          ]
+        }
       }
     },
     {
@@ -1422,7 +1488,7 @@
       "rationale": "Each vendor's top-line model at medium effort (user decision 2026-10-19): design, design review and the hardest assessed judgment. Defined by vendor line, not by index. higher efforts (high/xhigh/max) stay conditional rows selected only with an explicit --worker."
     },
     "A": {
-      "name": "Strong judgment (Opus 5.5 high / GPT-6.1 Sol max)",
+      "name": "Strong judgment (Opus 5.5 high / GPT-6.1 Sol xhigh)",
       "min_index": 52
     },
     "B": {
@@ -1434,11 +1500,11 @@
       "min_index": 40
     },
     "D": {
-      "name": "Mechanical / bulk (Sonnet 5.5 medium / GPT-6.1 Sol low)",
+      "name": "Mechanical / bulk (Sonnet 5.5 medium / GPT-6 Luna high)",
       "min_index": 30
     },
     "E": {
-      "name": "Isolation reader (Haiku 5.5 medium)",
+      "name": "Isolation reader (Haiku 5.5 medium / GPT-6 Luna low on the Codex host)",
       "min_index": 0
     },
     "pairing_note": "One Claude row and one OpenAI row per band (tier_cell). Reviews take the author's band on the other vendor (roles.review.author_tier_rule)."

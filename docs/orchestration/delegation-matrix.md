@@ -51,13 +51,16 @@ Claude cell and one OpenAI cell per band (`tier_cell`, user decision 2026-10-19)
 S Fable 5.1 medium / Astra medium (each vendor's top line at medium effort; the
 start tier for the hardest assessed tasks and the last escalation rung after A
 fails; defined by vendor line, not by index; S rows require an S floor); A strong
-judgment, Opus 5.5 high / GPT-6.1 Sol max; B general implementation and its
+judgment, Opus 5.5 high / GPT-6.1 Sol xhigh; B general implementation and its
 review (default implementation floor), Opus 5.5 medium / Sol high; C closed-spec
 work and review gates, Sonnet 5.5 high / Sol medium; D mechanical/bulk, Sonnet 5.5
-medium / Sol low; E isolation reader, Haiku 5.5 medium. Higher efforts of the same
-models (high/xhigh/max) are `conditional` rows: never selected automatically,
-only with an explicit `--worker` when the user asks for them. Sol max is
-detached-only, so A-band OpenAI work and reviews run with `-b --wait`.
+medium / GPT-6 Luna high; E isolation reader, Haiku 5.5 medium (Claude host) /
+GPT-6 Luna low (Codex host, explore only). The OpenAI lane therefore mirrors the
+Claude lane: Astra, Sol, Luna against Fable, Opus/Sonnet, Haiku. Higher efforts of
+the same models (Fable/Astra high and xhigh, Opus xhigh, Sol max) are `conditional`
+rows: never selected automatically, only with an explicit `--worker` when the
+user asks for them. Sol xhigh's first-token latency exceeds the foreground class,
+so A-band OpenAI work and reviews usually run with `-b --wait`.
 Latency: interactive (TTFT <=10s), foreground (<=60s),
 detached (no limit, `-b --wait`; effort max/ultra rows are detached only).
 The router applies hard constraints, author separation and the band floor first.
