@@ -514,10 +514,12 @@ def launcher_default(data, vendor, role):
     # Foreground first. A bindings file whose only rows are detached-only (max/ultra)
     # still names its row, so the launcher's effort guards refuse it instead of a
     # silent builtin fallback.
+    pick = vendor if role in ('implement', 'write') else None
     try:
-        route = resolve(scoped, host, role, latency='foreground', author_vendors=authors)
+        route = resolve(scoped, host, role, latency='foreground', author_vendors=authors, vendor=pick)
     except IndexError:
-        route = resolve(scoped, host, role, latency='detached', author_vendors=authors, allow_ultra=True)
+        route = resolve(scoped, host, role, latency='detached', author_vendors=authors, allow_ultra=True,
+                        vendor=pick)
     if not route['available']:
         raise ValueError('no active launcher default')
     return next(w for w in scoped['workers'] if w['id'] == route['worker_id'])
@@ -544,16 +546,35 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
     if worker is not None and tier is not None:
         raise ValueError('--worker cannot be combined with --tier')
     same_vendor = False
+    vendor_default = None
     if vendor is not None:
-        # The orchestrator may keep design and implementation on one vendor for a
-        # task (user decision 2026-10-20); only reviews must come from another vendor.
         if vendor not in VENDORS:
             raise ValueError('invalid vendor')
         if role not in ('implement', 'write'):
             raise ValueError('--vendor is only for implement/write; reviews keep author separation')
         if worker is not None:
             raise ValueError('--worker cannot be combined with --vendor')
-        same_vendor = vendor in authors
+    elif role in ('implement', 'write') and worker is None and \
+            data.get('vendor_precedence', {}).get('implementation_default', 'other') == 'same':
+        # Design and implementation stay on one vendor; only reviews cross vendors
+        # (user decision 2026-10-20). A retry stays in the previous worker's lane,
+        # and a declared-exhausted default vendor hands the route to another vendor.
+        by_id_default = {w['id']: w for w in data['workers']}
+        if retry_from in by_id_default:
+            vendor_default = by_id_default[retry_from]['vendor']
+        else:
+            vendor_default = next(iter(authors)) if len(authors) == 1 else {'codex': 'openai', 'claude': 'claude'}[host]
+        exhausted_default = set(budget[10:].split(',')) if budget.startswith('exhausted:') else set()
+        if vendor_default in exhausted_default:
+            vendor_default = None
+        elif vendor_default is not None and not any(
+                w['vendor'] == vendor_default and role in w['roles'] and w['status'] == 'active'
+                and not exclusion(w, role, host, False, data, root, env) for w in data['workers']):
+            vendor_default = None  # no automatic row on the own vendor: cross instead of failing
+        vendor = vendor_default
+    vendor_pick = vendor
+    if vendor_pick is not None:
+        same_vendor = vendor_pick in authors
     derived_tier = None
     if author_tier is not None:
         # The reviewer takes the actual author's band on another vendor
@@ -607,7 +628,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('cross-lane S already failed; orchestrator decides (retry-policy 4)')
     if previous and (role not in previous['roles'] or
             exclusion(previous, role, host, True, data, root, env) or
-            (role in SEPARATED_ROLES and previous['vendor'] in authors and previous['vendor'] != vendor)):
+            (role in SEPARATED_ROLES and previous['vendor'] in authors and previous['vendor'] != vendor_pick)):
         raise ValueError('retry worker is not eligible for role/host/authors')
     keep = previous and retry_reason not in ('reasoning', 'refusal') and not (
         retry_reason == 'availability' and previous['vendor'] in exhausted)
@@ -632,8 +653,8 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             reason = 'unscored requires explicit --worker'
         if not reason and scoring and (w.get('metrics') or {}).get('cost') is None:
             reason = 'missing metrics.cost for score'
-        if not reason and vendor is not None and w['vendor'] != vendor:
-            reason = f'vendor {vendor} selected for this route'
+        if not reason and vendor_pick is not None and w['vendor'] != vendor_pick:
+            reason = f'vendor {vendor_pick} selected for this route'
         if not reason:
             diagnostic.append(w)
             if role in SEPARATED_ROLES and w['vendor'] in authors and not same_vendor:
@@ -857,8 +878,11 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
     if same_vendor:
         route['same_vendor'] = True
         route['separation_satisfied'] = False
-        route['reason'] = (f'vendor {vendor} selected: design and implementation stay on one vendor; '
-                           f'the review must come from another vendor (--author-vendor {vendor}); ') + route['reason']
+        how = 'default' if vendor_default is not None else 'selected'
+        route['reason'] = (f'vendor {vendor_pick} ({how}): design and implementation stay on one vendor; '
+                           f'the review must come from another vendor (--author-vendor {vendor_pick}); ') + route['reason']
+    elif vendor_pick is not None and role in ('implement', 'write'):
+        route['reason'] = f'vendor {vendor_pick} selected: implementation crosses to another vendor; ' + route['reason']
     if cross_lane_s:
         route['cross_lane_s'] = True
         route['separation_satisfied'] = False
@@ -908,8 +932,8 @@ def main():
     parser.add_argument('--worker')
     parser.add_argument('--launcher-default', action='store_true')
     parser.add_argument('--vendor', choices=VENDORS,
-                        help='launcher default: the vendor to resolve; routing: keep implement/write on this vendor '
-                             'even when it authored the design (reviews still need another vendor)')
+                        help='launcher default: the vendor to resolve; routing: the vendor for implement/write '
+                             '(default: the design author\'s own vendor; pass another vendor to cross; reviews always cross)')
     parser.add_argument('--tier', choices=tuple('SABCDE'), help='capability band floor')
     parser.add_argument('--latency', choices=('interactive', 'foreground', 'detached'))
     parser.add_argument('--retry-from')

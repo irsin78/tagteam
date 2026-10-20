@@ -44,6 +44,8 @@ and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
 measured index/cost/TTFT and per-host role priorities; declare optional workers
 with `status: optional` and `requires`.
+Implementation goes to the orchestrator's own vendor by default and crosses only on
+`--vendor` or exhaustion; reviews always cross (see "Separate authorship from review").
 Bands are capability labels independent of leaderboard index values, with one
 Claude cell and one OpenAI cell per band (`tier_cell`, user decision 2026-10-19):
 S Fable 5.1 medium / Astra medium (each vendor's top line at medium effort; the
@@ -163,13 +165,14 @@ including direct work/fallbacks. Use a different vendor to challenge assumptions
 keep the human-started host accountable. Pass --author-vendor (repeat for coauthors
 of the reviewed change); plan_review/review_gate/review_deep require it.
 Review plans against designers and code against implementers with a fresh worker.
-Implementation and writing may stay on the design author's vendor when the task
-calls for it: pass `--vendor <that vendor>`; the router then returns
+Implementation and writing stay on the design author's vendor by default
+(`vendor_precedence.implementation_default = same`): the router returns
 `same_vendor: true` with `separation_satisfied: false`, and the review that
-follows must name that vendor as author so it goes to another vendor. Reviews
-never accept `--vendor`. Keeping design and implementation on one vendor leaves
-the other vendor free as the review lane and as the fallback when one side runs
-out of quota.
+follows must name that vendor as author so it goes to another vendor. Pass
+`--vendor <other vendor>` to cross implementation on purpose; a declared-exhausted
+default vendor crosses automatically. Reviews never accept `--vendor`. Keeping
+design and implementation on one vendor leaves the other vendor free as the
+review lane and as the clearly separated fallback when one side runs out of quota.
 Recompute when authorship changes; never hide a coauthor or call self-review
 independent. Missing independence is unavailable. Acceptance still needs actual
 outputs and checks. Review triggers, risk floors and limits: verification-tiering.md.

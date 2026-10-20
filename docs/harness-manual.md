@@ -87,7 +87,7 @@ another delegation. Reader inputs and local model `auto` behavior are defined in
 | Role | Default route and selection criteria |
 |---|---|
 | Orchestration and decisions | Keep the host the user started. Choose a tier matching the judgment required |
-| Implementation | Claude orchestration routes to the OpenAI lane (B cell: GPT-6.1 Sol high); Codex orchestration routes to the Claude lane (B cell: Opus 5.5 medium). `--vendor <vendor>` keeps implementation on the design author's vendor (`same_vendor: true`); the review then goes to the other vendor. The router picks the cheapest row meeting band floor B in the latency class. Explicitly lower the floor for mechanical work |
+| Implementation | Stays on the orchestrator's own vendor by default (Claude: Opus 5.5 medium; Codex: GPT-6.1 Sol high) with `same_vendor: true`; the review then goes to the other vendor. `--vendor <other>` crosses implementation on purpose (Claude host → Sol high, Codex host → Opus medium), and a declared-exhausted default vendor crosses automatically. The router picks the cheapest row meeting band floor B in the latency class. Explicitly lower the floor for mechanical work |
 | Writing, HTML, experimental code | Match the tier to the audience and task. Apply binding exceptions for specialties such as HTML |
 | Review | Verify according to risk. Pass `--author-tier` with the author's band: the same band on the other vendor (gate floor C, deep review floor B) |
 | Image verification | Explicit binding in `roles.image_verify`. Does not always match the orchestrator/implementer's vendor |

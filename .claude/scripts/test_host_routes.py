@@ -27,6 +27,12 @@ session = importlib.util.module_from_spec(session_spec)
 session_spec.loader.exec_module(session)
 
 
+# Routing mechanics below were written when implementation crossed vendors by
+# default. The shipped default is implementation_default = same (user decision
+# 2026-10-20); SameVendorDefault covers it with the public bindings as shipped.
+LEGACY_CROSS = {'vendor_precedence': {'implementation_default': 'other'}}
+
+
 class HostRoutes(unittest.TestCase):
     @unittest.skipUnless((ROOT / 'AGENTS.md.template').exists(), 'template source only')
     def test_direct_delegation_instructions_point_to_score_and_scout(self):
@@ -120,7 +126,7 @@ class HostRoutes(unittest.TestCase):
         # Public bindings only: a developer's model-bindings.local.json (declared local
         # endpoint, budget) must not change these expectations.
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
-        self.data = routes.merge_bindings(public, {})
+        self.data = routes.merge_bindings(public, LEGACY_CROSS)
         self.environment = patch.dict(os.environ)
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -811,10 +817,18 @@ for line in sys.stdin:
             recorded = subprocess.run(command + ['--exhausted', 'openai'], cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
             self.assertIn('HARNESS BUDGET: exhausted:openai', recorded.stdout)
+            # Default implementation stays on the host vendor, so an exhausted OpenAI
+            # does not block it; an explicit cross to the exhausted vendor is unavailable.
             route = subprocess.run([sys.executable, str(HERE / 'harness-route.py'), '--host', 'claude', '--role', 'implement'],
                                    cwd=root, env=dict(env, HARNESS_SESSION_ID='sess-9'), capture_output=True, text=True)
-            self.assertEqual(route.returncode, 2, route.stderr)
+            self.assertEqual(route.returncode, 0, route.stderr)
             data = json.loads(route.stdout)
+            self.assertEqual((data['vendor'], data['available'], data['budget']), ('claude', True, 'exhausted:openai'))
+            crossed = subprocess.run([sys.executable, str(HERE / 'harness-route.py'), '--host', 'claude', '--role', 'implement',
+                                      '--vendor', 'openai'], cwd=root, env=dict(env, HARNESS_SESSION_ID='sess-9'),
+                                     capture_output=True, text=True)
+            self.assertEqual(crossed.returncode, 2, crossed.stderr)
+            data = json.loads(crossed.stdout)
             self.assertEqual((data['vendor'], data['available'], data['budget']), ('openai', False, 'exhausted:openai'))
             unrelated = subprocess.run([sys.executable, str(HERE / 'harness-route.py'), '--host', 'claude', '--role', 'implement'],
                                        cwd=root, env=env, capture_output=True, text=True)
@@ -982,7 +996,7 @@ class AuthorTierRoutes(unittest.TestCase):
 
     def setUp(self):
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
-        self.data = routes.merge_bindings(public, {})
+        self.data = routes.merge_bindings(public, LEGACY_CROSS)
 
     def test_same_band_other_vendor_for_every_review_role(self):
         cells = {('claude', 'S'): 'astra-medium', ('claude', 'B'): 'sol61-high', ('claude', 'C'): 'sol61-medium',
@@ -1049,7 +1063,7 @@ class VendorChoiceRoutes(unittest.TestCase):
 
     def setUp(self):
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
-        self.data = routes.merge_bindings(public, {})
+        self.data = routes.merge_bindings(public, LEGACY_CROSS)
 
     def test_same_vendor_implementation_is_available_but_not_independent(self):
         for host, vendor, expected in [('claude', 'claude', 'opus55-medium'), ('codex', 'openai', 'sol61-high')]:
@@ -1062,7 +1076,7 @@ class VendorChoiceRoutes(unittest.TestCase):
                     self.assertTrue(route['available'])
                     self.assertTrue(route['same_vendor'])
                     self.assertFalse(route['separation_satisfied'])
-                    self.assertTrue(route['reason'].startswith(f'vendor {vendor} selected: design and implementation stay on one vendor'))
+                    self.assertTrue(route['reason'].startswith(f'vendor {vendor} (selected): design and implementation stay on one vendor'))
                     self.assertFalse(any(w['reason'] == 'vendor is an artifact author' for w in route['skipped']))
                     self.assertTrue(all(w['reason'] == f'vendor {vendor} selected for this route'
                                         for w in route['skipped'] if w['id'].startswith(('sol61', 'astra', 'fable', 'opus', 'sonnet')) and w['reason'].startswith('vendor')))
@@ -1105,12 +1119,78 @@ class VendorChoiceRoutes(unittest.TestCase):
         self.assertEqual((output['worker_id'], output['same_vendor'], output['available']), ('opus55-medium', True, True))
 
 
+class SameVendorDefault(unittest.TestCase):
+    """Shipped default: design and implementation on one vendor, reviews cross."""
+
+    def setUp(self):
+        public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
+        self.data = routes.merge_bindings(public, {})
+        self.assertEqual(self.data['vendor_precedence']['implementation_default'], 'same')
+
+    def test_implementation_defaults_to_the_host_vendor_on_both_hosts(self):
+        for host, vendor, implement, write in [('claude', 'claude', 'opus55-medium', 'sonnet55-high'),
+                                               ('codex', 'openai', 'sol61-high', 'sol61-medium')]:
+            for role, expected in [('implement', implement), ('write', write)]:
+                with self.subTest(host=host, role=role):
+                    route = routes.resolve(self.data, host, role)
+                    self.assertEqual((route['worker_id'], route['vendor']), (expected, vendor))
+                    self.assertTrue(route['available'])
+                    self.assertTrue(route['same_vendor'])
+                    self.assertFalse(route['separation_satisfied'])
+                    self.assertTrue(route['reason'].startswith(f'vendor {vendor} (default): design and implementation stay on one vendor'))
+
+    def test_explicit_other_vendor_crosses_and_reviews_always_cross(self):
+        route = routes.resolve(self.data, 'claude', 'implement', vendor='openai')
+        self.assertEqual((route['worker_id'], route['vendor']), ('sol61-high', 'openai'))
+        self.assertTrue(route['separation_satisfied'])
+        self.assertNotIn('same_vendor', route)
+        self.assertTrue(route['reason'].startswith('vendor openai selected: implementation crosses to another vendor'))
+        for role, expected in [('review_gate', 'sol61-medium'), ('review_deep', 'sol61-high'), ('plan_review', 'sol61-high')]:
+            review = routes.resolve(self.data, 'claude', role, author_vendors=['claude'])
+            self.assertEqual((review['worker_id'], review['vendor']), (expected, 'openai'))
+            self.assertTrue(review['separation_satisfied'])
+
+    def test_exhausted_default_vendor_crosses_automatically(self):
+        route = routes.resolve(self.data, 'claude', 'implement', budget='exhausted:claude')
+        self.assertEqual((route['worker_id'], route['vendor']), ('sol61-high', 'openai'))
+        self.assertTrue(route['available'])
+        self.assertNotIn('same_vendor', route)
+        strict = routes.resolve(self.data, 'claude', 'implement', budget='exhausted:claude', vendor='claude')
+        self.assertFalse(strict['available'])
+
+    def test_retry_stays_in_the_previous_worker_lane(self):
+        same = routes.resolve(self.data, 'claude', 'implement', retry_from='opus55-medium',
+                              retry_reason='reasoning', attempt=1)
+        self.assertEqual((same['worker_id'], same['band']), ('opus55-high', 'A'))
+        self.assertTrue(same['same_vendor'])
+        crossed = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-high',
+                                 retry_reason='reasoning', attempt=1)
+        self.assertEqual((crossed['worker_id'], crossed['band']), ('sol61-max', 'A'))
+        self.assertNotIn('same_vendor', crossed)
+
+    def test_explicit_worker_and_launcher_default_are_unchanged(self):
+        route = routes.resolve(self.data, 'claude', 'implement', worker='sol61-high')
+        self.assertEqual(route['worker_id'], 'sol61-high')
+        self.assertEqual(routes.launcher_default(self.data, 'openai', 'implement')['id'], 'sol61-high')
+        self.assertEqual(routes.launcher_default(self.data, 'claude', 'implement')['id'], 'opus55-medium')
+
+    def test_cli_default_reports_same_vendor(self):
+        stream = io.StringIO()
+        with patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
+                routes, 'find_bash', return_value='bash'), patch.object(
+                routes, 'budget_for', return_value='normal'), patch.object(sys, 'argv', [
+                'harness-route.py', '--host', 'claude', '--role', 'implement']), contextlib.redirect_stdout(stream):
+            self.assertEqual(routes.main(), 0)
+        output = json.loads(stream.getvalue())
+        self.assertEqual((output['worker_id'], output['same_vendor']), ('opus55-medium', True))
+
+
 class ReviewFollowUps(unittest.TestCase):
     """Review r1 notes: a failed S row is never repeated; null metrics never crash."""
 
     def setUp(self):
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
-        self.data = routes.merge_bindings(public, {})
+        self.data = routes.merge_bindings(public, LEGACY_CROSS)
 
     def test_failed_s_row_crosses_lanes_because_the_s_lane_has_one_effort(self):
         first = routes.resolve(self.data, 'codex', 'implement', retry_from='fable-medium',
@@ -1172,7 +1252,7 @@ class ReviewFollowUps(unittest.TestCase):
 class AssessmentRoutes(unittest.TestCase):
     def setUp(self):
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
-        self.data = routes.merge_bindings(public, {})
+        self.data = routes.merge_bindings(public, LEGACY_CROSS)
         # Routes here must not read this machine's run history: volume-unscoped
         # DONE records would otherwise replace the seed minutes under test.
         empty_history = patch.object(records, 'state_directory', return_value=HERE / 'unused-score-history')
@@ -2117,7 +2197,7 @@ class ScoredRoutes(unittest.TestCase):
 class RelativeRetries(unittest.TestCase):
     def setUp(self):
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
-        self.data = routes.merge_bindings(public, {})
+        self.data = routes.merge_bindings(public, LEGACY_CROSS)
 
     def retry(self, data, host, previous, attempt=1, role='implement', **options):
         return routes.resolve(data, host, role, retry_from=previous,
