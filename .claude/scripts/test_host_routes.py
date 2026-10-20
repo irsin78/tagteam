@@ -31,13 +31,14 @@ class HostRoutes(unittest.TestCase):
     @unittest.skipUnless((ROOT / 'AGENTS.md.template').exists(), 'template source only')
     def test_direct_delegation_instructions_point_to_score_and_scout(self):
         instructions = (ROOT / 'AGENTS.md.template').read_text(encoding='utf-8')
-        paragraph = ('Before choosing direct implementation or delegation, read only "Direct work or '
-                     'delegation" in `docs/orchestration/delegation-matrix.md`; when delegating, also '
-                     'its assignment, author-separation and announcement sections. Direct work or '
-                     'delegation is decided by the cost score in the delegation matrix, with the '
-                     'scout brief first (Thin orchestration). Read the fallback '
-                     'section when a vendor is unavailable or exhausted (no probe needed), and '
-                     '`docs/orchestration/retry-policy.md` when a run fails.')
+        paragraph = ('Read `docs/orchestration/delegation-matrix.md` in stages. Before choosing '
+                     'direct implementation or delegation, read only "Direct work or delegation": '
+                     'the decision is its cost score, with the scout brief first (Thin '
+                     'orchestration). After deciding to delegate and before the first launch, read '
+                     '"Assign a worker", "Separate authorship from review" and "User-facing '
+                     'delegation announcement"; the announcement is repeated before every launch. '
+                     'Read "Availability and fallback" when a vendor is unavailable or exhausted '
+                     '(no probe needed), and `docs/orchestration/retry-policy.md` when a run fails.')
         self.assertIn(paragraph, ' '.join(instructions.split()))
         for path in [ROOT / 'AGENTS.md.template', *sorted((ROOT / '.claude/rules').glob('*.md'))]:
             with self.subTest(path=path):

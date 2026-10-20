@@ -31,10 +31,11 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
      not exhaustion: route it as the `refusal` retry class (retry-policy.md), the
      same band on another vendor, and do not record `--exhausted`.
 
-2. First read only "Direct work or delegation" in
-   `docs/orchestration/delegation-matrix.md`;
-   also assignment/author-separation sections if delegating. Small direct work
-   needs no launcher. Get routes with
+2. Read `docs/orchestration/delegation-matrix.md` in stages: before choosing
+   direct work or delegation, only "Direct work or delegation"; after deciding
+   to delegate and before the first launch, also "Assign a worker", "Separate
+   authorship from review" and "User-facing delegation announcement". Small
+   direct work needs no launcher. Get routes with
    `python .claude/scripts/harness-route.py --host codex --role implement`
    (`--host claude` on Claude). Use JSON launcher/model/effort/sandbox/shell paths;
    lookup skips WindowsApps for Git Bash without executing work/changing settings.
@@ -55,7 +56,11 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
    `--author-vendor claude` selects OpenAI. Mandatory dual reviews must also use
    different vendors. No suitable route means unavailable, never self-review.
 
-3. Write goal, scope, existing-change preservation, constraints, verification, and
+3. Before calling the launcher, announce the launch to the user as "User-facing
+   delegation announcement" in `docs/orchestration/delegation-matrix.md`
+   describes (task, band with reason, resolved model/effort with reason); repeat
+   before every launch, as a progress notice, not an approval gate.
+   Write goal, scope, existing-change preservation, constraints, verification, and
    output contract to a prompt file; write any launcher verifier separately first.
    Use routed JSON values for MODEL/EFFORT. Run `.sh` with Git Bash even from
    PowerShell, never WindowsApps WSL bash.

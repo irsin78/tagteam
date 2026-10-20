@@ -114,7 +114,7 @@ reason. For example:
 > from a different vendor than the designer to cross-check assumptions.
 
 Fill the angle brackets from routing results.
-Capability tiers A–D differ from verification risk Tiers 0–2. Announce model changes and
+Capability bands S–E differ from verification risk Tiers 0–2. Announce model changes and
 reasons; this message requires no renewed approval.
 
 ### Separating shared contracts, host mechanisms, model traits, and roles

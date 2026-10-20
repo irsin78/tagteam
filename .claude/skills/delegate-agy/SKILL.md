@@ -16,6 +16,11 @@ the prompt (rules/security-boundary.md).
 
 ## Invocation
 
+0. Announce the launch to the user first: the task, the capability band with
+   its task-specific reason, and the resolved model/effort with why it fits
+   (format: "User-facing delegation announcement" in
+   `docs/orchestration/delegation-matrix.md`). Repeat before every launch; it
+   is a progress notice, not an approval gate.
 1. Write the fully self-contained task prompt to a scratch file
    (single-quoted heredoc). It must: give every file agy WRITES an
    ABSOLUTE path (headless agy resolves relative paths and "the current
