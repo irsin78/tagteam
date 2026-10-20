@@ -2,8 +2,8 @@
   "schema_version": 3,
   "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-10-17",
-  "catalog_checked": "2026-10-01",
+  "updated": "2026-10-20",
+  "catalog_checked": "2026-10-19",
   "vendors": {
     "claude": {
       "host": "Claude Code",
@@ -35,7 +35,7 @@
         "https://learn.chatgpt.com/docs/models",
         "https://learn.chatgpt.com/docs/config-file/config-reference"
       ],
-      "effort_note": "The Astra API lists low/medium/high/xhigh/max explicitly (model page re-read 2026-10-06; API default medium per the latest-model guide). The Codex models page (2026-10-06) says \"Start with Light for Astra\", \"Start with High for Luna\" and, for GPT-6.1 Sol, the client default; The same page states: Light in the desktop app, ChatGPT Work on the web and the IDE extension, or Low in the CLI, suits quick, well-scoped tasks, so Light = model_reasoning_effort=low (verified 2026-10-06). The installed CLI cache (~/.codex/models_cache.json, fetched 2026-10-06) lists low/medium/high/xhigh/max/ultra for Astra with default_reasoning_level medium and multi_agent_reasoning_effort xhigh; GPT-6.1 Sol has default_reasoning_level low, so the client default the page refers to is low on this CLI. The S lane keeps high/xhigh by design (escalation rung, not an everyday worker). Codex app Ultra is an automatic sub-agent mode; the delegation launcher and router refuse it under the no-redelegation contract. max is -b only. The enumeration in the official config-reference is separate and does not replace a measured success on the installed CLI. The human main session's model and mode are never changed.",
+      "effort_note": "The Astra API lists low/medium/high/xhigh/max explicitly (model page re-read 2026-10-06; API default medium per the latest-model guide). The Codex models page (2026-10-06) says \"Start with Light for Astra\", \"Start with High for Luna\" and, for GPT-6.1 Sol, the client default; The same page states: Light in the desktop app, ChatGPT Work on the web and the IDE extension, or Low in the CLI, suits quick, well-scoped tasks, so Light = model_reasoning_effort=low (verified 2026-10-06). The installed CLI cache (~/.codex/models_cache.json, fetched 2026-10-06) lists low/medium/high/xhigh/max/ultra for Astra with default_reasoning_level medium and multi_agent_reasoning_effort xhigh; GPT-6.1 Sol has default_reasoning_level low, so the client default the page refers to is low on this CLI. The S lane runs at medium (user decision 2026-10-19); high/xhigh/max rows are conditional and need an explicit --worker. Codex app Ultra is an automatic sub-agent mode; the delegation launcher and router refuse it under the no-redelegation contract. max is -b only. The enumeration in the official config-reference is separate and does not replace a measured success on the installed CLI. The human main session's model and mode are never changed.",
       "catalog": {
         "checked": "2026-10-01",
         "source": "~/.codex/models_cache.json (codex-cli 0.159.3, cache fetched 2026-10-01T01:19Z)",
@@ -137,7 +137,9 @@
       "tier2_inline_rule": "Supply focused inline context or an exact bounded readable file/range. If access is unavailable inline the target or report incomplete; never review unseen material.",
       "tier2_vendor_precedence_exception": "Choose a vendor different from the author. The reviewer is not pinned to the orchestrating vendor, and when two reviews are required the reviewers must differ from each other too.",
       "round_limit": 2,
-      "round_limit_note": "Normally one round; second only for a blocker. Confirmation counts; no recurring whole-repo review."
+      "round_limit_note": "Normally one round; second only for a blocker. Confirmation counts; no recurring whole-repo review.",
+      "author_tier_rule": "same",
+      "author_tier_note": "harness-route.py --author-tier <band> derives the review floor from the actual author's band: the same band on a different vendor for plan_review, review_gate and review_deep (user decision 2026-10-19). An explicit --tier overrides it; the role band_floor still applies as a minimum. When no foreground row meets a derived band (A-band OpenAI = Sol xhigh, TTFT above the foreground class), the router returns the detached row with needs_detached rather than a lower band."
     },
     "image_verify": {
       "tier": [
@@ -152,15 +154,18 @@
     },
     "plan_review": {
       "band_floor": "B",
-      "latency_default": "foreground"
+      "latency_default": "foreground",
+      "author_tier": "same band as the design author (review.author_tier_rule)"
     },
     "review_gate": {
       "band_floor": "C",
-      "latency_default": "foreground"
+      "latency_default": "foreground",
+      "author_tier": "same band as the implementation author (review.author_tier_rule)"
     },
     "review_deep": {
       "band_floor": "B",
-      "latency_default": "foreground"
+      "latency_default": "foreground",
+      "author_tier": "same band as the implementation author (review.author_tier_rule)"
     },
     "explore": {
       "band_floor": "E",
@@ -172,7 +177,7 @@
     }
   },
   "vendor_precedence": {
-    "rationale": "Separating design, implementation and review across a perspective different from the author's comes first; spreading quota is a side benefit. The route is re-selected from the actual authoring vendor, risk and availability.",
+    "rationale": "Review by a vendor other than the author is the rule; design and implementation stay on one vendor by default (implementation_default = same, user decision 2026-10-20), so the other vendor is the review lane and the clearly separated area to switch to when one side runs out of quota. harness-route.py --vendor <other vendor> crosses implementation on purpose; a declared-exhausted default vendor hands the route to another vendor automatically. The route is re-selected from the actual authoring vendor, risk and availability.",
     "overridden_by": "specialties and hard constraints (vision, web, isolation, platform, data that must not leave) beat this order. Never the other way round.",
     "by_orchestrator": {
       "claude": [
@@ -192,7 +197,9 @@
       "write",
       "decide"
     ],
-    "note": "Implementation, advisory and review candidates are ordered per host through the workers' role priorities: the OpenAI rows form the implementation lane on the Claude host, the Claude rows on the Codex host. The HTML specialty is kept."
+    "note": "by_orchestrator orders cross-vendor candidates (write/decide, and implementation when --vendor names another vendor or the default vendor is exhausted); with implementation_default = same the implementation lane is the host's own vendor. OpenAI lane shape: Astra (S), GPT-6.1 Sol (A/B/C), GPT-6 Luna (D/E), mirroring Fable / Opus / Sonnet / Haiku. The HTML specialty is kept.",
+    "implementation_vendor": "same: the design author's vendor (host vendor, or the previous worker's vendor on a retry); the route reports same_vendor: true, separation_satisfied: false. --vendor <other> crosses; reviews never accept --vendor. Set implementation_default to \"other\" to restore cross-vendor implementation as the default.",
+    "implementation_default": "same"
   },
   "budget": {
     "declared_by": "user",
@@ -322,7 +329,7 @@
     "objective": "Sufficient task capability at efficient total completion cost/time, including handoff, verification and retries.",
     "adjust_when": "Repeated real-task mismatch; inspect existing run evidence and use local overrides for project-specific differences.",
     "scope": "Automatic assessment with volume compares USD plus declared waiting-time cost for workers and eligible direct work. Availability and trust precede the score; latency does not filter scored rows. Other paths retain measured-cost ordering with cost_tie_pct ties broken by TTFT. Bands are independent of metrics.index; S is fixed by vendor line.",
-    "cross_review": "Host chooses the orchestrator; actual artifact authors choose eligible implementers/reviewers. Pass all authors using --author-vendor. Reviews require explicit provenance and a fresh worker; different vendors do not guarantee correctness.",
+    "cross_review": "Host chooses the orchestrator; actual artifact authors choose eligible reviewers. Implementation shares the design author's vendor by default (vendor_precedence.implementation_default); only reviews require a different vendor. Pass all authors using --author-vendor. Reviews require explicit provenance and a fresh worker; different vendors do not guarantee correctness.",
     "cost_tie_pct": 15,
     "attempt_cap": 3,
     "assessment": {
@@ -398,29 +405,74 @@
       "note": "Minutes m, tolerance T, switch s: attended costs k*(m/T)^exponent for m<=s, otherwise refocus_usd+slope_usd_per_tolerance*(m-s)/T; background/unattended cost refocus_usd+slope_usd_per_tolerance*m/T. Numeric modes retain the legacy pure-convex k*(m/T)^exponent formula. Keep refocus_usd >= k*(s/T)^exponent, otherwise the cost drops just past the switch point and a slightly slower option can look cheaper.",
       "default_mode": "attended",
       "modes": {
-        "attended": {"k": 5, "refocus_usd": 5, "slope_usd_per_tolerance": 1.5},
-        "background": {"k": 0, "refocus_usd": 0, "slope_usd_per_tolerance": 1.5},
-        "unattended": {"k": 0, "refocus_usd": 0, "slope_usd_per_tolerance": 0.25}
+        "attended": {
+          "k": 5,
+          "refocus_usd": 5,
+          "slope_usd_per_tolerance": 1.5
+        },
+        "background": {
+          "k": 0,
+          "refocus_usd": 0,
+          "slope_usd_per_tolerance": 1.5
+        },
+        "unattended": {
+          "k": 0,
+          "refocus_usd": 0,
+          "slope_usd_per_tolerance": 0.25
+        }
       }
     },
     "estimates": {
       "note": "Provisional seed values from one measurement run per cell (delegate_overhead and worker values: thin-orchestration runs of 2026-10-02 with the worker advisor cost excluded, because the Claude launcher disables the advisor for workers); direct and delegate_overhead were measured with an A-band orchestrator. Volume 0 small, 1 medium, 2 large. Repeated matching DONE run records replace formula worker minutes; records are matched on model, effort and sandbox class (read-only vs write), and records without an ASSESS header count as volume-unscoped evidence. readonly_base_minutes (read-only roles: decide, plan_review, review_gate, review_deep, explore, web) seeded 2026-10-06 from this tree's DONE records: read-only median 1.9 min (n=33), write median 5.9 min (n=19). suggested_timeout_s covers worker minutes only; delegate_overhead stays in the cost score.",
       "direct": {
-        "0": {"usd": 3.8, "minutes": 6.5},
-        "1": {"usd": 6.8, "minutes": 13.8},
-        "2": {"usd": 13.6, "minutes": 30.4}
+        "0": {
+          "usd": 3.8,
+          "minutes": 6.5
+        },
+        "1": {
+          "usd": 6.8,
+          "minutes": 13.8
+        },
+        "2": {
+          "usd": 13.6,
+          "minutes": 30.4
+        }
       },
       "delegate_overhead": {
-        "0": {"usd": 2.7, "minutes": 6.6},
-        "1": {"usd": 1.8, "minutes": 8.5},
-        "2": {"usd": 6.7, "minutes": 13.7}
+        "0": {
+          "usd": 2.7,
+          "minutes": 6.6
+        },
+        "1": {
+          "usd": 1.8,
+          "minutes": 8.5
+        },
+        "2": {
+          "usd": 6.7,
+          "minutes": 13.7
+        }
       },
       "worker": {
-        "task_units": {"0": 0.5, "1": 1, "2": 2.5},
-        "base_minutes": {"0": 6, "1": 9, "2": 19},
-        "readonly_base_minutes": {"0": 2, "1": 3, "2": 5},
+        "task_units": {
+          "0": 0.5,
+          "1": 1,
+          "2": 2.5
+        },
+        "base_minutes": {
+          "0": 6,
+          "1": 9,
+          "2": 19
+        },
+        "readonly_base_minutes": {
+          "0": 2,
+          "1": 3,
+          "2": 5
+        },
         "reference_ttft_s": 58,
-        "speed_clamp": [0.5, 3],
+        "speed_clamp": [
+          0.5,
+          3
+        ],
         "min_records": 2
       },
       "direct_grounded_factor": 0.5,
@@ -431,97 +483,44 @@
   },
   "workers": [
     {
+      "id": "fable-medium",
+      "model": "claude-fable-5-1",
+      "vendor": "claude",
+      "effort": "medium",
       "tier": "S",
-      "vendor": "openai",
-      "model": "gpt-6-astra",
-      "effort": "high",
-      "ttft_s": 49.8,
-      "endpoint": "codex-cli",
-      "evidence": "leaderboard",
-      "sources": [
-        "artificial_analysis",
-        "llm_stats",
-        "frontierswe",
-        "epoch_eci"
-      ],
-      "updated": "2026-09-23",
-      "catalog_checked": "2026-09-23",
       "status": "active",
-      "note": "OpenAI S lane at foreground effort; measured cost and TTFT are recorded in metrics. Cross-check 10-06: agrees with the primary; FrontierSWE 0.655 is the top long-horizon score.",
-      "intelligence_index": 51,
-      "effective_cost": 1.73,
-      "id": "astra-high",
+      "launcher": ".claude/scripts/claude-run.sh",
       "tier_cell": true,
-      "roles": {
-        "implement": {
-          "claude": 3,
-          "codex": 5
-        },
-        "decide": 100,
-        "plan_review": 100,
-        "write": 100,
-        "review_gate": 100,
-        "review_deep": 100
-      },
-      "launcher": ".claude/scripts/codex-run.sh",
       "tier_fixed": true,
       "metrics": {
-        "index": 51,
-        "cost": 1.73,
-        "ttft_s": 49.8,
-        "tps": 47,
+        "index": 49,
+        "cost": 2.98,
+        "ttft_s": 14.27,
+        "tps": 56,
         "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": 0.655,
+        "read": "2026-10-19",
+        "secondary_pass1": 0.563,
+        "provisional": false,
+        "note": "AA leaderboard 2026-10-19, medium, 'with fallback' configuration",
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 166.5,
-        "provisional": false
+        "eci": 164.8
       },
       "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli 0.158.0"
-      }
-    },
-    {
-      "id": "astra-xhigh",
-      "model": "gpt-6-astra",
-      "vendor": "openai",
-      "effort": "xhigh",
-      "tier": "S",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": false,
-      "tier_fixed": true,
-      "metrics": {
-        "index": 52,
-        "cost": 2.31,
-        "ttft_s": 126.3,
-        "tps": 49,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": 0.655,
-        "secondary_effort": "max",
-        "secondary_source": "frontierswe",
-        "secondary_read": "2026-10-06",
-        "eci": 166.5,
-        "provisional": false
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli 0.158.0"
+        "date": "2026-10-19",
+        "result": "OK (one-word prompt, read-only)",
+        "cli": "Claude Code 2.1.303"
       },
       "roles": {
-        "implement": 101,
-        "write": 101,
-        "decide": 101,
-        "plan_review": 101,
-        "review_gate": 101,
-        "review_deep": 101
+        "implement": 120,
+        "write": 120,
+        "decide": 120,
+        "plan_review": 120,
+        "review_gate": 120,
+        "review_deep": 120
       },
+      "note": "Cross-check 10-06: agrees; FrontierSWE 0.563 is one step below Opus 5.5 and Astra on long-horizon work.",
       "sources": [
         "artificial_analysis",
         "frontierswe",
@@ -529,204 +528,14 @@
       ]
     },
     {
-      "id": "sol61-medium",
-      "model": "gpt-6.1-sol",
-      "vendor": "openai",
-      "effort": "medium",
-      "tier": "B",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": true,
-      "metrics": {
-        "index": 48,
-        "cost": 0.21,
-        "ttft_s": 5.7,
-        "tps": 59,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-10-01",
-        "result": "OK (3,841 tokens)",
-        "cli": "codex-cli 0.159.3"
-      },
-      "roles": {
-        "implement": 102,
-        "write": 102,
-        "review_gate": 102,
-        "image_verify": 1
-      },
-      "note": "Cross-check 10-06: no FrontierSWE row; verdict unavailable, primary only (metrics stay provisional)."
-    },
-    {
-      "id": "sol61-high",
-      "model": "gpt-6.1-sol",
-      "vendor": "openai",
-      "effort": "high",
-      "tier": "B",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 50,
-        "cost": 0.32,
-        "ttft_s": 58.0,
-        "tps": 65,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-10-01",
-        "result": "OK (3,842 tokens)",
-        "cli": "codex-cli 0.159.3"
-      },
-      "roles": {
-        "implement": 103,
-        "write": 103,
-        "decide": 103,
-        "plan_review": 103,
-        "review_gate": 103,
-        "review_deep": 103
-      }
-    },
-    {
-      "id": "sol61-xhigh",
-      "model": "gpt-6.1-sol",
-      "vendor": "openai",
-      "effort": "xhigh",
-      "tier": "B",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 51,
-        "cost": 0.39,
-        "ttft_s": 69.2,
-        "tps": 64,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-10-01",
-        "result": "OK (model probed at medium/high; same model and account)",
-        "cli": "codex-cli 0.159.3"
-      },
-      "roles": {
-        "implement": 104,
-        "write": 104,
-        "decide": 104,
-        "plan_review": 104,
-        "review_gate": 104,
-        "review_deep": 104
-      }
-    },
-    {
-      "id": "sol61-max",
-      "model": "gpt-6.1-sol",
-      "vendor": "openai",
-      "effort": "max",
-      "tier": "A",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": true,
-      "metrics": {
-        "index": 52,
-        "cost": 0.72,
-        "ttft_s": 205.9,
-        "tps": 69,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-10-01",
-        "result": "OK (model probed at medium/high; same model and account)",
-        "cli": "codex-cli 0.159.3"
-      },
-      "roles": {
-        "implement": 105,
-        "write": 105,
-        "decide": 105,
-        "plan_review": 105,
-        "review_gate": 105,
-        "review_deep": 105
-      }
-    },
-    {
-      "id": "luna6-high",
-      "model": "gpt-6-luna",
-      "vendor": "openai",
-      "effort": "high",
-      "tier": "D",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 32,
-        "cost": 0.03,
-        "ttft_s": 15.2,
-        "tps": 124,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli 0.158.0"
-      },
-      "roles": {
-        "implement": 109,
-        "write": 109
-      },
-      "note": "Cross-check 10-06: no FrontierSWE row; verdict unavailable, primary only (metrics stay provisional)."
-    },
-    {
-      "id": "luna6-low",
-      "model": "gpt-6-luna",
-      "vendor": "openai",
-      "effort": "low",
-      "tier": "E",
-      "status": "active",
-      "launcher": ".claude/scripts/codex-run.sh",
-      "tier_cell": false,
-      "metrics": {
-        "index": 21,
-        "cost": 0.0045,
-        "ttft_s": 2.0,
-        "tps": 124,
-        "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": null,
-        "provisional": true
-      },
-      "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "codex-cli 0.158.0"
-      },
-      "roles": {
-        "implement": 111,
-        "write": 111
-      }
-    },
-    {
       "id": "fable-high",
       "model": "claude-fable-5-1",
       "vendor": "claude",
       "effort": "high",
       "tier": "S",
-      "status": "active",
+      "status": "conditional",
       "launcher": ".claude/scripts/claude-run.sh",
-      "tier_cell": true,
+      "tier_cell": false,
       "tier_fixed": true,
       "metrics": {
         "index": 51,
@@ -769,7 +578,7 @@
       "vendor": "claude",
       "effort": "xhigh",
       "tier": "S",
-      "status": "active",
+      "status": "conditional",
       "launcher": ".claude/scripts/claude-run.sh",
       "tier_cell": false,
       "tier_fixed": true,
@@ -800,6 +609,160 @@
         "plan_review": 113,
         "review_gate": 113,
         "review_deep": 113
+      },
+      "sources": [
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
+      ]
+    },
+    {
+      "tier": "S",
+      "vendor": "openai",
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "ttft_s": 49.8,
+      "endpoint": "codex-cli",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis",
+        "llm_stats",
+        "frontierswe",
+        "epoch_eci"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "active",
+      "note": "OpenAI S lane at foreground effort; measured cost and TTFT are recorded in metrics. Cross-check 10-06: agrees with the primary; FrontierSWE 0.655 is the top long-horizon score.",
+      "intelligence_index": 51,
+      "effective_cost": 1.73,
+      "id": "astra-medium",
+      "tier_cell": true,
+      "roles": {
+        "implement": {
+          "claude": 3,
+          "codex": 5
+        },
+        "decide": 100,
+        "plan_review": 100,
+        "write": 100,
+        "review_gate": 100,
+        "review_deep": 100
+      },
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_fixed": true,
+      "metrics": {
+        "index": 50,
+        "cost": 1.54,
+        "ttft_s": 4.73,
+        "tps": 54,
+        "source": "artificial_analysis",
+        "read": "2026-10-19",
+        "secondary_pass1": 0.655,
+        "provisional": false,
+        "note": "AA leaderboard 2026-10-19, medium",
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 166.5
+      },
+      "probe": {
+        "date": "2026-10-19",
+        "result": "OK (one-word prompt, read-only)",
+        "cli": "codex-cli 0.163.0"
+      }
+    },
+    {
+      "tier": "S",
+      "vendor": "openai",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "ttft_s": 49.8,
+      "endpoint": "codex-cli",
+      "evidence": "leaderboard",
+      "sources": [
+        "artificial_analysis",
+        "llm_stats",
+        "frontierswe",
+        "epoch_eci"
+      ],
+      "updated": "2026-09-23",
+      "catalog_checked": "2026-09-23",
+      "status": "conditional",
+      "note": "OpenAI S lane at foreground effort; measured cost and TTFT are recorded in metrics. Cross-check 10-06: agrees with the primary; FrontierSWE 0.655 is the top long-horizon score.",
+      "intelligence_index": 51,
+      "effective_cost": 1.73,
+      "id": "astra-high",
+      "tier_cell": false,
+      "roles": {
+        "implement": {
+          "claude": 121,
+          "codex": 121
+        },
+        "write": 121,
+        "decide": 121,
+        "plan_review": 121,
+        "review_gate": 121,
+        "review_deep": 121
+      },
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_fixed": true,
+      "metrics": {
+        "index": 51,
+        "cost": 1.73,
+        "ttft_s": 49.8,
+        "tps": 47,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": 0.655,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 166.5,
+        "provisional": false
+      },
+      "probe": {
+        "date": "2026-09-30",
+        "result": "OK",
+        "cli": "codex-cli 0.158.0"
+      }
+    },
+    {
+      "id": "astra-xhigh",
+      "model": "gpt-6-astra",
+      "vendor": "openai",
+      "effort": "xhigh",
+      "tier": "S",
+      "status": "conditional",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": false,
+      "tier_fixed": true,
+      "metrics": {
+        "index": 52,
+        "cost": 2.31,
+        "ttft_s": 126.3,
+        "tps": 49,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": 0.655,
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 166.5,
+        "provisional": false
+      },
+      "probe": {
+        "date": "2026-09-30",
+        "result": "OK",
+        "cli": "codex-cli 0.158.0"
+      },
+      "roles": {
+        "implement": 101,
+        "write": 101,
+        "decide": 101,
+        "plan_review": 101,
+        "review_gate": 101,
+        "review_deep": 101
       },
       "sources": [
         "artificial_analysis",
@@ -881,7 +844,7 @@
       ],
       "updated": "2026-09-23",
       "catalog_checked": "2026-09-23",
-      "status": "active",
+      "status": "conditional",
       "note": "Main Claude line. Judgement roles start at high; medium remains eligible for implementation, writing and review gates.",
       "intelligence_index": 56,
       "effective_cost": 3.46,
@@ -927,6 +890,72 @@
       }
     },
     {
+      "id": "sol61-xhigh",
+      "model": "gpt-6.1-sol",
+      "vendor": "openai",
+      "effort": "xhigh",
+      "tier": "A",
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": true,
+      "metrics": {
+        "index": 51,
+        "cost": 0.39,
+        "ttft_s": 69.2,
+        "tps": 64,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": null,
+        "provisional": true
+      },
+      "probe": {
+        "date": "2026-10-01",
+        "result": "OK (model probed at medium/high; same model and account)",
+        "cli": "codex-cli 0.159.3"
+      },
+      "roles": {
+        "implement": 104,
+        "write": 104,
+        "decide": 104,
+        "plan_review": 104,
+        "review_gate": 104,
+        "review_deep": 104
+      }
+    },
+    {
+      "id": "sol61-max",
+      "model": "gpt-6.1-sol",
+      "vendor": "openai",
+      "effort": "max",
+      "tier": "A",
+      "status": "conditional",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": false,
+      "metrics": {
+        "index": 52,
+        "cost": 0.72,
+        "ttft_s": 205.9,
+        "tps": 69,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": null,
+        "provisional": true
+      },
+      "probe": {
+        "date": "2026-10-01",
+        "result": "OK (model probed at medium/high; same model and account)",
+        "cli": "codex-cli 0.159.3"
+      },
+      "roles": {
+        "implement": 105,
+        "write": 105,
+        "decide": 105,
+        "plan_review": 105,
+        "review_gate": 105,
+        "review_deep": 105
+      }
+    },
+    {
       "tier": "B",
       "vendor": "claude",
       "model": "claude-opus-5-5",
@@ -948,15 +977,18 @@
       "id": "opus55-medium",
       "tier_cell": true,
       "roles": {
-        "review_gate": {
-          "claude": 1,
-          "codex": 2
-        },
+        "implement": 116,
         "write": {
           "claude": 2,
           "codex": 1
         },
-        "implement": 116
+        "decide": 116,
+        "plan_review": 116,
+        "review_gate": {
+          "claude": 1,
+          "codex": 2
+        },
+        "review_deep": 116
       },
       "launcher": ".claude/scripts/claude-run.sh",
       "metrics": {
@@ -981,28 +1013,137 @@
       }
     },
     {
-      "id": "sonnet55-medium",
+      "id": "sol61-high",
+      "model": "gpt-6.1-sol",
+      "vendor": "openai",
+      "effort": "high",
+      "tier": "B",
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": true,
+      "metrics": {
+        "index": 50,
+        "cost": 0.32,
+        "ttft_s": 58.0,
+        "tps": 65,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": null,
+        "provisional": true
+      },
+      "probe": {
+        "date": "2026-10-01",
+        "result": "OK (3,842 tokens)",
+        "cli": "codex-cli 0.159.3"
+      },
+      "roles": {
+        "implement": 103,
+        "write": 103,
+        "decide": 103,
+        "plan_review": 103,
+        "review_gate": 103,
+        "review_deep": 103
+      }
+    },
+    {
+      "id": "sonnet55-high",
       "model": "claude-sonnet-5-5",
       "vendor": "claude",
-      "effort": "medium",
+      "effort": "high",
       "tier": "C",
       "status": "active",
       "launcher": ".claude/scripts/claude-run.sh",
       "tier_cell": true,
       "metrics": {
-        "index": 41,
-        "cost": 0.59,
-        "ttft_s": 1.3,
-        "tps": 90,
+        "index": 47,
+        "cost": 0.88,
+        "ttft_s": 11.62,
+        "tps": 108,
+        "source": "artificial_analysis",
+        "read": "2026-10-19",
+        "secondary_pass1": 0.619,
+        "provisional": false,
+        "note": "AA leaderboard 2026-10-19, high, 'with fallback' configuration",
+        "secondary_effort": "max",
+        "secondary_source": "frontierswe",
+        "secondary_read": "2026-10-06",
+        "eci": 165.2
+      },
+      "probe": {
+        "date": "2026-10-19",
+        "result": "OK (one-word prompt, read-only)",
+        "cli": "Claude Code 2.1.303"
+      },
+      "roles": {
+        "implement": 117,
+        "write": 117,
+        "decide": 117,
+        "plan_review": 117,
+        "review_gate": 117,
+        "review_deep": 117
+      },
+      "note": "Cross-check 10-06: AA medium 41 reflects effort, not the model; FrontierSWE max 0.619 is Opus-level at high effort.",
+      "sources": [
+        "artificial_analysis",
+        "frontierswe",
+        "epoch_eci"
+      ]
+    },
+    {
+      "id": "sol61-medium",
+      "model": "gpt-6.1-sol",
+      "vendor": "openai",
+      "effort": "medium",
+      "tier": "C",
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": true,
+      "metrics": {
+        "index": 48,
+        "cost": 0.21,
+        "ttft_s": 5.7,
+        "tps": 59,
         "source": "artificial_analysis",
         "read": "2026-09-30",
+        "secondary_pass1": null,
+        "provisional": true
+      },
+      "probe": {
+        "date": "2026-10-01",
+        "result": "OK (3,841 tokens)",
+        "cli": "codex-cli 0.159.3"
+      },
+      "roles": {
+        "implement": 102,
+        "write": 102,
+        "review_gate": 102,
+        "image_verify": 1
+      },
+      "note": "Cross-check 10-06: no FrontierSWE row; verdict unavailable, primary only (metrics stay provisional)."
+    },
+    {
+      "id": "sonnet55-medium",
+      "model": "claude-sonnet-5-5",
+      "vendor": "claude",
+      "effort": "medium",
+      "tier": "D",
+      "status": "active",
+      "launcher": ".claude/scripts/claude-run.sh",
+      "tier_cell": true,
+      "metrics": {
+        "index": 41,
+        "cost": 0.48,
+        "ttft_s": 1.17,
+        "tps": 107,
+        "source": "artificial_analysis",
+        "read": "2026-10-19",
         "secondary_pass1": 0.619,
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
         "eci": 165.2,
         "provisional": false,
-        "note": "AA 'with fallback' configuration"
+        "note": "AA leaderboard 2026-10-19, medium, 'with fallback' configuration"
       },
       "probe": {
         "date": "2026-09-30",
@@ -1026,6 +1167,68 @@
       ]
     },
     {
+      "id": "luna6-high",
+      "model": "gpt-6-luna",
+      "vendor": "openai",
+      "effort": "high",
+      "tier": "D",
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": true,
+      "metrics": {
+        "index": 32,
+        "cost": 0.03,
+        "ttft_s": 15.2,
+        "tps": 124,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": null,
+        "provisional": true,
+        "note": "restored 2026-10-20 as the D cell (mechanical/bulk): cheapest and fastest OpenAI row"
+      },
+      "probe": {
+        "date": "2026-09-30",
+        "result": "OK",
+        "cli": "codex-cli 0.158.0"
+      },
+      "roles": {
+        "implement": 109,
+        "write": 109
+      }
+    },
+    {
+      "id": "sol61-low",
+      "model": "gpt-6.1-sol",
+      "vendor": "openai",
+      "effort": "low",
+      "tier": "D",
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": false,
+      "metrics": {
+        "index": 42,
+        "cost": 0.13,
+        "ttft_s": 3.02,
+        "tps": 44,
+        "source": "artificial_analysis",
+        "read": "2026-10-19",
+        "secondary_pass1": null,
+        "provisional": true,
+        "note": "AA leaderboard 2026-10-19, low"
+      },
+      "probe": {
+        "date": "2026-10-19",
+        "result": "OK (one-word prompt, read-only)",
+        "cli": "codex-cli 0.163.0"
+      },
+      "roles": {
+        "implement": 106,
+        "write": 106,
+        "review_gate": 106
+      },
+      "note": "Cross-check 10-06: no FrontierSWE row; verdict unavailable, primary only (metrics stay provisional)."
+    },
+    {
       "tier": "E",
       "vendor": "claude",
       "model": "claude-haiku-5-5",
@@ -1047,24 +1250,60 @@
         "explore": 1,
         "web": 1
       },
-      "effort": "low",
+      "effort": "medium",
       "launcher": ".claude/scripts/claude-run.sh",
       "metrics": {
-        "index": 29,
-        "cost": 0.02,
-        "ttft_s": 9.7,
-        "tps": 178,
+        "index": 34,
+        "cost": 0.05,
+        "ttft_s": 14.24,
+        "tps": 179,
         "source": "artificial_analysis",
-        "read": "2026-10-12",
+        "read": "2026-10-19",
         "secondary_pass1": null,
         "provisional": true,
-        "note": "AA leaderboard, low effort variant"
+        "note": "AA leaderboard 2026-10-19, medium effort variant"
       },
       "probe": {
         "date": "2026-10-12",
         "result": "OK",
         "cli": "Claude Code 2.1.296",
         "note": "haiku alias also resolves to claude-haiku-5-5"
+      }
+    },
+    {
+      "id": "luna6-low",
+      "model": "gpt-6-luna",
+      "vendor": "openai",
+      "effort": "low",
+      "tier": "E",
+      "status": "active",
+      "launcher": ".claude/scripts/codex-run.sh",
+      "tier_cell": true,
+      "metrics": {
+        "index": 21,
+        "cost": 0.0045,
+        "ttft_s": 2.0,
+        "tps": 124,
+        "source": "artificial_analysis",
+        "read": "2026-09-30",
+        "secondary_pass1": null,
+        "provisional": true,
+        "note": "restored 2026-10-20 as the E cell: isolation reader on the Codex host (explore), no web"
+      },
+      "probe": {
+        "date": "2026-09-30",
+        "result": "OK",
+        "cli": "codex-cli 0.158.0"
+      },
+      "roles": {
+        "implement": 111,
+        "write": 111,
+        "explore": {
+          "priority": 3,
+          "hosts": [
+            "codex"
+          ]
+        }
       }
     },
     {
@@ -1245,30 +1484,31 @@
         "claude": "claude-fable-5-1",
         "openai": "gpt-6-astra"
       },
-      "foreground_effort": "high",
-      "detached_effort": "xhigh",
-      "rationale": "Each vendor's top-line model. The start tier for the hardest assessed tasks and the last escalation rung after A fails. Defined by vendor line, not by index."
+      "foreground_effort": "medium",
+      "detached_effort": "medium",
+      "rationale": "Each vendor's top-line model at medium effort (user decision 2026-10-19): design, design review and the hardest assessed judgment. Defined by vendor line, not by index. higher efforts (high/xhigh/max) stay conditional rows selected only with an explicit --worker."
     },
     "A": {
-      "name": "Strong judgment",
+      "name": "Strong judgment (Opus 5.5 high / GPT-6.1 Sol xhigh)",
       "min_index": 52
     },
     "B": {
-      "name": "General implementation (default)",
+      "name": "General implementation and its review (Opus 5.5 medium / GPT-6.1 Sol high)",
       "min_index": 48
     },
     "C": {
-      "name": "Closed-spec implementation / review gate",
+      "name": "Closed-spec implementation / review gate (Sonnet 5.5 high / GPT-6.1 Sol medium)",
       "min_index": 40
     },
     "D": {
-      "name": "Mechanical / bulk",
+      "name": "Mechanical / bulk (Sonnet 5.5 medium / GPT-6 Luna high)",
       "min_index": 30
     },
     "E": {
-      "name": "Isolation reader",
+      "name": "Isolation reader (Haiku 5.5 medium / GPT-6 Luna low on the Codex host)",
       "min_index": 0
-    }
+    },
+    "pairing_note": "One Claude row and one OpenAI row per band (tier_cell). Reviews take the author's band on the other vendor (roles.review.author_tier_rule)."
   },
   "latency": {
     "interactive": 10,

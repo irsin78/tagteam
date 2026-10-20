@@ -44,12 +44,23 @@ and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
 measured index/cost/TTFT and per-host role priorities; declare optional workers
 with `status: optional` and `requires`.
-Bands are capability labels independent of leaderboard index values: A strong
-judgment; B general implementation (default implementation floor); C closed-spec
-work and review gates; D mechanical/bulk; E isolation reader. S: Each vendor's
-top-line model. The start tier for the hardest assessed tasks and the last
-escalation rung after A fails. Defined by vendor line, not by index. Its lanes
-remain Fable for Claude and Astra for OpenAI; S rows require an S floor.
+Implementation goes to the orchestrator's own vendor by default and crosses only on
+`--vendor` or exhaustion; reviews always cross (see "Separate authorship from review").
+Bands are capability labels independent of leaderboard index values, with one
+Claude cell and one OpenAI cell per band (`tier_cell`, user decision 2026-10-19):
+S Fable 5.1 medium / Astra medium (each vendor's top line at medium effort; the
+start tier for the hardest assessed tasks and the last escalation rung after A
+fails; defined by vendor line, not by index; S rows require an S floor); A strong
+judgment, Opus 5.5 high / GPT-6.1 Sol xhigh; B general implementation and its
+review (default implementation floor), Opus 5.5 medium / Sol high; C closed-spec
+work and review gates, Sonnet 5.5 high / Sol medium; D mechanical/bulk, Sonnet 5.5
+medium / GPT-6 Luna high; E isolation reader, Haiku 5.5 medium (Claude host) /
+GPT-6 Luna low (Codex host, explore only). The OpenAI lane therefore mirrors the
+Claude lane: Astra, Sol, Luna against Fable, Opus/Sonnet, Haiku. Higher efforts of
+the same models (Fable/Astra high and xhigh, Opus xhigh, Sol max) are `conditional`
+rows: never selected automatically, only with an explicit `--worker` when the
+user asks for them. Sol xhigh's first-token latency exceeds the foreground class,
+so A-band OpenAI work and reviews usually run with `-b --wait`.
 Latency: interactive (TTFT <=10s), foreground (<=60s),
 detached (no limit, `-b --wait`; effort max/ultra rows are detached only).
 The router applies hard constraints, author separation and the band floor first.
@@ -71,7 +82,10 @@ Use `python .claude/scripts/harness-route.py --host <claude|codex> --role <role>
 from the project root; pass its model, effort and sandbox to the launcher recipe.
 Role floors without assessment: implement/decide/plan_review/review_deep B,
 write/review_gate C, image_verify D, explore/web E. Pass --tier C for closed mechanical implementation,
-A for stronger judgment. Explore also needs task grading: raise it with --tier C/B
+A for stronger judgment. Reviews pass `--author-tier <band>` with the actual
+author's band: the reviewer is the same band on another vendor (`roles.review.
+author_tier_rule`), never below the role floor; an explicit `--tier` overrides it,
+and a band only available detached returns `needs_detached` instead of a lower band. Explore also needs task grading: raise it with --tier C/B
 for structure/dependency reasoning; the E floor is not a recommendation for every
 exploration. Tiny lookups stay in the main session.
 Native workers need explicit supported model/effort; include inheritance cost
@@ -151,10 +165,20 @@ and OpenAI worker ultra remains refused.
 
 ## Separate authorship from review
 Identify actual designers before implementation and authors before review,
-including direct work/fallbacks. Use a different vendor to challenge assumptions;
+including direct work/fallbacks. Every design unit gets a cross-vendor
+`plan_review` before implementation (`rules/plan-check-gate.md`); every
+implementation gets its review per verification-tiering.md. Use a different vendor to challenge assumptions;
 keep the human-started host accountable. Pass --author-vendor (repeat for coauthors
 of the reviewed change); plan_review/review_gate/review_deep require it.
 Review plans against designers and code against implementers with a fresh worker.
+Implementation and writing stay on the design author's vendor by default
+(`vendor_precedence.implementation_default = same`): the router returns
+`same_vendor: true` with `separation_satisfied: false`, and the review that
+follows must name that vendor as author so it goes to another vendor. Pass
+`--vendor <other vendor>` to cross implementation on purpose; a declared-exhausted
+default vendor crosses automatically. Reviews never accept `--vendor`. Keeping
+design and implementation on one vendor leaves the other vendor free as the
+review lane and as the clearly separated fallback when one side runs out of quota.
 Recompute when authorship changes; never hide a coauthor or call self-review
 independent. Missing independence is unavailable. Acceptance still needs actual
 outputs and checks. Review triggers, risk floors and limits: verification-tiering.md.

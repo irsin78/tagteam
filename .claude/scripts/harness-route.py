@@ -514,10 +514,12 @@ def launcher_default(data, vendor, role):
     # Foreground first. A bindings file whose only rows are detached-only (max/ultra)
     # still names its row, so the launcher's effort guards refuse it instead of a
     # silent builtin fallback.
+    pick = vendor if role in ('implement', 'write') else None
     try:
-        route = resolve(scoped, host, role, latency='foreground', author_vendors=authors)
+        route = resolve(scoped, host, role, latency='foreground', author_vendors=authors, vendor=pick)
     except IndexError:
-        route = resolve(scoped, host, role, latency='detached', author_vendors=authors, allow_ultra=True)
+        route = resolve(scoped, host, role, latency='detached', author_vendors=authors, allow_ultra=True,
+                        vendor=pick)
     if not route['available']:
         raise ValueError('no active launcher default')
     return next(w for w in scoped['workers'] if w['id'] == route['worker_id'])
@@ -528,7 +530,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             retry_reason=None, attempt=0, allow_ultra=False, assess=None,
             recent_failure=False, direct_band=None, time_mode=None,
             time_tolerance_min=None, time_cost=None, paths=None, time_refocus=None,
-            time_slope=None, grounded=False):
+            time_slope=None, grounded=False, author_tier=None, vendor=None):
     validate_bindings(data)
     root = Path.cwd() if root is None else Path(root)
     env = os.environ if env is None else env
@@ -543,7 +545,54 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('invalid author vendor')
     if worker is not None and tier is not None:
         raise ValueError('--worker cannot be combined with --tier')
-    floor = tier or data['roles'][role]['band_floor']
+    same_vendor = False
+    vendor_default = None
+    if vendor is not None:
+        if vendor not in VENDORS:
+            raise ValueError('invalid vendor')
+        if role not in ('implement', 'write'):
+            raise ValueError('--vendor is only for implement/write; reviews keep author separation')
+        if worker is not None:
+            raise ValueError('--worker cannot be combined with --vendor')
+    elif role in ('implement', 'write') and worker is None and \
+            data.get('vendor_precedence', {}).get('implementation_default', 'other') == 'same':
+        # Design and implementation stay on one vendor; only reviews cross vendors
+        # (user decision 2026-10-20). A retry stays in the previous worker's lane,
+        # and a declared-exhausted default vendor hands the route to another vendor.
+        by_id_default = {w['id']: w for w in data['workers']}
+        if retry_from in by_id_default:
+            vendor_default = by_id_default[retry_from]['vendor']
+        else:
+            vendor_default = next(iter(authors)) if len(authors) == 1 else {'codex': 'openai', 'claude': 'claude'}[host]
+        exhausted_default = set(budget[10:].split(',')) if budget.startswith('exhausted:') else set()
+        if vendor_default in exhausted_default:
+            vendor_default = None
+        elif vendor_default is not None and not any(
+                w['vendor'] == vendor_default and role in w['roles'] and w['status'] == 'active'
+                and not exclusion(w, role, host, False, data, root, env) for w in data['workers']):
+            vendor_default = None  # no automatic row on the own vendor: cross instead of failing
+        vendor = vendor_default
+    vendor_pick = vendor
+    if vendor_pick is not None:
+        same_vendor = vendor_pick in authors
+    derived_tier = None
+    if author_tier is not None:
+        # The reviewer takes the actual author's band on another vendor
+        # (roles.review.author_tier_rule, user decision 2026-10-19). An explicit
+        # --tier wins; the role band_floor stays the minimum.
+        if role not in REVIEW_ROLES:
+            raise ValueError('--author-tier is only for review roles')
+        if author_tier not in data['bands']['order']:
+            raise ValueError('invalid author tier')
+        if worker is not None:
+            raise ValueError('--worker cannot be combined with --author-tier')
+        if tier is None:
+            rule = data['roles'].get('review', {}).get('author_tier_rule', 'same')
+            if rule != 'same':
+                raise ValueError('unsupported author_tier_rule: ' + str(rule))
+            order = data['bands']['order']
+            derived_tier = max((author_tier, data['roles'][role]['band_floor']), key=order.index)
+    floor = tier or derived_tier or data['roles'][role]['band_floor']
     assessment, assessment_reason = None, ''
     reports = []
     if assess is not None and tier is None and worker is None and retry_from is None:
@@ -579,7 +628,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('cross-lane S already failed; orchestrator decides (retry-policy 4)')
     if previous and (role not in previous['roles'] or
             exclusion(previous, role, host, True, data, root, env) or
-            (role in SEPARATED_ROLES and previous['vendor'] in authors)):
+            (role in SEPARATED_ROLES and previous['vendor'] in authors and previous['vendor'] != vendor_pick)):
         raise ValueError('retry worker is not eligible for role/host/authors')
     keep = previous and retry_reason not in ('reasoning', 'refusal') and not (
         retry_reason == 'availability' and previous['vendor'] in exhausted)
@@ -604,9 +653,11 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             reason = 'unscored requires explicit --worker'
         if not reason and scoring and (w.get('metrics') or {}).get('cost') is None:
             reason = 'missing metrics.cost for score'
+        if not reason and vendor_pick is not None and w['vendor'] != vendor_pick:
+            reason = f'vendor {vendor_pick} selected for this route'
         if not reason:
             diagnostic.append(w)
-            if role in SEPARATED_ROLES and w['vendor'] in authors:
+            if role in SEPARATED_ROLES and w['vendor'] in authors and not same_vendor:
                 reason = 'vendor is an artifact author'
         if reason:
             skipped.append({'id': w['id'], 'reason': reason})
@@ -682,12 +733,19 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             else:
                 chosen.append(w)
     assessed_detached = False
-    if not chosen and assessment is not None:
+    derived_detached = False
+    if not chosen and (assessment is not None or derived_tier is not None):
+        # An assessed or author-derived band is a requirement, not a preference:
+        # prefer a detached row of that band over a lower band in this class.
         chosen = [w for w in pool if (within_band(w, data, floor, latency) or
                                      within_band(w, data, floor, 'detached')) and
                   (allow_ultra or w['vendor'] != 'openai' or w.get('effort') != 'ultra')]
         if chosen:
-            assessed_detached = needs_detached = True
+            needs_detached = True
+            if assessment is not None:
+                assessed_detached = True
+            else:
+                derived_detached = True
     floor_met = bool(chosen)
     score_rows = list(chosen)
     fallback = False
@@ -701,7 +759,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                      -data['bands']['order'].index(w['tier']), metric(w, 'cost'), metric(w, 'ttft_s')))
     if not ordered:
         raise IndexError('no eligible worker meets latency and hard constraints')
-    if cross_lane_s or assessed_detached:
+    if cross_lane_s or assessed_detached or derived_detached:
         eligible_ids = {w['id'] for w in ordered}
         skipped = [item for item in skipped if item['id'] not in eligible_ids]
     cheapest = selected = ordered[0]
@@ -754,6 +812,8 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         label = f'detached (scored row exceeds {latency} latency; run with -b --wait)'
     elif assessed_detached:
         label = f'detached (assessed band {floor} is only available detached; run with -b --wait)'
+    elif derived_detached:
+        label = f'detached (author band {floor} is only available detached; run with -b --wait)'
     elif needs_detached:
         label = ('detached (S effort step; run with -b --wait)' if s_retry_effort == 'detached' else
                  f'detached (no {latency} row meets band {floor} promotion; run with -b --wait)')
@@ -795,6 +855,9 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                  floor_met=floor_met, reason=reason, needs_detached=needs_detached,
                  eligible=[w['id'] for w in ordered], worker_id=selected['id'], skipped=skipped,
                  tier_fallback=not floor_met, available=(separation_ok or cross_lane_s) and vendor not in exhausted)
+    if author_tier is not None:
+        route['author_tier'] = author_tier
+        route['reason'] = f'author band {author_tier} -> review floor {floor}; ' + route['reason']
     if scoring:
         route['decision'] = 'direct' if ranked_scores and ranked_scores[0]['option'] == 'direct' else 'delegate'
         route['time_cost'] = {key: round(value, 2) if type(value) in (int, float) else value
@@ -812,6 +875,14 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         route['claude_role'] = 'web'
     if role in SEPARATED_ROLES:
         route.update(author_vendors=sorted(authors), separation_satisfied=separation_ok)
+    if same_vendor:
+        route['same_vendor'] = True
+        route['separation_satisfied'] = False
+        how = 'default' if vendor_default is not None else 'selected'
+        route['reason'] = (f'vendor {vendor_pick} ({how}): design and implementation stay on one vendor; '
+                           f'the review must come from another vendor (--author-vendor {vendor_pick}); ') + route['reason']
+    elif vendor_pick is not None and role in ('implement', 'write'):
+        route['reason'] = f'vendor {vendor_pick} selected: implementation crosses to another vendor; ' + route['reason']
     if cross_lane_s:
         route['cross_lane_s'] = True
         route['separation_satisfied'] = False
@@ -875,6 +946,8 @@ def announce_line(route, assessment, role, tier, latency, eligible_count, scorin
             why_band += f', {role} role minimum'
     elif tier:
         why_band = f'--tier {tier} requested'
+    elif route.get('author_tier'):
+        why_band = f"author band {route['author_tier']}"
     else:
         why_band = f'{role} role floor'
     head = f'band {floor} ({why_band})'
@@ -901,6 +974,8 @@ def announce_line(route, assessment, role, tier, latency, eligible_count, scorin
         why.append(f'cheapest of {eligible_count} eligible in {latency}')
     if cross_lane_s:
         why.append('cross-lane S, author separation waived once')
+    elif route.get('same_vendor'):
+        why.append('same vendor as the author; the review must cross vendors')
     elif role in SEPARATED_ROLES and route['vendor'] not in authors:
         why.append(f"vendor differs from author ({'/'.join(sorted(authors))})")
     if route.get('needs_detached'):
@@ -921,7 +996,9 @@ def main():
     parser.add_argument('--role', choices=ROLES, required=True)
     parser.add_argument('--worker')
     parser.add_argument('--launcher-default', action='store_true')
-    parser.add_argument('--vendor', choices=VENDORS)
+    parser.add_argument('--vendor', choices=VENDORS,
+                        help='launcher default: the vendor to resolve; routing: the vendor for implement/write '
+                             '(default: the design author\'s own vendor; pass another vendor to cross; reviews always cross)')
     parser.add_argument('--tier', choices=tuple('SABCDE'), help='capability band floor')
     parser.add_argument('--latency', choices=('interactive', 'foreground', 'detached'))
     parser.add_argument('--retry-from')
@@ -940,6 +1017,8 @@ def main():
     parser.add_argument('--time-slope', type=float, help='USD per tolerance interval after switching away')
     parser.add_argument('--author-vendor', action='append', choices=('openai', 'claude', 'google', 'local'),
                         help='actual author of the design (implement/write/advice) or review target; repeat for coauthors; required for reviews')
+    parser.add_argument('--author-tier', choices=tuple('SABCDE'),
+                        help='band of the actual author; reviews take the same band on another vendor unless --tier is given')
     args = parser.parse_args()
     if args.assess is not None:
         try:
@@ -990,7 +1069,8 @@ def main():
                         assess=args.assess, recent_failure=args.recent_failure, paths=args.paths,
                         direct_band=args.direct_band, grounded=args.grounded, time_mode=args.time_mode,
                         time_tolerance_min=args.time_tolerance_min, time_cost=args.time_cost,
-                        time_refocus=args.time_refocus, time_slope=args.time_slope)
+                        time_refocus=args.time_refocus, time_slope=args.time_slope,
+                        author_tier=args.author_tier, vendor=args.vendor)
         route['shell'] = find_bash()
         if route['shell'] is None:
             native_review = (args.role in REVIEW_ROLES and route['available'] and route['separation_satisfied'] and

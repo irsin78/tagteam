@@ -8,7 +8,8 @@ Project policy supplies acceptance tests and domain risk. Verify actual outputs.
   independent review if uncertainty remains or the project requires it.
 - Tier 2: credible irreversible loss, unauthorized external action, weakened
   protection or other project-defined severe effect. Relevant regressions and
-  independent deep review at B or above. For changed guards, check rejection and
+  independent deep review at B or above; reviewers take the author's band on
+  another vendor (`harness-route.py --author-tier`). For changed guards, check rejection and
   confirm removing that protection fails the focused test. Guard docs alone are
   not a guard-behavior change.
 
