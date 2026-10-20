@@ -161,7 +161,9 @@ and OpenAI worker ultra remains refused.
 
 ## Separate authorship from review
 Identify actual designers before implementation and authors before review,
-including direct work/fallbacks. Use a different vendor to challenge assumptions;
+including direct work/fallbacks. Every design unit gets a cross-vendor
+`plan_review` before implementation (`rules/plan-check-gate.md`); every
+implementation gets its review per verification-tiering.md. Use a different vendor to challenge assumptions;
 keep the human-started host accountable. Pass --author-vendor (repeat for coauthors
 of the reviewed change); plan_review/review_gate/review_deep require it.
 Review plans against designers and code against implementers with a fresh worker.

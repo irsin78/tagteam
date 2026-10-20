@@ -176,8 +176,15 @@ nothing.
 
 ## 8. Evaluation loop (experimental)
 
-One phase: investigate → design → implement → evaluate → verdict. Rework is the next phase's
-`[PEER DESIGN]` citing the evaluation; no extra message kinds.
+One phase: investigate → design → design review → implement → evaluate → verdict. Rework is
+the next phase's `[PEER DESIGN]` citing the evaluation; no extra message kinds.
+
+- Design review (`rules/plan-check-gate.md`): before `[PEER DESIGN]` goes out, the design
+  section gets one `plan_review` from a vendor other than its author at the author's band
+  (`--author-vendor <designer> --author-tier <band>`; Fable design → Astra medium, Astra
+  design → Fable medium). One recheck after a BLOCKED; still blocked → ask the user, do not
+  send the design. The verdict (or "design review skipped: <reason>", Tier 0 only) is written
+  at the head of the design section, and blocking findings enter the citation rule below.
 
 - Investigation brief (first subsection of `plan.md §phase n`): the six `scout-brief.md`
   fields plus "handover from evaluation n-1" (every unmet or unverified acceptance id and
