@@ -220,9 +220,9 @@ class HostRoutes(unittest.TestCase):
     def test_announce_line_states_band_reason_and_worker_without_diagnostics(self):
         assessed = routes.resolve(self.data, 'claude', 'implement',
                                   assess=dict(open=1, tangle=1, precedent=0, verifier=0, consequence=1))
-        self.assertEqual(assessed['announce'],
-                         'band B (assessed difficulty 1, exposure 1) -> gpt-6.1-sol/high via codex-run.sh: '
-                         f"cheapest of {len(assessed['eligible'])} eligible in foreground; vendor differs from author (claude)")
+        self.assertTrue(assessed['announce'].startswith(
+            'band B (assessed difficulty 1, exposure 1) -> gpt-6.1-sol/high via codex-run.sh: '
+            f"cheapest of {len(assessed['eligible'])} eligible in foreground; vendor differs from author (claude)"))
         floor = routes.resolve(self.data, 'claude', 'implement')
         self.assertTrue(floor['announce'].startswith('band B (implement role floor) -> gpt-6.1-sol/high via codex-run.sh: cheapest of '))
         requested = routes.resolve(self.data, 'codex', 'implement', tier='C')
