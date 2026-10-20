@@ -2,7 +2,7 @@
   "schema_version": 3,
   "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-10-19",
+  "updated": "2026-10-20",
   "catalog_checked": "2026-10-19",
   "vendors": {
     "claude": {
@@ -179,7 +179,7 @@
     }
   },
   "vendor_precedence": {
-    "rationale": "Separating design, implementation and review across a perspective different from the author's comes first; spreading quota is a side benefit. The route is re-selected from the actual authoring vendor, risk and availability.",
+    "rationale": "Review by a vendor other than the author is the rule. Design and implementation may stay on one vendor when the orchestrator selects it for the task (harness-route.py --vendor, user decision 2026-10-20): the work then has a clearly separated vendor to switch to when one side runs out of quota. Without --vendor, implementation goes to the other vendor so that assumptions are challenged and quota spreads. The route is re-selected from the actual authoring vendor, risk and availability.",
     "overridden_by": "specialties and hard constraints (vision, web, isolation, platform, data that must not leave) beat this order. Never the other way round.",
     "by_orchestrator": {
       "claude": [
@@ -199,7 +199,8 @@
       "write",
       "decide"
     ],
-    "note": "Implementation, advisory and review candidates are ordered per host through the workers' role priorities: the OpenAI rows form the implementation lane on the Claude host, the Claude rows on the Codex host. The HTML specialty is kept."
+    "note": "Implementation, advisory and review candidates are ordered per host through the workers' role priorities: the OpenAI rows form the implementation lane on the Claude host, the Claude rows on the Codex host. The HTML specialty is kept.",
+    "implementation_vendor": "default: the other vendor per by_orchestrator; --vendor <author vendor> keeps it on the design author's vendor and the route reports same_vendor: true, separation_satisfied: false; reviews never accept --vendor"
   },
   "budget": {
     "declared_by": "user",
@@ -329,7 +330,7 @@
     "objective": "Sufficient task capability at efficient total completion cost/time, including handoff, verification and retries.",
     "adjust_when": "Repeated real-task mismatch; inspect existing run evidence and use local overrides for project-specific differences.",
     "scope": "Automatic assessment with volume compares USD plus declared waiting-time cost for workers and eligible direct work. Availability and trust precede the score; latency does not filter scored rows. Other paths retain measured-cost ordering with cost_tie_pct ties broken by TTFT. Bands are independent of metrics.index; S is fixed by vendor line.",
-    "cross_review": "Host chooses the orchestrator; actual artifact authors choose eligible implementers/reviewers. Pass all authors using --author-vendor. Reviews require explicit provenance and a fresh worker; different vendors do not guarantee correctness.",
+    "cross_review": "Host chooses the orchestrator; actual artifact authors choose eligible reviewers. Implementation may share the design author's vendor (--vendor); only reviews require a different vendor. Pass all authors using --author-vendor. Reviews require explicit provenance and a fresh worker; different vendors do not guarantee correctness.",
     "cost_tie_pct": 15,
     "attempt_cap": 3,
     "assessment": {

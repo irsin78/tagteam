@@ -1044,6 +1044,67 @@ class AuthorTierRoutes(unittest.TestCase):
         self.assertEqual((output['worker_id'], output['author_tier'], output['band']), ('sol61-high', 'B', 'B'))
 
 
+class VendorChoiceRoutes(unittest.TestCase):
+    """--vendor keeps implementation on the design author's vendor (user decision 2026-10-20)."""
+
+    def setUp(self):
+        public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
+        self.data = routes.merge_bindings(public, {})
+
+    def test_same_vendor_implementation_is_available_but_not_independent(self):
+        for host, vendor, expected in [('claude', 'claude', 'opus55-medium'), ('codex', 'openai', 'sol61-high')]:
+            for role in ('implement', 'write'):
+                with self.subTest(host=host, role=role):
+                    route = routes.resolve(self.data, host, role, vendor=vendor)
+                    self.assertEqual(route['vendor'], vendor)
+                    if role == 'implement':
+                        self.assertEqual((route['worker_id'], route['band']), (expected, 'B'))
+                    self.assertTrue(route['available'])
+                    self.assertTrue(route['same_vendor'])
+                    self.assertFalse(route['separation_satisfied'])
+                    self.assertTrue(route['reason'].startswith(f'vendor {vendor} selected: design and implementation stay on one vendor'))
+                    self.assertFalse(any(w['reason'] == 'vendor is an artifact author' for w in route['skipped']))
+                    self.assertTrue(all(w['reason'] == f'vendor {vendor} selected for this route'
+                                        for w in route['skipped'] if w['id'].startswith(('sol61', 'astra', 'fable', 'opus', 'sonnet')) and w['reason'].startswith('vendor')))
+
+    def test_other_vendor_selection_keeps_the_default_route_and_separation(self):
+        plain = routes.resolve(self.data, 'claude', 'implement')
+        chosen = routes.resolve(self.data, 'claude', 'implement', vendor='openai')
+        self.assertEqual(chosen['worker_id'], plain['worker_id'])
+        self.assertTrue(chosen['separation_satisfied'])
+        self.assertNotIn('same_vendor', chosen)
+        self.assertIn({'id': 'opus55-medium', 'reason': 'vendor openai selected for this route'}, chosen['skipped'])
+
+    def test_reviews_and_worker_reject_vendor(self):
+        for role in routes.REVIEW_ROLES:
+            with self.assertRaisesRegex(ValueError, 'reviews keep author separation'):
+                routes.resolve(self.data, 'claude', role, author_vendors=['claude'], vendor='claude')
+        with self.assertRaisesRegex(ValueError, 'cannot be combined with --vendor'):
+            routes.resolve(self.data, 'claude', 'implement', vendor='claude', worker='opus55-medium')
+        with self.assertRaisesRegex(ValueError, 'invalid vendor'):
+            routes.resolve(self.data, 'claude', 'implement', vendor='acme')
+
+    def test_same_vendor_retry_promotes_within_that_vendor(self):
+        route = routes.resolve(self.data, 'claude', 'implement', vendor='claude', retry_from='opus55-medium',
+                               retry_reason='reasoning', attempt=1)
+        self.assertEqual((route['worker_id'], route['band']), ('opus55-high', 'A'))
+        self.assertTrue(route['same_vendor'])
+        with self.assertRaisesRegex(ValueError, 'retry worker is not eligible'):
+            routes.resolve(self.data, 'claude', 'implement', retry_from='opus55-medium',
+                           retry_reason='reasoning', attempt=1)
+
+    def test_cli_passes_vendor_through(self):
+        stream = io.StringIO()
+        with patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
+                routes, 'find_bash', return_value='bash'), patch.object(
+                routes, 'budget_for', return_value='normal'), patch.object(sys, 'argv', [
+                'harness-route.py', '--host', 'claude', '--role', 'implement', '--vendor', 'claude']), \
+                contextlib.redirect_stdout(stream):
+            self.assertEqual(routes.main(), 0)
+        output = json.loads(stream.getvalue())
+        self.assertEqual((output['worker_id'], output['same_vendor'], output['available']), ('opus55-medium', True, True))
+
+
 class ReviewFollowUps(unittest.TestCase):
     """Review r1 notes: a failed S row is never repeated; null metrics never crash."""
 

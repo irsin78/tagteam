@@ -528,7 +528,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             retry_reason=None, attempt=0, allow_ultra=False, assess=None,
             recent_failure=False, direct_band=None, time_mode=None,
             time_tolerance_min=None, time_cost=None, paths=None, time_refocus=None,
-            time_slope=None, grounded=False, author_tier=None):
+            time_slope=None, grounded=False, author_tier=None, vendor=None):
     validate_bindings(data)
     root = Path.cwd() if root is None else Path(root)
     env = os.environ if env is None else env
@@ -543,6 +543,17 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('invalid author vendor')
     if worker is not None and tier is not None:
         raise ValueError('--worker cannot be combined with --tier')
+    same_vendor = False
+    if vendor is not None:
+        # The orchestrator may keep design and implementation on one vendor for a
+        # task (user decision 2026-10-20); only reviews must come from another vendor.
+        if vendor not in VENDORS:
+            raise ValueError('invalid vendor')
+        if role not in ('implement', 'write'):
+            raise ValueError('--vendor is only for implement/write; reviews keep author separation')
+        if worker is not None:
+            raise ValueError('--worker cannot be combined with --vendor')
+        same_vendor = vendor in authors
     derived_tier = None
     if author_tier is not None:
         # The reviewer takes the actual author's band on another vendor
@@ -596,7 +607,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('cross-lane S already failed; orchestrator decides (retry-policy 4)')
     if previous and (role not in previous['roles'] or
             exclusion(previous, role, host, True, data, root, env) or
-            (role in SEPARATED_ROLES and previous['vendor'] in authors)):
+            (role in SEPARATED_ROLES and previous['vendor'] in authors and previous['vendor'] != vendor)):
         raise ValueError('retry worker is not eligible for role/host/authors')
     keep = previous and retry_reason not in ('reasoning', 'refusal') and not (
         retry_reason == 'availability' and previous['vendor'] in exhausted)
@@ -621,9 +632,11 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             reason = 'unscored requires explicit --worker'
         if not reason and scoring and (w.get('metrics') or {}).get('cost') is None:
             reason = 'missing metrics.cost for score'
+        if not reason and vendor is not None and w['vendor'] != vendor:
+            reason = f'vendor {vendor} selected for this route'
         if not reason:
             diagnostic.append(w)
-            if role in SEPARATED_ROLES and w['vendor'] in authors:
+            if role in SEPARATED_ROLES and w['vendor'] in authors and not same_vendor:
                 reason = 'vendor is an artifact author'
         if reason:
             skipped.append({'id': w['id'], 'reason': reason})
@@ -841,6 +854,11 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         route['claude_role'] = 'web'
     if role in SEPARATED_ROLES:
         route.update(author_vendors=sorted(authors), separation_satisfied=separation_ok)
+    if same_vendor:
+        route['same_vendor'] = True
+        route['separation_satisfied'] = False
+        route['reason'] = (f'vendor {vendor} selected: design and implementation stay on one vendor; '
+                           f'the review must come from another vendor (--author-vendor {vendor}); ') + route['reason']
     if cross_lane_s:
         route['cross_lane_s'] = True
         route['separation_satisfied'] = False
@@ -889,7 +907,9 @@ def main():
     parser.add_argument('--role', choices=ROLES, required=True)
     parser.add_argument('--worker')
     parser.add_argument('--launcher-default', action='store_true')
-    parser.add_argument('--vendor', choices=VENDORS)
+    parser.add_argument('--vendor', choices=VENDORS,
+                        help='launcher default: the vendor to resolve; routing: keep implement/write on this vendor '
+                             'even when it authored the design (reviews still need another vendor)')
     parser.add_argument('--tier', choices=tuple('SABCDE'), help='capability band floor')
     parser.add_argument('--latency', choices=('interactive', 'foreground', 'detached'))
     parser.add_argument('--retry-from')
@@ -961,7 +981,7 @@ def main():
                         direct_band=args.direct_band, grounded=args.grounded, time_mode=args.time_mode,
                         time_tolerance_min=args.time_tolerance_min, time_cost=args.time_cost,
                         time_refocus=args.time_refocus, time_slope=args.time_slope,
-                        author_tier=args.author_tier)
+                        author_tier=args.author_tier, vendor=args.vendor)
         route['shell'] = find_bash()
         if route['shell'] is None:
             native_review = (args.role in REVIEW_ROLES and route['available'] and route['separation_satisfied'] and

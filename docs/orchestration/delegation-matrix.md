@@ -163,6 +163,13 @@ including direct work/fallbacks. Use a different vendor to challenge assumptions
 keep the human-started host accountable. Pass --author-vendor (repeat for coauthors
 of the reviewed change); plan_review/review_gate/review_deep require it.
 Review plans against designers and code against implementers with a fresh worker.
+Implementation and writing may stay on the design author's vendor when the task
+calls for it: pass `--vendor <that vendor>`; the router then returns
+`same_vendor: true` with `separation_satisfied: false`, and the review that
+follows must name that vendor as author so it goes to another vendor. Reviews
+never accept `--vendor`. Keeping design and implementation on one vendor leaves
+the other vendor free as the review lane and as the fallback when one side runs
+out of quota.
 Recompute when authorship changes; never hide a coauthor or call self-review
 independent. Missing independence is unavailable. Acceptance still needs actual
 outputs and checks. Review triggers, risk floors and limits: verification-tiering.md.
