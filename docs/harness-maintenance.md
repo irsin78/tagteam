@@ -101,7 +101,10 @@ installation documents, the instructions loaded at host start, and additional
 reads during work. Claude rules without a path condition are loaded
 automatically, so renaming them or moving them within the same folder does not
 reduce load cost. Keep detailed procedures in the installation/launcher guides, operation manual and skills and
-read only the section that is needed. For Codex, check the entry instructions'
+read only the section that is needed. A staged-read instruction (read X now,
+read Y once a later condition holds) puts each stage in its own sentence, names
+the exact headings, and repeats the later pointer in the document that is open
+at that stage, such as the launch recipe. For Codex, check the entry instructions'
 explicit read paths and the actual additional reads separately.
 
 From the existing records, check the delay until the first task-related

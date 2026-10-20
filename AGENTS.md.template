@@ -33,13 +33,14 @@ change the host; non-Git projects use the process launchers from the root.
 Resolve delegated work with
 `python .claude/scripts/harness-route.py --host <host> --role implement`.
 
-Before choosing direct implementation or delegation, read only "Direct work or
-delegation" in `docs/orchestration/delegation-matrix.md`; when delegating, also
-its assignment, author-separation and announcement sections. Direct work or
-delegation is decided by the cost score in the delegation matrix, with the
-scout brief first (Thin orchestration). Read the fallback
-section when a vendor is unavailable or exhausted (no probe needed), and
-`docs/orchestration/retry-policy.md` when a run fails.
+Read `docs/orchestration/delegation-matrix.md` in stages. Before choosing
+direct implementation or delegation, read only "Direct work or delegation":
+the decision is its cost score, with the scout brief first (Thin
+orchestration). After deciding to delegate and before the first launch, read
+"Assign a worker", "Separate authorship from review" and "User-facing
+delegation announcement"; the announcement is repeated before every launch.
+Read "Availability and fallback" when a vendor is unavailable or exhausted
+(no probe needed), and `docs/orchestration/retry-policy.md` when a run fails.
 Verification depth and inspection of actual worker output follow
 `.claude/rules/verification-tiering.md` and `delegate-output-trust.md`.
 Required checks that cannot pass are incomplete, not a reason to loop.

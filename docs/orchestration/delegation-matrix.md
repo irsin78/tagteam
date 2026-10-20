@@ -74,8 +74,9 @@ the cheapest tie and the faster TTFT wins. `--tier` is a floor (that band or hig
 cell; `--latency interactive|foreground|detached` overrides the role default.
 `floor_met: false` means no eligible row met the floor in that latency class and
 the router returned the best lower one; announce it or change the class/vendor.
-Use `--worker <id>` for conditional rows. The router's `reason` line (band,
-latency, choice, ties, `skipped`) is what the delegation announcement quotes.
+Use `--worker <id>` for conditional rows. The router's `announce` line is what
+the delegation announcement quotes; `reason` (ties, `skipped`, scores) is the
+diagnostic detail.
 Benchmarks are initial evidence; adjust for repeated real-task mismatches.
 Use `python .claude/scripts/harness-route.py --host <claude|codex> --role <role>`
 from the project root; pass its model, effort and sandbox to the launcher recipe.
@@ -191,7 +192,10 @@ controlling instructions, omitted inputs and follow-up context.
 ## User-facing delegation announcement
 Before each launch, briefly state task, capability band with task-specific reason,
 actual resolved model/effort and why it fits (capability, cost/latency, specialty
-or author separation). Capability band S-E differs from verification Tier 0-2.
+or author separation). The router's `announce` line carries all of it except the
+task: state the task in one clause and quote that line verbatim, replacing
+model/effort only when the launcher call differs (say why). Capability band S-E
+differs from verification Tier 0-2.
 Unknown/inherited settings stay explicit; a planned route is not a running worker.
 Announce material changes before retry/fallback or direct takeover, including lost
 independence. Unchanged retries may reference the first notice; polling needs none.

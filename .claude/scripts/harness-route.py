@@ -922,7 +922,72 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             if route['suggested_timeout_s'] > FOREGROUND_TIMEOUT_CAP_S:
                 route['needs_detached'] = True
                 route['reason'] += f' (exceeds the {FOREGROUND_TIMEOUT_CAP_S} s foreground cap; run with -b --wait)'
+    route['announce'] = announce_line(route, assessment, role, tier, latency, len(ordered),
+                                      scoring, fallback, retry_reason, refused_vendor, keep,
+                                      bool(worker), authors, cross_lane_s, ranked_scores)
     return route
+
+
+def announce_line(route, assessment, role, tier, latency, eligible_count, scoring, fallback,
+                  retry_reason, refused_vendor, keep, explicit_worker, authors, cross_lane_s,
+                  ranked_scores):
+    """One user-facing line: band with its reason -> model/effort via launcher: why it fits.
+
+    The orchestrator states the task and quotes this line verbatim before each launch
+    (delegation-matrix.md, "User-facing delegation announcement"). `reason` keeps the
+    diagnostic detail (ties, skipped rows, scores); this line never lists them.
+    """
+    floor = route['band']
+    if assessment is not None:
+        why_band = f"assessed difficulty {assessment['difficulty']}, exposure {assessment['exposure']}"
+        if assessment.get('recent_failure'):
+            why_band += ', raised after a recent reasoning failure'
+        if assessment['applied'] != assessment['computed']:
+            why_band += f', {role} role minimum'
+    elif tier:
+        why_band = f'--tier {tier} requested'
+    elif route.get('author_tier'):
+        why_band = f"author band {route['author_tier']}"
+    else:
+        why_band = f'{role} role floor'
+    head = f'band {floor} ({why_band})'
+    if not route['floor_met']:
+        head = f"band {floor} not met in {latency}; best available is band {route['tier']}"
+    effort = route.get('effort') or 'unspecified'
+    launcher = Path(route['launcher']).name if route.get('launcher') else 'native worker'
+    why = []
+    if explicit_worker:
+        why.append('explicit --worker')
+    elif retry_reason == 'deadline':
+        why.append('deadline retry keeps the worker')
+    elif keep:
+        why.append(f'{retry_reason} retry keeps the worker')
+    elif retry_reason == 'refusal':
+        why.append(f'other vendor after {refused_vendor} refused')
+    elif retry_reason == 'reasoning':
+        why.append('promoted after a reasoning failure')
+    elif scoring:
+        why.append(f'best cost score of {eligible_count} eligible')
+    elif fallback:
+        why.append(f'best lower band available in {latency}')
+    else:
+        why.append(f'cheapest of {eligible_count} eligible in {latency}')
+    if cross_lane_s:
+        why.append('cross-lane S, author separation waived once')
+    elif route.get('same_vendor'):
+        why.append('same vendor as the author; the review must cross vendors')
+    elif role in SEPARATED_ROLES and route['vendor'] not in authors:
+        why.append(f"vendor differs from author ({'/'.join(sorted(authors))})")
+    if route.get('needs_detached'):
+        why.append('detached run (-b --wait)')
+    line = f"{head} -> {route['model']}/{effort} via {launcher}: " + '; '.join(why)
+    if scoring and route.get('decision') == 'direct' and len(ranked_scores) > 1:
+        winner, runner = ranked_scores[0], ranked_scores[1]
+        line = (f"cost score favors direct work (${winner['total']:.2f} vs {runner['option']} "
+                f"${runner['total']:.2f}); if delegated anyway: " + line)
+    if not route.get('available', True):
+        line = 'unavailable (see reason): ' + line
+    return line
 
 
 def main():
@@ -1017,6 +1082,7 @@ def main():
                 'no usable Bash for process launchers; independent review unavailable; report required review as incomplete'
                 if args.role in REVIEW_ROLES
                 else 'no usable Bash for process launchers; follow native fallback')
+            route['announce'] = 'unavailable: no usable Bash for process launchers; ' + route['announce']
     except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
         print('HARNESS_DENIED: route configuration: ' + str(error), file=sys.stderr)
         return 4

@@ -16,6 +16,13 @@ the prompt (rules/security-boundary.md).
 
 ## Invocation
 
+0. Announce the launch to the user first: the task in one clause, then the
+   router output's `announce` line verbatim (band with its reason, resolved
+   model/effort with why it fits; "User-facing delegation announcement" in
+   `docs/orchestration/delegation-matrix.md`). If the `-m`/`-e` you pass
+   differ from the route, replace that part with the actual values and add
+   the reason. Repeat before every launch (an unchanged retry may reference
+   the first notice); it is a progress notice, not an approval gate.
 1. Write the fully self-contained task prompt to a scratch file
    (single-quoted heredoc). It must: give every file agy WRITES an
    ABSOLUTE path (headless agy resolves relative paths and "the current
@@ -31,8 +38,10 @@ the prompt (rules/security-boundary.md).
    The model is the agy CLI default unless `-m MODEL` passes `--model` explicitly.
    Do not report a binding candidate as the model used without passing it.
    Select model/effort from the router's launcher default
-   (`harness-route.py --launcher-default --vendor google --role implement`:
-   band-floor B, foreground, cheapest measured row), passing `-m`/`-e` explicitly.
+   (`harness-route.py --launcher-default --vendor google --role write`: agy rows
+   carry only the write role, so `--role implement` finds no row; band floor C,
+   foreground, availability and trust first, then the cheapest measured row),
+   passing `-m`/`-e` explicitly.
    Retry settings follow retry-policy.md: one worker attempt per retry, attempt cap 3.
    Other defaults: `-t 570` (above 570 only with `-b`; the Bash tool kills a
    foreground call at 600 s) / logs in `.claude/agy-logs/`. `-x` lists the

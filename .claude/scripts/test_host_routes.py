@@ -37,13 +37,14 @@ class HostRoutes(unittest.TestCase):
     @unittest.skipUnless((ROOT / 'AGENTS.md.template').exists(), 'template source only')
     def test_direct_delegation_instructions_point_to_score_and_scout(self):
         instructions = (ROOT / 'AGENTS.md.template').read_text(encoding='utf-8')
-        paragraph = ('Before choosing direct implementation or delegation, read only "Direct work or '
-                     'delegation" in `docs/orchestration/delegation-matrix.md`; when delegating, also '
-                     'its assignment, author-separation and announcement sections. Direct work or '
-                     'delegation is decided by the cost score in the delegation matrix, with the '
-                     'scout brief first (Thin orchestration). Read the fallback '
-                     'section when a vendor is unavailable or exhausted (no probe needed), and '
-                     '`docs/orchestration/retry-policy.md` when a run fails.')
+        paragraph = ('Read `docs/orchestration/delegation-matrix.md` in stages. Before choosing '
+                     'direct implementation or delegation, read only "Direct work or delegation": '
+                     'the decision is its cost score, with the scout brief first (Thin '
+                     'orchestration). After deciding to delegate and before the first launch, read '
+                     '"Assign a worker", "Separate authorship from review" and "User-facing '
+                     'delegation announcement"; the announcement is repeated before every launch. '
+                     'Read "Availability and fallback" when a vendor is unavailable or exhausted '
+                     '(no probe needed), and `docs/orchestration/retry-policy.md` when a run fails.')
         self.assertIn(paragraph, ' '.join(instructions.split()))
         for path in [ROOT / 'AGENTS.md.template', *sorted((ROOT / '.claude/rules').glob('*.md'))]:
             with self.subTest(path=path):
@@ -215,6 +216,45 @@ class HostRoutes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'attempt cap reached'):
             routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
                            retry_reason='reasoning', attempt=3)
+
+    def test_announce_line_states_band_reason_and_worker_without_diagnostics(self):
+        assessed = routes.resolve(self.data, 'claude', 'implement',
+                                  assess=dict(open=1, tangle=1, precedent=0, verifier=0, consequence=1))
+        self.assertEqual(assessed['announce'],
+                         'band B (assessed difficulty 1, exposure 1) -> gpt-6.1-sol/high via codex-run.sh: '
+                         f"cheapest of {len(assessed['eligible'])} eligible in foreground; vendor differs from author (claude)")
+        floor = routes.resolve(self.data, 'claude', 'implement')
+        self.assertTrue(floor['announce'].startswith('band B (implement role floor) -> gpt-6.1-sol/high via codex-run.sh: cheapest of '))
+        requested = routes.resolve(self.data, 'codex', 'implement', tier='C')
+        self.assertTrue(requested['announce'].startswith('band C (--tier C requested) -> '))
+        self.assertIn('vendor differs from author (openai)', requested['announce'])
+        lower = routes.resolve(self.sol61_unverified(), 'claude', 'implement')
+        self.assertTrue(lower['announce'].startswith('band B not met in foreground; best available is band '))
+        self.assertIn('best lower band available in foreground', lower['announce'])
+        explicit = routes.resolve(self.data, 'codex', 'implement', worker='opus55-high')
+        self.assertIn('-> claude-opus-5-5/high via claude-run.sh: explicit --worker', explicit['announce'])
+        deadline = routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
+                                  retry_reason='deadline', attempt=1)
+        self.assertIn(': deadline retry keeps the worker; ', deadline['announce'])
+        self.assertTrue(deadline['announce'].endswith('; detached run (-b --wait)'))
+        refusal = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-high',
+                                 author_vendors=['google'], retry_reason='refusal', attempt=1)
+        self.assertIn(': other vendor after openai refused; vendor differs from author (google)', refusal['announce'])
+        review = routes.resolve(self.data, 'claude', 'review_deep', author_vendors=['claude'])
+        self.assertIn('vendor differs from author (claude)', review['announce'])
+        for result in (assessed, floor, requested, lower, explicit, deadline, refusal, review):
+            with self.subTest(announce=result['announce']):
+                self.assertNotIn('skipped', result['announce'])
+                self.assertNotIn('ties', result['announce'])
+                self.assertLess(len(result['announce']), 260)
+        stream = io.StringIO()
+        with patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
+                routes, 'find_bash', return_value=None), patch.object(
+                routes, 'budget_for', return_value='normal'), patch.object(sys, 'argv', [
+                'harness-route.py', '--host', 'claude', '--role', 'implement']), contextlib.redirect_stdout(stream):
+            self.assertEqual(routes.main(), 2)
+        self.assertTrue(json.loads(stream.getvalue())['announce'].startswith(
+            'unavailable: no usable Bash for process launchers; band B (implement role floor)'))
 
     def test_deadline_retry_keeps_worker_and_runs_detached(self):
         result = routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
@@ -400,7 +440,8 @@ class HostRoutes(unittest.TestCase):
         budget = 'exhausted:openai,claude'
         self.assertEqual(routes.budget_for(self.data, {'HARNESS_BUDGET': budget}), budget)
         result = routes.resolve(self.data, 'claude', 'write', budget=budget, latency='detached')
-        self.assertEqual(result['worker_id'], 'flash-medium')
+        # Argon (no trust low) precedes the trust-low Flash rows once other vendors are exhausted.
+        self.assertEqual(result['worker_id'], 'argon-high')
         self.assertTrue(result['available'])
         result = routes.resolve(self.data, 'claude', 'write', budget=budget + ',google', latency='detached')
         self.assertFalse(result['available'])
@@ -1059,6 +1100,8 @@ class AuthorTierRoutes(unittest.TestCase):
             self.assertEqual(routes.main(), 0)
         output = json.loads(stream.getvalue())
         self.assertEqual((output['worker_id'], output['author_tier'], output['band']), ('sol61-high', 'B', 'B'))
+        self.assertTrue(output['announce'].startswith('band B (author band B) -> gpt-6.1-sol/high via codex-run.sh: '))
+        self.assertTrue(output['announce'].endswith('vendor differs from author (claude)'))
 
 
 class VendorChoiceRoutes(unittest.TestCase):
@@ -1186,6 +1229,9 @@ class SameVendorDefault(unittest.TestCase):
             self.assertEqual(routes.main(), 0)
         output = json.loads(stream.getvalue())
         self.assertEqual((output['worker_id'], output['same_vendor']), ('opus55-medium', True))
+        self.assertEqual(output['announce'],
+                         'band B (implement role floor) -> claude-opus-5-5/medium via claude-run.sh: cheapest of 2 eligible '
+                         'in foreground; same vendor as the author; the review must cross vendors')
 
 
 class ReviewFollowUps(unittest.TestCase):
@@ -1292,8 +1338,10 @@ class AssessmentRoutes(unittest.TestCase):
         self.assertEqual(routes.resolve(self.data, 'codex', 'web')['worker_id'], 'haiku55')
         self.assertEqual((self.data['bands']['S']['foreground_effort'], self.data['bands']['S']['detached_effort']),
                          ('medium', 'medium'))
-        # Gemini rows are a last resort (Flash: cross-check 2026-10-06, user decision; Argon: no evidence yet).
-        self.assertEqual({w['id'] for w in self.data['workers'] if w.get('trust') == 'low'}, {'flash-medium', 'flash-low', 'argon-high'})
+        # Gemini Flash is a last resort (cross-check 2026-10-06, user decision); Argon is
+        # active without trust low (rollout + FrontierSWE evidence, 2026-10-17), so it is the agy write default.
+        self.assertEqual({w['id'] for w in self.data['workers'] if w.get('trust') == 'low'}, {'flash-medium', 'flash-low'})
+        self.assertEqual(routes.launcher_default(self.data, 'google', 'write')['id'], 'argon-high')
         self.assertNotIn('trust_note', self.data['selection_policy'])
         self.assertNotIn('promotion_delta', self.data['selection_policy'])
         self.assertEqual(routes.launcher_default(self.data, 'openai', 'image_verify')['id'], 'sol61-medium')

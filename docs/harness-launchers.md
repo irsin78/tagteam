@@ -31,10 +31,11 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
      not exhaustion: route it as the `refusal` retry class (retry-policy.md), the
      same band on another vendor, and do not record `--exhausted`.
 
-2. First read only "Direct work or delegation" in
-   `docs/orchestration/delegation-matrix.md`;
-   also assignment/author-separation sections if delegating. Small direct work
-   needs no launcher. Get routes with
+2. Read `docs/orchestration/delegation-matrix.md` in stages: before choosing
+   direct work or delegation, only "Direct work or delegation"; after deciding
+   to delegate and before the first launch, also "Assign a worker", "Separate
+   authorship from review" and "User-facing delegation announcement". Small
+   direct work needs no launcher. Get routes with
    `python .claude/scripts/harness-route.py --host codex --role implement`
    (`--host claude` on Claude). Use JSON launcher/model/effort/sandbox/shell paths;
    lookup skips WindowsApps for Git Bash without executing work/changing settings.
@@ -45,7 +46,7 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
    (Fable/Astra) and only chosen by `--tier S`. `--latency
    interactive|foreground|detached` sets the TTFT class. Separated roles still
    apply author separation first. `floor_met: false` means only a lower band was
-   available; quote the output's `reason` in the announcement. Retries use
+   available; the output's `announce` line says so. Retries use
    `--retry-from <worker_id> --retry-reason <class> --attempt N` (retry-policy).
    Implement/write/decide assume the orchestrator designed the work; otherwise
    pass `--author-vendor <vendor>`. Always specify actual authors for `plan_review`,
@@ -55,7 +56,13 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
    `--author-vendor claude` selects OpenAI. Mandatory dual reviews must also use
    different vendors. No suitable route means unavailable, never self-review.
 
-3. Write goal, scope, existing-change preservation, constraints, verification, and
+3. Before calling the launcher, announce the launch to the user: the task in one
+   clause, then the router output's `announce` line verbatim ("User-facing
+   delegation announcement" in `docs/orchestration/delegation-matrix.md`). If
+   the `-m`/`-e` you pass differ from the route, replace that part with the
+   actual values and the reason. Repeat before every launch (an unchanged retry
+   may reference the first notice); it is a progress notice, not an approval gate.
+   Write goal, scope, existing-change preservation, constraints, verification, and
    output contract to a prompt file; write any launcher verifier separately first.
    Use routed JSON values for MODEL/EFFORT. Run `.sh` with Git Bash even from
    PowerShell, never WindowsApps WSL bash.
