@@ -354,11 +354,12 @@ class HostRoutes(unittest.TestCase):
             data = routes.merge_bindings(data, {'vendors': {'local': {'endpoint': {'base_url': 'http://localhost', 'model': 'auto'}}}})
             self.assertEqual(explore(worker='local-reader', latency='detached')['worker_id'], 'local-reader')
             settings.write_text(json.dumps({'permissions': {'allow': ['write_file_other(*)']}}))
-            data = routes.merge_bindings(data, {'workers_local': [{'id': 'haiku55', 'requires': {'binary': 'test-reader'}}]})
+            data = routes.merge_bindings(data, {'workers_local': [{'id': 'haiku55', 'requires': {'binary': 'test-reader'}},
+                                                                 {'id': 'luna6-low', 'requires': {'binary': 'test-reader'}}]})
             with patch.object(routes.shutil, 'which', return_value=None):
                 with self.assertRaises(IndexError): explore()
             with patch.object(routes.shutil, 'which', return_value='/bin/test-reader'):
-                self.assertEqual(explore()['worker_id'], 'haiku55')
+                self.assertEqual(explore()['worker_id'], 'luna6-low')  # cheapest E row on the Codex host
 
     def test_workers_local_recursive_merge_and_array_replacement(self):
         with tempfile.TemporaryDirectory() as temp:
