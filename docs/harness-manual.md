@@ -106,14 +106,15 @@ revoked-token call.
 Follow the
 [delegation matrix](orchestration/delegation-matrix.md#user-facing-delegation-announcement)
 and AGENTS.md on both hosts. Immediately before implementation, review, or exploration
-delegation, announce the task, tier rationale, actual model/effort, and selection
-reason. For example:
+delegation, state the task in one clause and quote the router output's `announce`
+line verbatim. For example:
 
-> The cache invalidation fix is a tier B task requiring reasoning across modules.
-> I will assign implementation to `<assigned model>` (effort: `<configured value>`)
-> from a different vendor than the designer to cross-check assumptions.
+> Cache invalidation fix: band B (assessed difficulty 1, exposure 1) ->
+> gpt-6.1-sol/medium via codex-run.sh: cheapest of 2 eligible in foreground;
+> vendor differs from author (claude)
 
-Fill the angle brackets from routing results.
+When the launcher call's model/effort differ from the route, replace that part
+with the actual values and the reason.
 Capability bands S–E differ from verification risk Tiers 0–2. Announce model changes and
 reasons; this message requires no renewed approval.
 

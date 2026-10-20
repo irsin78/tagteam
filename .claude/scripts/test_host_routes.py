@@ -207,6 +207,45 @@ class HostRoutes(unittest.TestCase):
             routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
                            retry_reason='reasoning', attempt=3)
 
+    def test_announce_line_states_band_reason_and_worker_without_diagnostics(self):
+        assessed = routes.resolve(self.data, 'claude', 'implement',
+                                  assess=dict(open=1, tangle=1, precedent=0, verifier=0, consequence=1))
+        self.assertEqual(assessed['announce'],
+                         'band B (assessed difficulty 1, exposure 1) -> gpt-6.1-sol/medium via codex-run.sh: '
+                         f"cheapest of {len(assessed['eligible'])} eligible in foreground; vendor differs from author (claude)")
+        floor = routes.resolve(self.data, 'claude', 'implement')
+        self.assertTrue(floor['announce'].startswith('band B (implement role floor) -> gpt-6.1-sol/medium via codex-run.sh: cheapest of '))
+        requested = routes.resolve(self.data, 'codex', 'implement', tier='C')
+        self.assertTrue(requested['announce'].startswith('band C (--tier C requested) -> '))
+        self.assertIn('vendor differs from author (openai)', requested['announce'])
+        lower = routes.resolve(self.sol61_unverified(), 'claude', 'implement')
+        self.assertTrue(lower['announce'].startswith('band B not met in foreground; best available is band '))
+        self.assertIn('best lower band available in foreground', lower['announce'])
+        explicit = routes.resolve(self.data, 'codex', 'implement', worker='opus55-high')
+        self.assertIn('-> claude-opus-5-5/high via claude-run.sh: explicit --worker', explicit['announce'])
+        deadline = routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
+                                  retry_reason='deadline', attempt=1)
+        self.assertIn(': deadline retry keeps the worker; ', deadline['announce'])
+        self.assertTrue(deadline['announce'].endswith('; detached run (-b --wait)'))
+        refusal = routes.resolve(self.data, 'claude', 'implement', retry_from='sol61-high',
+                                 author_vendors=['google'], retry_reason='refusal', attempt=1)
+        self.assertIn(': other vendor after openai refused; vendor differs from author (google)', refusal['announce'])
+        review = routes.resolve(self.data, 'claude', 'review_deep', author_vendors=['claude'])
+        self.assertIn('vendor differs from author (claude)', review['announce'])
+        for result in (assessed, floor, requested, lower, explicit, deadline, refusal, review):
+            with self.subTest(announce=result['announce']):
+                self.assertNotIn('skipped', result['announce'])
+                self.assertNotIn('ties', result['announce'])
+                self.assertLess(len(result['announce']), 260)
+        stream = io.StringIO()
+        with patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
+                routes, 'find_bash', return_value=None), patch.object(
+                routes, 'budget_for', return_value='normal'), patch.object(sys, 'argv', [
+                'harness-route.py', '--host', 'claude', '--role', 'implement']), contextlib.redirect_stdout(stream):
+            self.assertEqual(routes.main(), 2)
+        self.assertTrue(json.loads(stream.getvalue())['announce'].startswith(
+            'unavailable: no usable Bash for process launchers; band B (implement role floor)'))
+
     def test_deadline_retry_keeps_worker_and_runs_detached(self):
         result = routes.resolve(self.data, 'codex', 'implement', retry_from='opus55-high',
                                 retry_reason='deadline', attempt=1)
