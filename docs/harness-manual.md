@@ -115,7 +115,9 @@ line verbatim. For example:
 > vendor differs from author (claude)
 
 When the launcher call's model/effort differ from the route, replace that part
-with the actual values and the reason.
+with the actual values and the reason. An announce line ending in `long run: …`
+means the route set `long_run: true`: say which change unit this launch covers
+and pass `-P` (delegation-matrix.md, "Assign a worker").
 Capability bands S–E differ from verification risk Tiers 0–2. Announce model changes and
 reasons; this message requires no renewed approval.
 

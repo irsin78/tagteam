@@ -106,7 +106,11 @@ operation on unverified platforms is not promised.
    .claude/.delegation-log.jsonl
    .claude/.preflight-status
    .claude/.mission-open/
+   .harness/
    ```
+   `.harness/progress/` holds the per-run progress files that delegates append
+   milestones to (launchers export `HARNESS_PROGRESS_FILE`); it sits outside
+   `.claude/` because Claude Code refuses delegate writes there.
    `settings.local.json` accumulates local absolute paths, usernames, scratch
    paths, and session lookup traces. Global gitignore protection does not travel
    with clones/drop-ins; the other entries are local hook evidence.

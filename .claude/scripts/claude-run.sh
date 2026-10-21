@@ -37,6 +37,7 @@ LOG_DIR=.claude/claude-logs
 PROMPT_FILE=
 VERIFY_CMD=
 VERIFY_GIVEN=0
+LONG_RUN=0
 DETACH=0
 WORKER_ROLE=implement
 TIMEOUT=570
@@ -53,7 +54,8 @@ timing_init "$LAUNCH_CLOCK"
 . "$SCRIPT_DIR/run-state.sh" || exit 4
 
 usage() {
-    echo 'Usage: claude-run.sh -p <prompt-file> [-m MODEL] [-e EFFORT] [-a implement|web] [-s workspace-write|read-only] [-v VERIFY_SCRIPT_FILE] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b]' >&2
+    echo 'Usage: claude-run.sh -p <prompt-file> [-m MODEL] [-e EFFORT] [-a implement|web] [-s workspace-write|read-only] [-v VERIFY_SCRIPT_FILE] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b] [-P]' >&2
+    echo '       -P marks a long run: the worker must write milestones to the progress file; none reported -> PROGRESS_WARNING' >&2
     echo '       -t above 570 requires -b (the Bash tool caps a foreground call at 600 s)' >&2
     echo '       claude-run.sh --status <RUN_ID>' >&2
     echo '       claude-run.sh --wait <RUN_ID> [-t SECONDS<=570]' >&2
@@ -66,7 +68,7 @@ usage() {
 # Read-back commands: no delegation, no quota — only the state record.
 launcher_readback "$@"
 
-while getopts ":p:m:e:a:s:v:l:t:b" opt; do
+while getopts ":p:m:e:a:s:v:l:t:bP" opt; do
     case "$opt" in
         p) PROMPT_FILE=$OPTARG ;;
         m) MODEL=$OPTARG ;;
@@ -77,9 +79,48 @@ while getopts ":p:m:e:a:s:v:l:t:b" opt; do
         l) LOG_DIR=$OPTARG ;;
         t) TIMEOUT=$OPTARG ;;
         b) DETACH=1 ;;
+        P) LONG_RUN=1 ;;
         *) usage ;;
     esac
 done
+
+# ---- progress file (worker-written milestones, launcher-read) ----
+# The worker appends one line per milestone; the launcher only reports the
+# count and the path. Never interpolated into the constant role instruction:
+# the path travels as a separate launcher-generated sentence and as
+# HARNESS_PROGRESS_FILE in the child environment. Read-only runs get neither
+# (plan mode / a read-only sandbox cannot write it). The file lives under
+# .harness/progress/ (gitignored by the install contract), not under the log
+# directory: Claude Code refuses delegate writes to any `.claude/` path
+# (measured 2026-10-21, Write denied with --permission-prompts none).
+PROGRESS_DIR=${HARNESS_PROGRESS_DIR:-.harness/progress}
+progress_path_for_worker() {
+    local dir base
+    dir=$(cd "$(dirname "$1")" 2>/dev/null && pwd) || { printf '%s' "$1"; return; }
+    base=$(basename "$1")
+    if command -v cygpath >/dev/null 2>&1; then cygpath -m "$dir/$base"; else printf '%s' "$dir/$base"; fi
+}
+progress_count() {
+    [ -s "$1" ] || { echo 0; return; }
+    # Only well-formed milestone lines count; prose or other notes do not.
+    grep -c -E '^- done: .* \| next: .* \| blocked: ' "$1" 2>/dev/null || echo 0
+}
+progress_report() {
+    local count
+    if [ "$SANDBOX" = read-only ]; then
+        echo "PROGRESS: disabled (read-only run; no progress file requested)"
+        return
+    fi
+    count=$(progress_count "$PROGRESS_FILE")
+    if [ "$count" -gt 0 ]; then
+        echo "PROGRESS: $PROGRESS_FILE ($count milestones)"
+    else
+        echo "PROGRESS: none ($PROGRESS_FILE not written)"
+    fi
+    if [ "$LONG_RUN" -eq 1 ] && [ "$count" -eq 0 ]; then
+        echo "PROGRESS_WARNING: -P long run reported no milestones; read the trace/log before trusting the result and split the next unit smaller"
+    fi
+}
 
 # ---- bindings (same resolution as codex-run.sh: public + local, local
 # wins key-by-key; the first active Claude implement worker supplies the Claude
@@ -186,6 +227,7 @@ command -v claude >/dev/null 2>&1 || {
 
 launcher_timeout || exit 4
 
+mkdir -p "$PROGRESS_DIR" 2>/dev/null
 mkdir -p "$LOG_DIR" 2>/dev/null || {
     echo "CLAUDE_UNAVAILABLE: cannot create log dir $LOG_DIR" >&2
     exit 2
@@ -223,6 +265,7 @@ REPORT_FILE=$(report_file "$RUN_ID")
 RUN_LOG="$LOG_DIR/run-$TIMESTAMP.log"
 RUN_JSON="$LOG_DIR/run-$TIMESTAMP.json"
 LAST_MSG="$LOG_DIR/lastmsg-$TIMESTAMP.txt"
+PROGRESS_FILE="$PROGRESS_DIR/progress-$TIMESTAMP.md"
 CHANGED_FILE=$(mktemp "${TMPDIR:-/tmp}/claude-changed.XXXXXX") || exit 2
 CP_BEFORE=$(mktemp "${TMPDIR:-/tmp}/claude-cp-before.XXXXXX") || exit 2
 CP_AFTER=$(mktemp "${TMPDIR:-/tmp}/claude-cp-after.XXXXXX") || exit 2
@@ -257,7 +300,7 @@ control_before
 # Only this run's own output files are excluded. A configurable -l directory
 # may also contain project files (including -l .); never hide the whole tree.
 WORKSPACE_EXCLUDES=(
-    --exclude "$RUN_LOG" --exclude "$RUN_JSON" --exclude "$LAST_MSG"
+    --exclude "$RUN_LOG" --exclude "$RUN_JSON" --exclude "$LAST_MSG" --exclude "$PROGRESS_FILE"
     --exclude "$LOG_DIR/baseline-$TIMESTAMP.diff"
     --exclude "$SETTINGS_LOCAL_SNAP"
     --exclude "$LOG_DIR/verify-$TIMESTAMP.log" --exclude "$LOG_DIR/launcher-$RUN_ID.out"
@@ -315,6 +358,12 @@ WEB_ARGS=()
 if [ "$WORKER_ROLE" = web ]; then
     SYSTEM_PROMPT="$DELEGATE_INSTRUCTION$WEB_INSTRUCTION"
     WEB_ARGS=(--json-schema "$WEB_SCHEMA")
+fi
+# Launcher-generated progress sentence (path only, no task text); writable runs only.
+if [ "$SANDBOX" != read-only ]; then
+    PROGRESS_FOR_WORKER=$(progress_path_for_worker "$PROGRESS_FILE")
+    export HARNESS_PROGRESS_FILE=$PROGRESS_FOR_WORKER
+    SYSTEM_PROMPT="$SYSTEM_PROMPT Progress file: when the task has more than one step, append one line per completed step to $PROGRESS_FOR_WORKER in the form '- done: <what> | next: <what> | blocked: <what or none>' right after each step, not batched at the end (create the file; append with an Edit or a shell >> redirect; write nothing else there; do not read other log files)."
 fi
 timing_enter cli
 EFFORT_ARGS=()
@@ -578,6 +627,7 @@ report() {
     fi
     echo "$WORKSPACE_DESCRIPTION"
     echo "CHANGED: $CHANGED"
+    progress_report
     if [ "$WORKER_ROLE" = web ]; then
         echo "WEB_FETCH: $WEB_STATE - $WEB_REASON"
     fi

@@ -41,6 +41,7 @@ LOG_DIR=.claude/codex-logs
 PROMPT_FILE=
 VERIFY_CMD=
 VERIFY_GIVEN=0
+LONG_RUN=0
 RESUME_ID=
 IMAGE=
 SCHEMA=
@@ -84,7 +85,8 @@ extract_tokens() {
 }
 
 usage() {
-    echo 'Usage: codex-run.sh -p <prompt-file> [-m MODEL] [-e EFFORT] [-s SANDBOX] [-v VERIFY_SCRIPT_FILE] [-l LOG_DIR] [-r SESSION_ID|last] [-i IMAGE_FILE] [-o OUTPUT_SCHEMA_FILE] [-t TIMEOUT_SECONDS] [-b]' >&2
+    echo 'Usage: codex-run.sh -p <prompt-file> [-m MODEL] [-e EFFORT] [-s SANDBOX] [-v VERIFY_SCRIPT_FILE] [-l LOG_DIR] [-r SESSION_ID|last] [-i IMAGE_FILE] [-o OUTPUT_SCHEMA_FILE] [-t TIMEOUT_SECONDS] [-b] [-P]' >&2
+    echo '       -P marks a long run: the worker must write milestones to the progress file; none reported -> PROGRESS_WARNING' >&2
     echo '       codex-run.sh --status <RUN_ID>' >&2
     echo '       codex-run.sh --wait <RUN_ID> [-t SECONDS<=570]' >&2
     echo '       -m/-e default from .claude/model-bindings.json (+ .local.json, local wins); -e max requires -b; worker ultra is denied' >&2
@@ -101,7 +103,7 @@ fi
 # Read-back commands: no delegation, no quota — only the state record.
 launcher_readback "$@"
 
-while getopts ":p:m:e:s:v:l:r:i:o:t:b" opt; do
+while getopts ":p:m:e:s:v:l:r:i:o:t:bP" opt; do
     case "$opt" in
         p) PROMPT_FILE=$OPTARG ;;
         m) MODEL=$OPTARG ;;
@@ -114,9 +116,48 @@ while getopts ":p:m:e:s:v:l:r:i:o:t:b" opt; do
         o) SCHEMA=$OPTARG ;;
         t) TIMEOUT=$OPTARG ;;
         b) DETACH=1 ;;
+        P) LONG_RUN=1 ;;
         *) usage ;;
     esac
 done
+
+# ---- progress file (worker-written milestones, launcher-read) ----
+# The worker appends one line per milestone; the launcher only reports the
+# count and the path. Never interpolated into the constant role instruction:
+# the path travels as a separate launcher-generated sentence and as
+# HARNESS_PROGRESS_FILE in the child environment. Read-only runs get neither
+# (plan mode / a read-only sandbox cannot write it). The file lives under
+# .harness/progress/ (gitignored by the install contract), not under the log
+# directory: Claude Code refuses delegate writes to any `.claude/` path
+# (measured 2026-10-21, Write denied with --permission-prompts none).
+PROGRESS_DIR=${HARNESS_PROGRESS_DIR:-.harness/progress}
+progress_path_for_worker() {
+    local dir base
+    dir=$(cd "$(dirname "$1")" 2>/dev/null && pwd) || { printf '%s' "$1"; return; }
+    base=$(basename "$1")
+    if command -v cygpath >/dev/null 2>&1; then cygpath -m "$dir/$base"; else printf '%s' "$dir/$base"; fi
+}
+progress_count() {
+    [ -s "$1" ] || { echo 0; return; }
+    # Only well-formed milestone lines count; prose or other notes do not.
+    grep -c -E '^- done: .* \| next: .* \| blocked: ' "$1" 2>/dev/null || echo 0
+}
+progress_report() {
+    local count
+    if [ "$SANDBOX" = read-only ]; then
+        echo "PROGRESS: disabled (read-only run; no progress file requested)"
+        return
+    fi
+    count=$(progress_count "$PROGRESS_FILE")
+    if [ "$count" -gt 0 ]; then
+        echo "PROGRESS: $PROGRESS_FILE ($count milestones)"
+    else
+        echo "PROGRESS: none ($PROGRESS_FILE not written)"
+    fi
+    if [ "$LONG_RUN" -eq 1 ] && [ "$count" -eq 0 ]; then
+        echo "PROGRESS_WARNING: -P long run reported no milestones; read the trace/log before trusting the result and split the next unit smaller"
+    fi
+}
 
 # Bindings resolution: an -m/-e not given on the command line comes from
 # the public bindings merged with the local file (dicts merge key-by-key,
@@ -289,6 +330,7 @@ fi
 launcher_timeout || exit 4
 
 mkdir -p "$LOG_DIR" || exit 2
+mkdir -p "$PROGRESS_DIR" || exit 2
 # Timestamp + pid: unique even for two launchers started in the same second.
 RUN_ID=${HARNESS_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}
 case "$RUN_ID" in *[!A-Za-z0-9TZ_-]*) echo "HARNESS_DENIED: bad HARNESS_RUN_ID" >&2; exit 4 ;; esac
@@ -338,6 +380,7 @@ RESUME_INPUT=$(mktemp "${TMPDIR:-/tmp}/codex-resume-input.XXXXXX") || exit 2
 # Persisted (not a tmpfile): when the report truncates it, the full final
 # message must remain readable after the run.
 LAST_MSG="$LOG_DIR/lastmsg-$TIMESTAMP.txt"
+PROGRESS_FILE="$PROGRESS_DIR/progress-$TIMESTAMP.md"
 
 # State bookkeeping: `running` from the moment codex is spawned; `done`
 # only after the report is written; anything else (signal, script error)
@@ -380,7 +423,7 @@ SETTINGS_LOCAL=.claude/settings.local.json
 SETTINGS_LOCAL_SNAP="$LOG_DIR/settings-local-$TIMESTAMP.json"
 [ -f "$SETTINGS_LOCAL" ] && cp -p "$SETTINGS_LOCAL" "$SETTINGS_LOCAL_SNAP" 2>/dev/null
 . "$SCRIPT_DIR/workspace-evidence.sh" || exit 4
-WORKSPACE_EXCLUDES=(--exclude "$RUN_LOG" --exclude "$LAST_MSG"
+WORKSPACE_EXCLUDES=(--exclude "$RUN_LOG" --exclude "$LAST_MSG" --exclude "$PROGRESS_FILE"
     --exclude "$SETTINGS_LOCAL_SNAP" --exclude "$LOG_DIR/baseline-$TIMESTAMP.diff"
     --exclude "$LOG_DIR/launcher-$RUN_ID.out")
 workspace_before "$TREE_BEFORE" "${WORKSPACE_EXCLUDES[@]}"
@@ -416,6 +459,13 @@ if [ -n "$SCHEMA" ]; then EXTRA_ARGS+=(--output-schema "$SCHEMA"); fi
 export HARNESS_DELEGATE_RUN=1
 # Fixed role context precedes the task; task text still arrives only via stdin.
 DELEGATE_INSTRUCTION='You are a DELEGATE assigned by a parent orchestrator. HARNESS_DELEGATE_RUN=1. Role is already resolved. Skip the Orchestrator workflow and its linked reading/setup; do not run harness-route.py, spawn agents or launch model CLIs. Follow the assigned task and applicable project/security/verification rules. For guidance, read only missing task-relevant sections and the required platform subsection; do not read whole harness manuals or reread unchanged supplied material for onboarding. Read only the file ranges the task needs rather than whole files or repeated re-reads, and edit surgically instead of rewriting a file. Never commit, push or revert existing work. Edit the control plane only if this launcher already has HARNESS_ALLOW_CONTROL_PLANE=1. If verification is blocked by the environment, report the exact failed check to the parent; do not expand into permission repair or repeated cleanup. Return CHANGED, VERIFY, NOTES or NEEDS_INPUT; if you cannot do the task on policy or safety grounds, start your final message with REFUSED: and the reason. Your final report is checked by the parent.'
+# Launcher-generated progress sentence (path only, no task text); writable sandboxes only.
+PROGRESS_SENTENCE=""
+if [ "$SANDBOX" != read-only ]; then
+    PROGRESS_FOR_WORKER=$(progress_path_for_worker "$PROGRESS_FILE")
+    export HARNESS_PROGRESS_FILE=$PROGRESS_FOR_WORKER
+    PROGRESS_SENTENCE=" Progress file: when the task has more than one step, append one line per completed step to $PROGRESS_FOR_WORKER in the form '- done: <what> | next: <what> | blocked: <what or none>' right after each step, not batched at the end (create the file; append with an Edit or a shell >> redirect; write nothing else there; do not read other log files)."
+fi
 timing_enter cli
 set -m
 if [ -n "$RESUME_ID" ]; then
@@ -438,7 +488,7 @@ if [ -n "$RESUME_ID" ]; then
     # temp file that mirrors the fresh-run shape, and `-` is the only
     # prompt argument -- task text still never enters a shell argument.
     {
-        printf '%s\n\n<stdin>\n' "$DELEGATE_INSTRUCTION Follow the correction provided in the <stdin> block."
+        printf '%s\n\n<stdin>\n' "$DELEGATE_INSTRUCTION Follow the correction provided in the <stdin> block.$PROGRESS_SENTENCE"
         cat "$PROMPT_FILE"
         # Close the block on its own line without adding a blank one.
         [ -z "$(tail -c1 "$PROMPT_FILE")" ] || printf '\n'
@@ -446,7 +496,7 @@ if [ -n "$RESUME_ID" ]; then
     } > "$RESUME_INPUT" || { echo "codex-run.sh: cannot assemble the resume prompt in $RESUME_INPUT" >&2; exit 2; }
     "${RUNNER[@]}" codex exec "$@" -c windows.sandbox=unelevated -c "model_reasoning_effort=$EFFORT" -m "$MODEL" -c "sandbox_mode=$SANDBOX" --output-last-message "$LAST_MSG" "${EXTRA_ARGS[@]}" - < "$RESUME_INPUT" > "$RUN_LOG" 2>&1 &
 else
-    "${RUNNER[@]}" codex exec -c windows.sandbox=unelevated -c "model_reasoning_effort=$EFFORT" -m "$MODEL" --sandbox "$SANDBOX" --output-last-message "$LAST_MSG" "${EXTRA_ARGS[@]}" "$DELEGATE_INSTRUCTION Follow the task specification provided in the <stdin> block." < "$PROMPT_FILE" > "$RUN_LOG" 2>&1 &
+    "${RUNNER[@]}" codex exec -c windows.sandbox=unelevated -c "model_reasoning_effort=$EFFORT" -m "$MODEL" --sandbox "$SANDBOX" --output-last-message "$LAST_MSG" "${EXTRA_ARGS[@]}" "$DELEGATE_INSTRUCTION Follow the task specification provided in the <stdin> block.$PROGRESS_SENTENCE" < "$PROMPT_FILE" > "$RUN_LOG" 2>&1 &
 fi
 CHILD_PID=$!
 set +m
@@ -600,6 +650,7 @@ report() {
     fi
     echo "$WORKSPACE_DESCRIPTION"
     echo "CHANGED: $CHANGED"
+    progress_report
     if [ "$DIRTY_EDITS" -eq 1 ]; then
         echo "CHANGED_CONTENT: file changes detected by workspace snapshots; inspect the reported paths"
     fi

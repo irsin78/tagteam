@@ -1583,6 +1583,35 @@ class ScoredRoutes(unittest.TestCase):
     def scores(self, route):
         return {score['option']: score for score in route['scores']}
 
+    def test_long_run_flag_for_writing_roles_only(self):
+        # Assessed volume 2 marks a writing route as a long run: the announce line
+        # asks for unit splitting and -P. Timeout past the cap, latency and
+        # read-only roles never set it; `reason` is unchanged.
+        suffix = 'long run (volume 2): split into units, verify and commit each, pass -P'
+        with patch.object(routes, 'worker_estimate', return_value=(1, 0, 'seed')):
+            data = json.loads(json.dumps(self.data))
+            for seed in data['selection_policy']['estimates']['delegate_overhead'].values():
+                seed['minutes'] = 0
+            small = self.route(data, assess=self.assess(volume=0))
+            self.assertNotIn('long_run', small)
+            self.assertNotIn('long run', small['announce'])
+            big = self.route(data, assess=self.assess(volume=2))
+            self.assertTrue(big['long_run'])
+            self.assertTrue(big['announce'].endswith(suffix))
+            self.assertNotIn('long run', big['reason'])
+            self.assertEqual(big['suggested_timeout_s'], 570)
+            self.assertFalse(big['needs_detached'])
+            read = self.route(data, role='explore', assess=self.assess(volume=2))
+            self.assertNotIn('long_run', read)
+        with patch.object(routes, 'worker_estimate', return_value=(1, 10, 'seed')):
+            slow = self.route(assess=self.assess(volume=1))
+            self.assertGreater(slow['suggested_timeout_s'], routes.FOREGROUND_TIMEOUT_CAP_S)
+            self.assertTrue(slow['needs_detached'])
+            self.assertNotIn('long_run', slow)
+            big = self.route(assess=self.assess(volume=2))
+            self.assertTrue(big['long_run'])
+            self.assertIn('detached run (-b --wait); ' + suffix, big['announce'])
+
     def test_timeout_minimum_rounding_and_launch_environment(self):
         for volume in (None, 0, 1, 2):
             for minutes, expected in ((0, 570), (3, 570), (3.001, 571), (4.125, 672)):

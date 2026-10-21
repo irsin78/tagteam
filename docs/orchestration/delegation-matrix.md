@@ -39,6 +39,19 @@ Export the router's `launch_env` and pass `-t suggested_timeout_s` to the launch
 (detached `-b` for `max` and whenever `needs_detached` is true; a suggestion above
 570 s is detached because foreground `-t` is capped there), so band, assessment and
 role are recorded without hand-typing. Assessed routes without volume use the small-task estimate for timeout.
+`long_run: true` (implement/write routes with assessed volume 2; timeout and
+latency class do not set it) flags work whose rollback is expensive if the
+worker drifts: the announce line ends with `long run (volume 2): split into units, verify and commit each, pass -P`. Split such a task into
+change units that each fit one foreground budget and are verifiable on their
+own; after each unit inspect the diff, run the affected checks and commit
+explicit paths before launching the next. Pass `-P` to the launcher: the worker
+appends one `- done | next | blocked` line per completed step to the run's
+progress file (`.harness/progress/progress-<run id>.md`, reported as
+`PROGRESS:`), and a `-P` run that reports no milestones prints
+`PROGRESS_WARNING` without changing STATUS. Watch the progress file with a bounded
+read (or Monitor on Claude Code) while a detached unit runs; a stalled or
+off-course milestone is the moment to stop the run, not after it ends. Reviews
+and reads are never long runs: they accumulate nothing to roll back.
 Choose role -> capability band -> latency class -> risk floor/budget -> specialty
 and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with

@@ -126,6 +126,15 @@ permissions, not a general network sandbox.
   pages; send implementers only the necessary summary prepared by the parent.
 
 4. Start long tasks with `-b` and call `--wait RUN_ID` with the returned RUN_ID.
+   When the route carries `long_run: true`, split the work into foreground-budget
+   units (delegation-matrix.md, "Assign a worker") and pass `-P` on each unit:
+   writable runs export `HARNESS_PROGRESS_FILE` and tell the worker to append one
+   `- done: … | next: … | blocked: …` line per completed step to
+   `.harness/progress/progress-<run id>.md` (the file is excluded from CHANGED;
+   read-only runs report `PROGRESS: disabled`). The report prints
+   `PROGRESS: <path> (<n> milestones)` or `PROGRESS: none`, and with `-P` a run
+   without milestones adds `PROGRESS_WARNING`: read the log before trusting the
+   result and make the next unit smaller.
    A headless or scripted orchestrator (`claude -p`, CI, overnight runs) receives
    no completion notification for a detached run and must block on `--wait` until
    it finishes; ending the turn after `-b` abandons the worker.

@@ -174,6 +174,7 @@ case "${STUB_ACTION:-none}" in
     # (push review 2026-09-04, BLOCKER).
     touch-codex-indented)
         printf '\n [projects."/repo"]\ntrust_level = "trusted"\n' >> "$HOME/.codex/config.toml" ;;
+    progress) printf '%s\n' '- done: step 1 | next: step 2 | blocked: none' >> "${HARNESS_PROGRESS_FILE:?no progress path}" ;;
     delayed-write:*) sleep 1.1; printf '%s\n' 'stub-output' > "${STUB_ACTION#delayed-write:}" ;;
     write:*) printf '%s\n' 'stub-output' > "${STUB_ACTION#write:}" ;;
     commit) git -c user.name=Stub -c user.email=stub@example.invalid commit --allow-empty -m stub >/dev/null ;;
@@ -258,6 +259,7 @@ case "${STUB_ACTION:-none}" in
     touch-control-plane) echo '# stub changed control plane' >> .claude/settings.json ;;
     touch-harness-config) printf '%s\n' '{"content_dirs":["template"]}' > .claude/harness-config.json ;;
     write:*) echo 'stub-output' > "${STUB_ACTION#write:}" ;;
+    progress) printf '%s\n' '- done: step 1 | next: step 2 | blocked: none' >> "${HARNESS_PROGRESS_FILE:?no progress path}" ;;
     commit) git -c user.name=Stub -c user.email=stub@example.invalid commit --allow-empty -m stub >/dev/null ;;
     nojson) echo 'not json'; exit 0 ;;
     status-line) python -c 'import json,os; print(json.dumps({"is_error":True,"result":os.environ["STUB_STATUS_LINE"]}))'; exit 0 ;;
@@ -359,7 +361,7 @@ fresh_case() {
     mkdir -p "$CASE_REPO/.claude" "$CASE_HOME/.gemini/antigravity-cli"
     printf '%s\n' '{"permissions":{"allow":["write_file(*)"],"deny":[]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
     printf '%s\n' '{"permissions":{}}' > "$CASE_REPO/.claude/settings.json"
-    printf '%s\n' '.claude/codex-logs/' '.claude/agy-logs/' '.claude/claude-logs/' '.claude/.probe-cache' > "$CASE_REPO/.gitignore"
+    printf '%s\n' '.claude/codex-logs/' '.claude/agy-logs/' '.claude/claude-logs/' '.claude/.probe-cache' '.harness/' > "$CASE_REPO/.gitignore"
     printf '%s\n' 'test prompt' > "$CASE_REPO/prompt.txt"
     [ "${1:-}" != nongit ] || return 0
     (
@@ -621,6 +623,18 @@ expect_case "codex TOKENS parsed under a UTF-8 locale" "$ok" "exit=$LAST_RC"
 
 fresh_case
 : > "$TEST_ROOT/codex-args.log"
+run_capture codex-progress-written env STUB_ACTION=progress bash "$CODEX_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PROGRESS: \.harness/progress/progress-.*\.md \(1 milestones\)$' \
+    && has "$LAST_OUT" '^CHANGED: none$' && tail -n 1 "$TEST_ROOT/codex-args.log" | grep -q 'Progress file: ' && ok=1
+expect_case "codex progress: milestone counted, instruction present" "$ok" "exit=$LAST_RC"
+fresh_case
+run_capture codex-progress-readonly env STUB_ACTION=none bash "$CODEX_RUN" -p prompt.txt -s read-only
+ok=0
+[ "$LAST_RC" -eq 0 ] && ! { tail -n 1 "$TEST_ROOT/codex-args.log" | grep -q 'Progress file: '; } && has "$LAST_OUT" '^PROGRESS: disabled \(read-only' && ok=1
+expect_case "codex progress: read-only run carries no progress instruction" "$ok" "exit=$LAST_RC"
+fresh_case
+: > "$TEST_ROOT/codex-args.log"
 run_capture codex-done env STUB_ACTION=none HARNESS_RUN_ID=codexdone bash "$CODEX_RUN" -p prompt.txt
 ok=0
 if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^CHANGED: none$' \
@@ -644,7 +658,7 @@ ok=0
 if [ "$LAST_RC" -eq 0 ] && has "$TEST_ROOT/codex-args.log" 'exec resume fixture-session .* -$' \
    && ! has "$TEST_ROOT/codex-args.log" 'You are a DELEGATE' \
    && ! has "$TEST_ROOT/codex-args.log" 'Follow the correction' \
-   && has "$TEST_ROOT/codex-stdin.log" '^You are a DELEGATE.*Role is already resolved.*Follow the correction provided in the <stdin> block\.$' \
+   && has "$TEST_ROOT/codex-stdin.log" '^You are a DELEGATE.*Role is already resolved.*Follow the correction provided in the <stdin> block\.( Progress file: .*)?$' \
    && has "$TEST_ROOT/codex-stdin.log" '^<stdin>$' && has "$TEST_ROOT/codex-stdin.log" '^</stdin>$' \
    && sed -e '1,/^<stdin>$/d' -e '/^<\/stdin>$/,$d' "$TEST_ROOT/codex-stdin.log" | cmp -s "$CASE_REPO/prompt.txt" - \
    && has "$LAST_OUT" '^RESUME: fixture-session'; then ok=1; fi
@@ -797,6 +811,34 @@ ok=0
 if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'stub final message'    && has "$LAST_OUT" '^TOKENS: 15 \(output=5,cache_read=0,cache_create=0,input=10\)$' && ! has "$LAST_OUT" '^COST_USD:' && state_field_is claudedone state done; then ok=1; fi
 timing_ok "$LAST_OUT" 1 0 || ok=0
 expect_case "claude DONE report and saved state" "$ok" "exit=$LAST_RC"
+
+# Progress file: a writable run carries the launcher-made path, the worker's
+# milestones are counted, read-only runs get no instruction, -P warns on none.
+fresh_case
+run_capture claude-progress-none env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^PROGRESS: none \(' && ! has "$LAST_OUT" '^PROGRESS_WARNING' \
+    && tail -n 1 "$TEST_ROOT/claude-args.log" | grep -q 'Progress file: ' && ok=1
+expect_case "claude progress: none by default, instruction present" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-progress-written env STUB_ACTION=progress bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PROGRESS: \.harness/progress/progress-.*\.md \(1 milestones\)$' \
+    && has "$LAST_OUT" '^CHANGED: none$' && ok=1
+expect_case "claude progress: milestone counted, file excluded from CHANGED" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-progress-long-run env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -P
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PROGRESS_WARNING: -P long run reported no milestones' && ok=1
+expect_case "claude progress: -P without milestones warns but stays DONE" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-progress-readonly env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -s read-only
+ok=0
+[ "$LAST_RC" -eq 0 ] && ! { tail -n 1 "$TEST_ROOT/claude-args.log" | grep -q 'Progress file: '; } && has "$LAST_OUT" '^PROGRESS: disabled \(read-only' && ok=1
+expect_case "claude progress: read-only run carries no progress instruction" "$ok" "exit=$LAST_RC"
 
 ok=0
 if has "$TEST_ROOT/claude-role.log" '^1$' && has "$TEST_ROOT/claude-args.log" '--tools Read,Write,Edit,Bash,Grep,Glob' \
