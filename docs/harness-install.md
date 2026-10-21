@@ -37,7 +37,7 @@ missions. Merge existing settings/instructions without overwriting.
 | `.claude/settings.json`, `.claude/model-bindings.json`, `.claude/model-bindings.local.json.example`, `.claude/rules/*.md` | Shared | Hook wiring, permissions, shared contracts; model-bindings.json uses schema v2. Create personal settings in the target project from the example |
 | `docs/orchestration/delegation-matrix.md`, `docs/orchestration/retry-policy.md`, `docs/orchestration/scout-brief.md` | Shared | Orchestrator reads only needed documents when selecting delegation/diagnosing failures. Separate from Claude's automatic rules loading |
 | `.claude/hooks/deny_dangerous.py`, `session_preflight.py`, `stop_gate.py`, `verify_delegation.py`, `evidence.py` | Shared (all in the same hooks folder) | Shared dependencies of default hooks and delegation records |
-| `.claude/scripts/harness-route.py`, `harness-session.py`, `harness_records.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py` | Shared (all in the same scripts folder) | Routing, run records, stop checks, configuration/change evidence, execution tracking. Keep with each launcher |
+| `.claude/scripts/harness-route.py`, `harness-session.py`, `harness_records.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py`, `claude-trace.py` | Shared (all in the same scripts folder) | Routing, run records, stop checks, configuration/change evidence, execution tracking, live trace of Claude delegations. Keep with each launcher |
 | `.claude/scripts/codex-run.sh`, `claude-run.sh`, `codex-report.schema.json`, `.claude/skills/delegate-codex/SKILL.md` | Bidirectional delegation | Per-app execution and Codex results/recipes |
 | `.codex/hooks.json`, `.claude/scripts/gen-codex-hooks.sh` | Using Codex | Hook wiring and installation-path generation. Machine-specific `/hooks` trust registration required. Installation checks also use the generator |
 | `.claude/scripts/test_host_routes.py`, `.claude/scripts/test_fixtures/*.json` | Using installation checks | Current dependency of both platform installation checks; its score/baseline scenarios read the fixtures. Unlike other `test_*` files, copy these too |
@@ -253,7 +253,13 @@ Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
      Modified/untrusted/disabled/missing handlers, disabled hooks, unsupported APIs,
      and inconclusive queries exit 4. This checks configuration, not successful
      execution. Unguarded runs require explicit `HARNESS_ALLOW_UNTRUSTED_HOOKS=1`
-     authorization.
+     authorization. In a linked git worktree Codex loads the project hook
+     definitions from the main working tree's `.codex/hooks.json` (the worktree's
+     own copy is never loaded), so the check runs there even without a local
+     copy, accepts that source with the same trust rules, and prints a note.
+     The worktree therefore runs under the main working tree's hook definitions;
+     whether their commands resolve to the worktree's or the main tree's scripts
+     depends on how the commands were written (absolute or relative paths).
    - After execution, only full `hook: <Event> Completed|Blocked|Failed` lines
      (LF/CRLF) count: `Failed` → `HOOKS_FAILED:`, missing → `HOOKS_UNKNOWN:`.
      Quotes/line numbers are excluded, but tools can print indistinguishable old

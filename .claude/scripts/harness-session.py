@@ -19,10 +19,72 @@ sys.path.insert(0, str(HOOKS))
 from stop_gate import evaluate, evaluate_mission, update_mission, mission_marker  # noqa: E402
 
 
-def check_codex_hooks(root, timeout=20):
-    """Ask the installed engine about effective trust; never edit trust state."""
-    root = Path(root).resolve()
-    source = root / '.codex/hooks.json'
+GIT_OVERRIDES = ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY')
+
+
+def _git(cwd, *args):
+    """stdout of a git command, or None on any failure; never raises.
+
+    Repository-override variables are stripped so the answer depends on the
+    path alone (the engine resolves the project by path too); a session that
+    points GIT_DIR elsewhere is not a supported layout for this detection.
+    """
+    git = shutil.which('git')
+    if not git:
+        return None
+    env = {key: value for key, value in os.environ.items() if key not in GIT_OVERRIDES}
+    try:
+        done = subprocess.run([git, '-C', str(cwd), *args], capture_output=True, text=True,
+                              encoding='utf-8', timeout=10, env=env)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def linked_worktree_main(root):
+    """Main working tree of a linked git worktree, else None; never raises.
+
+    Codex resolves a linked worktree to its main repository and loads the
+    project hooks from that working tree's .codex/hooks.json (measured
+    2026-10-21, codex-cli 0.160: hooks/list for the worktree listed only the
+    main working tree's source). A worktree is linked when its git dir differs
+    from the common dir; a subfolder of a plain repository has the same dir for
+    both. The main working tree is taken from `git worktree list` and, when that
+    entry is not a working tree (a submodule's main repository lists its git
+    dir), from the common dir's core.worktree; a candidate counts only when it
+    is a working tree that shares the same common dir and is not `root`.
+    """
+    try:
+        root = Path(root).resolve()
+        dirs = _git(root, 'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir')
+        lines = dirs.splitlines() if dirs else []
+        if len(lines) != 2:
+            return None
+        git_dir, common = Path(lines[0]).resolve(), Path(lines[1]).resolve()
+        if git_dir == common:
+            return None
+        candidates = []
+        listing = _git(root, 'worktree', 'list', '--porcelain') or ''
+        for line in listing.splitlines():
+            if line.startswith('worktree '):
+                candidates.append(Path(line[len('worktree '):]))
+                break
+        configured = _git(root, '--git-dir=' + str(common), 'config', '--get', 'core.worktree')
+        if configured:
+            candidates.append(common / configured)
+        for candidate in candidates:
+            candidate = candidate.resolve()
+            if candidate == root or not candidate.is_dir() or not (candidate / '.git').exists():
+                continue
+            shared = _git(candidate, 'rev-parse', '--path-format=absolute', '--git-common-dir')
+            if shared and Path(shared).resolve() == common:
+                return candidate
+        return None
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def hook_expectations(source):
     definitions = json.loads(source.read_text(encoding='utf-8-sig'))['hooks']
     expected = {
         (re.sub(r'(?<!^)(?=[A-Z])', '_', event).lower(), str(i), str(j))
@@ -30,7 +92,38 @@ def check_codex_hooks(root, timeout=20):
         for i, entry in enumerate(entries) for j, _ in enumerate(entry['hooks'])
     }
     if not {'pre_tool_use', 'stop'} <= {key[0] for key in expected}:
-        raise ValueError('PreToolUse and Stop definitions are required')
+        raise ValueError('PreToolUse and Stop definitions are required in ' + str(source))
+    return expected
+
+
+def check_codex_hooks(root, timeout=20):
+    """Ask the installed engine about effective trust; never edit trust state.
+
+    The accepted source is the project's own .codex/hooks.json or, for a linked
+    worktree, the main repository's (the file Codex actually loads there). The
+    trust checks are the same for both; only the source path differs.
+    """
+    root = Path(root).resolve()
+    main = linked_worktree_main(root)
+    own = root / '.codex/hooks.json'
+    candidates = [own] + ([main / '.codex/hooks.json'] if main is not None else [])
+    expectations = {}
+    for path in candidates:
+        try:
+            present = path.is_file()
+        except OSError as exc:
+            # An unreadable candidate is not a confirmed absence.
+            raise ValueError('cannot inspect ' + str(path) + ': ' + str(exc))
+        if present:
+            expectations[path.resolve()] = hook_expectations(path)
+    if not expectations:
+        if main is not None:
+            # Same standing as a plain project without .codex/hooks.json: Codex
+            # loads no project hooks here, so there is nothing to confirm.
+            print('Codex hook note: no .codex/hooks.json in this worktree or its main working tree '
+                  + str(main) + '; Codex loads no project hooks here', file=sys.stderr)
+            return 0
+        raise ValueError('no .codex/hooks.json in the project')
     executable = shutil.which('codex')
     if not executable:
         raise ValueError('Codex binary not found')
@@ -77,17 +170,29 @@ def check_codex_hooks(root, timeout=20):
             raise ValueError('Codex hook loading failed: ' + str(data[0]['errors']))
         for warning in data[0].get('warnings', []):
             print('Codex hook warning: ' + str(warning), file=sys.stderr)
-        hooks = [hook for hook in data[0]['hooks']
-                 if Path(hook['sourcePath']).resolve() == source]
-        actual = {tuple(hook['key'].rsplit(':', 3)[1:]) for hook in hooks}
-        if actual != expected or len(hooks) != len(expected):
+        by_source = {}
+        for hook in data[0]['hooks']:
+            by_source.setdefault(Path(hook['sourcePath']).resolve(), []).append(hook)
+        listed = [path for path in expectations if by_source.get(path)]
+        if not listed:
             raise ValueError('configured hooks are missing from effective hooks/list (check features.hooks)')
-        inactive = [hook['key'].rsplit(':', 3)[1] for hook in hooks
-                    if hook.get('enabled') is not True
-                    or hook.get('trustStatus') not in ('trusted', 'managed')]
-        if inactive:
-            raise ValueError('disabled, untrusted or modified hooks: ' + ', '.join(inactive))
-        return len(hooks)
+        # Every listed candidate source must pass; a trusted worktree copy never
+        # excuses an untrusted main definition that Codex also loaded.
+        for source in listed:
+            where = (' in ' + str(source)) if len(expectations) > 1 else ''
+            hooks, expected = by_source[source], expectations[source]
+            actual = {tuple(hook['key'].rsplit(':', 3)[1:]) for hook in hooks}
+            if actual != expected or len(hooks) != len(expected):
+                raise ValueError('configured hooks are missing from effective hooks/list (check features.hooks)' + where)
+            inactive = [hook['key'].rsplit(':', 3)[1] for hook in hooks
+                        if hook.get('enabled') is not True
+                        or hook.get('trustStatus') not in ('trusted', 'managed')]
+            if inactive:
+                raise ValueError('disabled, untrusted or modified hooks: ' + ', '.join(inactive) + where)
+        if listed[0] != own.resolve():
+            print('Codex hook note: hook definitions come from the main working tree ' + str(listed[0].parent.parent)
+                  + ' (linked worktree), not from this worktree', file=sys.stderr)
+        return len(by_source[listed[0]])
     finally:
         process.stdin.close()
         try:

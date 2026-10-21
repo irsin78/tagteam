@@ -323,7 +323,18 @@ if ! command -v codex >/dev/null 2>&1; then
 fi
 # Query effective trust before admission. Table headers alone do not establish
 # current command hashes, enabled state, or whether the hooks feature is active.
-if [ -f .codex/hooks.json ] && [ "${HARNESS_ALLOW_UNTRUSTED_HOOKS:-}" != "1" ]; then
+# A linked git worktree is checked even without its own .codex/hooks.json:
+# Codex loads the main working tree's hooks there (harness-session.py decides
+# which source counts).
+linked_worktree() {
+    # Absolute paths on both sides: in a subfolder of a plain repository git
+    # prints an absolute --git-dir but a relative --git-common-dir.
+    local git_dir common
+    git_dir=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 1
+    common=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+    [ -n "$git_dir" ] && [ -n "$common" ] && [ "$git_dir" != "$common" ]
+}
+if [ "${HARNESS_ALLOW_UNTRUSTED_HOOKS:-}" != "1" ] && { [ -f .codex/hooks.json ] || linked_worktree; }; then
     "$RS_PY" "$SCRIPT_DIR/harness-session.py" check-codex-hooks || exit 4
 fi
 
