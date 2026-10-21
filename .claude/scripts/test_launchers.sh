@@ -346,6 +346,19 @@ case "${STUB_ACTION:-none}" in
         [ -z "$pid" ] || kill -KILL "$pid" 2>/dev/null
         sleep 0.5
         printf '%s\n' "$STREAM_RESULT"; exit 0 ;;
+    # As above, plus the temp file a converter killed mid-write would leave
+    # (`run-<id>.json.tmp<pid>` beside the trace): the launcher must sweep it.
+    stream-kill-trace-tmp)
+        stream_events
+        pid=
+        for _ in {1..50}; do pid=$(trace_converter_pid); [ -n "$pid" ] && break; sleep 0.1; done
+        [ -z "$pid" ] || kill -KILL "$pid" 2>/dev/null
+        sleep 0.5
+        for t in .claude/claude-logs/trace-*.log; do
+            id=${t##*/trace-}; id=${id%.log}
+            printf '%s\n' '{"partial":true}' > ".claude/claude-logs/run-$id.json.tmp99999"
+        done
+        printf '%s\n' "$STREAM_RESULT"; exit 0 ;;
     # Malformed events and a first result: tracing errors stay in the trace,
     # the last result wins.
     stream-trace-errors)
@@ -980,6 +993,21 @@ ok=0
     && has "$LAST_OUT" '^TOKENS: 15 ' \
     && run_json_equals "$CASE_REPO/.claude/claude-logs/run-claudekill.json" "$CLAUDE_STREAM_RESULT" && ok=1
 expect_case "claude stream: a killed converter does not cost the result" "$ok" "exit=$LAST_RC"
+
+# The log directory is committed here, so a leftover temp file would show up
+# in CHANGED; it must be swept, not excluded.
+fresh_case
+sed -i 's#^\.claude/claude-logs/$##' "$CASE_REPO/.gitignore"
+git -C "$CASE_REPO" add .gitignore >/dev/null 2>&1
+git -C "$CASE_REPO" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'logs tracked' >/dev/null 2>&1
+run_capture claude-stream-kill-trace-tmp env STUB_ACTION=stream-kill-trace-tmp HARNESS_RUN_ID=claudekilltmp bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' \
+    && has "$LAST_OUT" '^TRACE_WARNING: converter exit [0-9]+.*; result re-extracted from the stream' \
+    && has "$LAST_OUT" '^CHANGED: none$' \
+    && [ -z "$(ls "$CASE_REPO"/.claude/claude-logs/run-claudekilltmp.json.tmp* 2>/dev/null)" ] \
+    && run_json_equals "$CASE_REPO/.claude/claude-logs/run-claudekilltmp.json" "$CLAUDE_STREAM_RESULT" && ok=1
+expect_case "claude stream: a killed converter's temp file is swept, CHANGED stays none" "$ok" "exit=$LAST_RC"
 
 fresh_case
 run_capture claude-stream-trace-errors env STUB_ACTION=stream-trace-errors HARNESS_RUN_ID=claudetraceerr bash "$CLAUDE_RUN" -p prompt.txt
@@ -1910,34 +1938,38 @@ else
     skip_case "GNU timeout maps to codex exit 124" "GNU coreutils timeout is not first on PATH"
 fi
 
-# claude-run.sh: TERM must also end the trace converter and remove its sentinel
-# directory. The signal is sent only once both the stub child and the converter
-# header line are observable, so the cleanup path is what gets exercised.
+# claude-run.sh: each trapped signal must also end the trace converter and
+# remove its sentinel directory. The signal is sent only once both the stub
+# child and the converter header line are observable, so the cleanup path is
+# what gets exercised. INT is not covered: a job started with `&` in this
+# non-interactive suite begins with SIGINT ignored, and bash cannot trap a
+# signal that was ignored at entry, so the launcher would never see it here.
+for sig in TERM HUP; do
 fresh_case
-signal_out="$TEST_ROOT/claude-signal.out"
+signal_out="$TEST_ROOT/claude-signal-$sig.out"
 rm -f "$TEST_ROOT/stub-child.pid"
 (
     cd "$CASE_REPO" || exit 99
     exec env HOME="$CASE_HOME" PATH="$STUB_BIN:$ORIGINAL_PATH" FIXTURE_ROOT="$TEST_ROOT" \
-        STUB_ACTION=sleep:60 HARNESS_RUN_ID=claudesignal bash "$CLAUDE_RUN" -p prompt.txt
+        STUB_ACTION=sleep:60 HARNESS_RUN_ID="claudesig$sig" bash "$CLAUDE_RUN" -p prompt.txt
 ) > "$signal_out" 2>&1 &
 launcher_pid=$!
 BG_PIDS+=("$launcher_pid")
-trace="$CASE_REPO/.claude/claude-logs/trace-claudesignal.log"
+trace="$CASE_REPO/.claude/claude-logs/trace-claudesig$sig.log"
 for _ in {1..100}; do
     [ -s "$TEST_ROOT/stub-child.pid" ] && grep -q '^# converter pid=' "$trace" 2>/dev/null && break
     sleep 0.1
 done
 if [ ! -s "$TEST_ROOT/stub-child.pid" ] || ! grep -q '^# converter pid=' "$trace" 2>/dev/null; then
     LAST_OUT=$signal_out
-    skip_case "claude TERM stops the stub child and the trace converter" "stub child or converter was not observable"
+    skip_case "claude $sig stops the stub child and the trace converter" "stub child or converter was not observable"
     kill -TERM "$launcher_pid" 2>/dev/null || true
     wait "$launcher_pid" 2>/dev/null || true
 else
     stub_pid=$(tr -d '\r\n' < "$TEST_ROOT/stub-child.pid")
     conv_pid=$(sed -n 's/^# converter pid=\([0-9]*\) sentinel=.*/\1/p' "$trace" | head -n 1)
     sentinel_dir=$(sed -n 's/^# converter pid=[0-9]* sentinel=\(.*\)$/\1/p' "$trace" | head -n 1 | tr -d '\r')
-    kill -TERM "$launcher_pid" 2>/dev/null
+    kill -"$sig" "$launcher_pid" 2>/dev/null
     wait "$launcher_pid" 2>/dev/null
     signal_rc=$?
     child_gone=0; kill -0 "$stub_pid" 2>/dev/null || child_gone=1
@@ -1945,14 +1977,15 @@ else
     sentinel_gone=0; [ -n "$sentinel_dir" ] && [ ! -e "$sentinel_dir" ] && sentinel_gone=1
     LAST_OUT=$signal_out
     ok=0
-    if [ "$signal_rc" -eq 143 ] && state_field_is claudesignal state aborted && state_field_is claudesignal exit 143 \
+    if [ "$signal_rc" -eq 143 ] && state_field_is "claudesig$sig" state aborted && state_field_is "claudesig$sig" exit 143 \
        && [ "$child_gone" -eq 1 ] && [ "$conv_gone" -eq 1 ] && [ "$sentinel_gone" -eq 1 ]; then ok=1; fi
     if [ "$child_gone" -ne 1 ] && [ "$conv_gone" -eq 1 ] && [ "$sentinel_gone" -eq 1 ] && case "${OS:-}:$(uname -s 2>/dev/null)" in Windows_NT:*|*:MINGW*|*:MSYS*|*:CYGWIN*) true;; *) false;; esac; then
-        skip_case "claude TERM stops the stub child and the trace converter" "MSYS could not verify native child termination (converter and sentinel were cleaned)"
+        skip_case "claude $sig stops the stub child and the trace converter" "MSYS could not verify native child termination (converter and sentinel were cleaned)"
     else
-        expect_case "claude TERM stops the stub child and the trace converter" "$ok" "launcher=$signal_rc child_gone=$child_gone converter_gone=$conv_gone sentinel_gone=$sentinel_gone"
+        expect_case "claude $sig stops the stub child and the trace converter" "$ok" "launcher=$signal_rc child_gone=$child_gone converter_gone=$conv_gone sentinel_gone=$sentinel_gone"
     fi
 fi
+done
 
 if timeout --version 2>/dev/null | grep -qi coreutils; then
     fresh_case

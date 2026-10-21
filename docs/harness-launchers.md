@@ -135,6 +135,20 @@ permissions, not a general network sandbox.
    `PROGRESS: <path> (<n> milestones)` or `PROGRESS: none`, and with `-P` a run
    without milestones adds `PROGRESS_WARNING`: read the log before trusting the
    result and make the next unit smaller.
+   claude-run.sh also keeps a live trace: claude runs with `--output-format
+   stream-json`, its events go to `.claude/claude-logs/stream-<run id>.jsonl`, and
+   `claude-trace.py` follows that file into `.claude/claude-logs/trace-<run id>.log`
+   (one timestamped line per assistant text, tool call with its main argument,
+   tool result head and turn summary) while the worker runs. Read it with a
+   bounded read (`tail -n 20 <trace>`, or Monitor on Claude Code); the run id is
+   printed at detach, so the path is known before the run ends. The report prints
+   `TRACE: <path> (<n> lines, stream: <path>)`; `TRACE_WARNING:` means the trace
+   is incomplete (converter failure, or no result event in the stream) and names
+   the stream. The result itself never depends on the trace: the launcher
+   re-extracts the `result` event from the stream when the converter fails, so
+   STATUS, TOKENS and FINAL_MESSAGE are unchanged by a tracing problem. The
+   converter is stopped with the run (normal exit or a signal); only a SIGKILLed
+   launcher leaves it to end on its own timer (`-t` + 90 s).
    A headless or scripted orchestrator (`claude -p`, CI, overnight runs) receives
    no completion notification for a detached run and must block on `--wait` until
    it finishes; ending the turn after `-b` abandons the worker.

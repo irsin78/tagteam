@@ -48,9 +48,11 @@ explicit paths before launching the next. Pass `-P` to the launcher: the worker
 appends one `- done | next | blocked` line per completed step to the run's
 progress file (`.harness/progress/progress-<run id>.md`, reported as
 `PROGRESS:`), and a `-P` run that reports no milestones prints
-`PROGRESS_WARNING` without changing STATUS. Watch the progress file with a bounded
-read (or Monitor on Claude Code) while a detached unit runs; a stalled or
-off-course milestone is the moment to stop the run, not after it ends. Reviews
+`PROGRESS_WARNING` without changing STATUS. Watch the progress file, and for a
+Claude worker the live trace (`.claude/claude-logs/trace-<run id>.log`, one line
+per tool call and summary, reported as `TRACE:`), with a bounded read (or Monitor
+on Claude Code) while a detached unit runs; a stalled or off-course milestone or
+tool call is the moment to stop the run, not after it ends. Reviews
 and reads are never long runs: they accumulate nothing to roll back.
 Choose role -> capability band -> latency class -> risk floor/budget -> specialty
 and hard constraints (vision, web, isolation, platform, data boundary).
