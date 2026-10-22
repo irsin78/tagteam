@@ -255,15 +255,26 @@ class ClaudeTrace(unittest.TestCase):
         self.assertFalse(self.run_json.exists())
 
     def test_expiry_with_a_failing_last_read_still_finishes(self):
+        # The first read succeeds (so the loop reaches the deadline through the
+        # normal path); every later read, including the one drain read after
+        # expiry, fails. The result read first must survive and exit must be 3.
         self.stream.write_text(lines(EVENTS[:2] + [RESULT]))
         original = trace_mod.Converter.read_new
-        trace_mod.Converter.read_new = lambda conv: None
+        state = {'reads': 0}
+
+        def fail_after_first(conv):
+            state['reads'] += 1
+            return original(conv) if state['reads'] == 1 else None
+
+        trace_mod.Converter.read_new = fail_after_first
         try:
             code = self.run_converter(max_seconds=0.2, poll=0.01)
         finally:
             trace_mod.Converter.read_new = original
         self.assertEqual(code, 3)
-        self.assertIn('converter finished (no result event; sentinel never appeared', self.trace_text())
+        self.assertGreater(state['reads'], 1)
+        self.assertEqual(json.loads(self.run_json.read_text(encoding='utf-8')), RESULT)
+        self.assertIn('converter finished (result written; sentinel never appeared', self.trace_text())
 
     def test_write_atomic_leaves_no_temp_file_on_failure(self):
         self.run_json.mkdir()
