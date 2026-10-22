@@ -29,9 +29,11 @@ rules. Status: experimental; see the skill's header for what was and was not mea
    section.
 3. Open the **design** session in the main checkout and paste its bootstrap prompt.
 4. The design session starts the **implementation** session (`start_session` with
-   `initiation: "user_asked"`, `use_worktree: true`, the fixed title, the implementation
-   bootstrap prompt as the brief; an `offer` or `own_initiative` start shows a card and
-   stops the flow) and confirms it in ListAgents. The implementation session sets its title, arms
+   `initiation: "user_asked"`, `use_worktree: true`, `model` and `effort` from the
+   implement route (band B: Opus 5.5 medium; omitted, the child inherits the parent's
+   model), the fixed title, the implementation bootstrap prompt as the brief; an `offer`
+   or `own_initiative` start shows a card and stops the flow) and confirms it in
+   ListAgents. The implementation session sets its title, arms
    the guard in its worktree and ends with
    `needs-input "waiting on peer-design for [PEER DESIGN] phase 1"`; the design session
    then writes the phase 1 design and sends `[PEER DESIGN]`.

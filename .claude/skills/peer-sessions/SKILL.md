@@ -43,6 +43,13 @@ detail and prompt skeletons: `docs/peer-sessions.md`.
   also what a `long_run` route asks for). Opening both sessions by hand still works (trial
   shape); then open the implementation session first so the design session sees it in
   ListAgents.
+- The child session's model and effort come from the router, not from the parent.
+  `start_session` inherits the parent's model when `model` is omitted, so a design session
+  on the S band would hand B-band implementation to an S-band model (observed 2026-10-22).
+  Before starting, run `harness-route.py --host claude --role implement --assess …` (volume
+  2 for a long unit) and pass its `model` and `effort` to `start_session`; with the current
+  bindings that is band B, Opus 5.5 medium. The router's `announce` line is quoted in the
+  usual delegation announcement; a child session is a delegation like any other.
 - Starting that child session must not stop the flow. Once the user has decided that long
   units run as child worktree sessions, each start is `initiation: "user_asked"` (the
   standing decision is the request); `offer` and `own_initiative` show a card and wait, so
