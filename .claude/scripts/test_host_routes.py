@@ -1707,9 +1707,9 @@ class ScoredRoutes(unittest.TestCase):
 
     def test_long_run_flag_for_writing_roles_only(self):
         # Assessed volume 2 marks a writing route as a long run: the announce line
-        # asks for unit splitting and -P. Timeout past the cap, latency and
+        # asks for a worktree implementation session instead of a launcher unit. Timeout past the cap, latency and
         # read-only roles never set it; `reason` is unchanged.
-        suffix = 'long run (volume 2): split into units, verify and commit each, pass -P'
+        suffix = 'long run (volume 2): implementation session in its own worktree, not a launcher unit'
         with patch.object(routes, 'worker_estimate', return_value=(1, 0, 'seed')):
             data = json.loads(json.dumps(self.data))
             for seed in data['selection_policy']['estimates']['delegate_overhead'].values():

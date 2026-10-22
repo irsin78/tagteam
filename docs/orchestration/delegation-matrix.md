@@ -41,14 +41,20 @@ Export the router's `launch_env` and pass `-t suggested_timeout_s` to the launch
 role are recorded without hand-typing. Assessed routes without volume use the small-task estimate for timeout.
 `long_run: true` (implement/write routes with assessed volume 2; timeout and
 latency class do not set it) flags work whose rollback is expensive if the
-worker drifts: the announce line ends with `long run (volume 2): split into units, verify and commit each, pass -P`. Split such a task into
+worker drifts: the announce line ends with `long run (volume 2): implementation session in its own worktree, not a launcher unit`. The default handling
+is not a launcher at all: the orchestrating (design) session starts an
+implementation session in its own worktree and branch
+(`.claude/skills/peer-sessions/SKILL.md`, section 1), so the work is visible
+turn by turn in the app, the user can steer it directly, and a wrong run is
+discarded by dropping the branch. Delegate such work to a launcher only when
+the user asks for it or the host has no sessions (headless); then split it into
 change units that each fit one foreground budget and are verifiable on their
-own; after each unit inspect the diff, run the affected checks and commit
-explicit paths before launching the next. Pass `-P` to the launcher: the worker
-appends one `- done | next | blocked` line per completed step to the run's
-progress file (`.harness/progress/progress-<run id>.md`, reported as
-`PROGRESS:`), and a `-P` run that reports no milestones prints
-`PROGRESS_WARNING` without changing STATUS. Watch the progress file, and for a
+own, inspect the diff, run the affected checks and commit explicit paths after
+each unit, and pass `-P`: the worker appends one `- done | next | blocked` line
+per completed step to the run's progress file
+(`.harness/progress/progress-<run id>.md`, reported as `PROGRESS:`), and a
+`-P` run that reports no milestones prints `PROGRESS_WARNING` without changing
+STATUS. Watch the progress file, and for a
 Claude worker the live trace (`.claude/claude-logs/trace-<run id>.log`, one line
 per tool call and summary, reported as `TRACE:`), with a bounded read (or Monitor
 on Claude Code) while a detached unit runs; a stalled or off-course milestone or

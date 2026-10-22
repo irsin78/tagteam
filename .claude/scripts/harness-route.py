@@ -924,12 +924,14 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                 route['reason'] += f' (exceeds the {FOREGROUND_TIMEOUT_CAP_S} s foreground cap; run with -b --wait)'
         # Long run (writing roles only): assessed volume 2 means a drifting worker
         # accumulates changes that are expensive to roll back. The flag asks the
-        # parent to split the work into units that each fit one foreground budget,
-        # verify and commit between units, and pass -P so the launcher warns when
-        # the worker reports no milestones. Timeout and latency do not set it: the
-        # volume-0 seed already suggests more than the foreground cap, and a
-        # detached-only effort row is worker speed, not work volume. `reason` is
-        # unchanged: the flag and the announce suffix carry it.
+        # parent to run the work as an implementation session in its own worktree
+        # (visible, steerable, discarded by dropping the branch; peer-sessions
+        # skill) instead of a headless launcher unit; when it delegates to a
+        # launcher anyway it splits the work into foreground-budget units with -P.
+        # Timeout and latency do not set it: the volume-0 seed already suggests
+        # more than the foreground cap, and a detached-only effort row is worker
+        # speed, not work volume. `reason` is unchanged: the flag and the announce
+        # suffix carry it.
         if role in ('implement', 'write') and str(assess.get('volume', '')) == '2':
             route['long_run'] = True
     route['announce'] = announce_line(route, assessment, role, tier, latency, len(ordered),
@@ -991,7 +993,7 @@ def announce_line(route, assessment, role, tier, latency, eligible_count, scorin
     if route.get('needs_detached'):
         why.append('detached run (-b --wait)')
     if route.get('long_run'):
-        why.append('long run (volume 2): split into units, verify and commit each, pass -P')
+        why.append('long run (volume 2): implementation session in its own worktree, not a launcher unit')
     line = f"{head} -> {route['model']}/{effort} via {launcher}: " + '; '.join(why)
     if scoring and route.get('decision') == 'direct' and len(ranked_scores) > 1:
         winner, runner = ranked_scores[0], ranked_scores[1]

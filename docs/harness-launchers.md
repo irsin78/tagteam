@@ -126,8 +126,10 @@ permissions, not a general network sandbox.
   pages; send implementers only the necessary summary prepared by the parent.
 
 4. Start long tasks with `-b` and call `--wait RUN_ID` with the returned RUN_ID.
-   When the route carries `long_run: true`, split the work into foreground-budget
-   units (delegation-matrix.md, "Assign a worker") and pass `-P` on each unit:
+   When the route carries `long_run: true`, the default is an implementation
+   session in its own worktree, not a launcher (delegation-matrix.md, "Assign a
+   worker"); when the work goes to a launcher anyway, split it into
+   foreground-budget units and pass `-P` on each unit:
    writable runs export `HARNESS_PROGRESS_FILE` and tell the worker to append one
    `- done: … | next: … | blocked: …` line per completed step to
    `.harness/progress/progress-<run id>.md` (the file is excluded from CHANGED;

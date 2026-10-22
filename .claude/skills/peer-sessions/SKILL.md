@@ -33,9 +33,16 @@ detail and prompt skeletons: `docs/peer-sessions.md`.
 
 ## 1. Roles and the responsible orchestrator
 
-- Two desktop sessions on one machine, both opened by the user, with fixed titles such as
-  `peer-design` and `peer-impl` (any names; the title is the message address). Open the
-  implementation session first so the design session can see it in ListAgents.
+- Two desktop sessions on one machine with fixed titles such as `peer-design` and
+  `peer-impl` (any names; the title is the message address). The design session is the one
+  the user opens, in the main checkout. It starts the implementation session itself
+  (`start_session`, `use_worktree: true`, the fixed title, the bootstrap prompt as the
+  brief), so the implementation session is a child in its own worktree and branch: its
+  transcript, tool calls and diff are visible in the app, the user can steer it directly,
+  and a wrong run is discarded by dropping the branch (user decision 2026-10-22; this is
+  also what a `long_run` route asks for). Opening both sessions by hand still works (trial
+  shape); then open the implementation session first so the design session sees it in
+  ListAgents.
 - **The responsible orchestrator is the session the human started that holds design and
   judgment.** A session created by a parent (`start_session`, a CLI `exec`) is a DELEGATE
   regardless of its role; when a parent created both sessions, the parent is the responsible

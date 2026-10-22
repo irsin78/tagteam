@@ -6,8 +6,9 @@ rules. Status: experimental; see the skill's header for what was and was not mea
 
 ## Supported combination
 
-- Two Claude desktop sessions on the same machine, both opened by the user, using the
-  app's cross-session messages (`SendMessage` to the other session's title; the inbound
+- Two Claude desktop sessions on the same machine: the design session opened by the user
+  in the main checkout, the implementation session started from it as a child in its own
+  worktree (or opened by hand, trial shape), using the app's cross-session messages (`SendMessage` to the other session's title; the inbound
   message carries a `from` address to copy into `to`).
 - One mission with a confirmed `spec.md` (`rules/mission-artifacts.md`), either in one
   checkout (trial shape) or with one worktree per implementation lane (default shape).
@@ -26,12 +27,16 @@ rules. Status: experimental; see the skill's header for what was and was not mea
    `Baton: design · phase 0 · since <ISO> · based_on <HEAD 7>`, then
    `Unattended-default: off`, then the "sends" table header and an empty observations
    section.
-3. Open the **implementation** session first, paste its bootstrap prompt; it sets its title,
-   arms the guard and ends with `needs-input "waiting on peer-design for [PEER DESIGN] phase 1"`.
-4. Open the **design** session, paste its bootstrap prompt; it checks ListAgents for the
-   implementation session, writes the phase 1 design and sends `[PEER DESIGN]`.
-5. Lanes: create one worktree and branch per lane first, open each lane session in its
-   worktree, then the design session in the integration worktree.
+3. Open the **design** session in the main checkout and paste its bootstrap prompt.
+4. The design session starts the **implementation** session (`start_session` with
+   `use_worktree: true`, the fixed title, the implementation bootstrap prompt as the
+   brief) and confirms it in ListAgents. The implementation session sets its title, arms
+   the guard in its worktree and ends with
+   `needs-input "waiting on peer-design for [PEER DESIGN] phase 1"`; the design session
+   then writes the phase 1 design and sends `[PEER DESIGN]`.
+5. Lanes: one child worktree session per lane, started the same way; the design session
+   stays in the main checkout, which is the integration branch. Opening sessions by hand
+   (implementation first, then design) remains the trial shape.
 
 ## Bootstrap prompt skeletons
 
