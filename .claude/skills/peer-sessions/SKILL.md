@@ -43,6 +43,14 @@ detail and prompt skeletons: `docs/peer-sessions.md`.
   also what a `long_run` route asks for). Opening both sessions by hand still works (trial
   shape); then open the implementation session first so the design session sees it in
   ListAgents.
+- Starting that child session must not stop the flow. Once the user has decided that long
+  units run as child worktree sessions, each start is `initiation: "user_asked"` (the
+  standing decision is the request); `offer` and `own_initiative` show a card and wait, so
+  they are wrong here. The app creates the worktree itself, which needs no git command and
+  no extra approval. The git the design session runs afterwards (`git worktree list`/
+  `remove`, `git merge --no-ff`, `git branch -d`) is ordinary; a project that wants it
+  prompt-free lists `Bash(git worktree:*)`, `Bash(git merge:*)` and `Bash(git branch:*)`
+  in `permissions.allow` (the harness guard still refuses forced removals and `-D`).
 - **The responsible orchestrator is the session the human started that holds design and
   judgment.** A session created by a parent (`start_session`, a CLI `exec`) is a DELEGATE
   regardless of its role; when a parent created both sessions, the parent is the responsible
