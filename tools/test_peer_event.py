@@ -212,5 +212,126 @@ class ReportTests(unittest.TestCase):
         self.assertIn("no events", err)
 
 
+class MessageIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mission = os.path.join(self.tmp.name, "m")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def log(self, session, kind, msg, identifier, **fields):
+        argv = ["log", "--mission", self.mission, "--session", session, "--kind", kind,
+                "--msg", msg, "--ts", "2026-10-22T06:00:00Z"]
+        if identifier is not None:
+            argv += ["--msg-id", identifier]
+        for key, value in fields.items():
+            argv += ["--" + key.replace("_", "-"), value]
+        return run(argv)
+
+    def report(self):
+        code, out, err = run(["report", "--mission", self.mission, "--json"])
+        self.assertEqual(code, 0, err)  # anomalies retain informational exit compatibility
+        return json.loads(out)["report"]
+
+    def test_ask_decide_roundtrip_uses_new_ids_and_additive_reply_to(self):
+        for session, kind, msg, identifier, fields in (
+                ("impl", "send", "ASK", "ask-1", {}),
+                ("root", "recv", "ASK", "ask-1", {}),
+                ("root", "send", "DECIDE", "decide-1", {"reply_to": "ask-1"}),
+                ("impl", "recv", "DECIDE", "decide-1", {"reply_to": "ask-1"})):
+            code, out, _ = self.log(session, kind, msg, identifier, **fields)
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out).get("reply_to"), fields.get("reply_to"))
+        report = self.report()
+        self.assertEqual(report["message_anomalies"], [])
+        self.assertEqual([p["msg_id"] for p in report["pairs"]], ["ask-1", "decide-1"])
+        self.assertEqual(set(report["pairs"][0]),
+                         {"msg_id", "msg", "phase", "sent_at", "received_at", "seconds", "problem"})
+        self.assertTrue(all(p["problem"] is None for p in report["pairs"]))
+        code, markdown, _ = run(["report", "--mission", self.mission])
+        self.assertEqual(code, 0)
+        self.assertIn("msg_id | reply_to", markdown)
+        self.assertIn("| decide-1 | ask-1 |", markdown)
+
+    def test_reply_validation_is_local_and_ref_remains_user_provenance(self):
+        self.assertEqual(self.log("root", "send", "DECIDE", "d", reply_to="not-in-this-tree")[0], 0)
+        self.assertEqual(self.log("root", "send", "ACK", "a", reply_to="a")[0], 2)
+        self.assertEqual(self.log("root", "send", "ACK", "a", reply_to="")[0], 2)
+        self.assertEqual(self.log("root", "send", "ACK", "")[0], 2)
+        self.assertEqual(self.log("root", "send", "ACK", None, transport="codex")[0], 2)
+        self.assertEqual(self.log("impl", "recv", "ACK", None, transport="codex")[0], 2)
+        code, out, _ = run(["log", "--mission", self.mission, "--session", "orchestrator",
+                            "--kind", "send", "--msg", "USER-ANSWER", "--msg-id", "u",
+                            "--reply-to", "ask-1", "--ref", "user words", "--trust-dir", self.tmp.name])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["ref"], "user words")
+        self.assertEqual(json.loads(out)["reply_to"], "ask-1")
+
+    def test_missing_send_and_missing_id_remain_visible(self):
+        self.log("root", "recv", "CLARIFY", "orphan")
+        self.log("legacy", "recv", "ASK", None)
+        self.log("root", "send", "DECIDE", "d", reply_to="unobserved-ask")
+        report = self.report()
+        self.assertEqual([(a["msg_id"], a["type"]) for a in report["message_anomalies"]],
+                         [(None, "missing_id"), ("d", "missing_reply_target"), ("orphan", "missing_send")])
+        orphan = report["message_anomalies"][-1]
+        self.assertEqual((orphan["send_count"], orphan["recv_count"]), (0, 1))
+        self.assertEqual(orphan["records"][0]["source_file"], "root.jsonl")
+        self.assertEqual(orphan["records"][0]["source_line"], 1)
+        self.assertEqual(len(report["messages"]), 3)
+        self.assertNotIn("orphan", [p["msg_id"] for p in report["pairs"]])
+
+    def test_duplicate_sends_receipts_and_ack_reuse_never_pick_last(self):
+        for fields in (("root", "send", "DESIGN", "reused"), ("impl", "recv", "DESIGN", "reused"),
+                       ("impl", "send", "ACK", "reused"), ("root", "recv", "ACK", "reused"),
+                       ("root", "send", "ASK", "duplicate-recv"),
+                       ("impl", "recv", "ASK", "duplicate-recv"),
+                       ("other", "recv", "ASK", "duplicate-recv")):
+            self.log(*fields, phase="1")
+        report = self.report()
+        self.assertEqual(report["pairs"], [])
+        anomalies = {(a["msg_id"], a["type"]): a for a in report["message_anomalies"]}
+        self.assertEqual(set(anomalies), {("reused", "duplicate_send"), ("reused", "duplicate_recv"),
+                                          ("duplicate-recv", "duplicate_recv")})
+        self.assertEqual(anomalies[("reused", "duplicate_send")]["send_count"], 2)
+        self.assertEqual(len(anomalies[("reused", "duplicate_send")]["records"]), 4)
+        _, first, _ = run(["report", "--mission", self.mission])
+        _, second, _ = run(["report", "--mission", self.mission])
+        self.assertEqual(first, second)
+        self.assertEqual(self.report(), report)
+        self.assertIn("duplicate_send", first)
+
+    def test_metadata_mismatch_and_legacy_self_reply_are_reported(self):
+        for identifier, field in (("msg", {"msg": "ACK"}), ("phase", {"phase": "2"}),
+                                  ("reference", {"reply_to": "other"})):
+            self.log("root", "send", "DESIGN", identifier, phase="1")
+            received = {"msg": "DESIGN", "phase": "1", **field}
+            self.log("impl", "recv", received.pop("msg"), identifier, **received)
+        # Historical invalid references remain readable even though new logging rejects them.
+        path = os.path.join(self.mission, "events", "legacy.jsonl")
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(dict(ts="2026-10-22T06:00:00Z", kind="recv", msg="ASK",
+                                         msg_id="self", reply_to="self")) + "\n")
+        report = self.report()
+        self.assertEqual(report["pairs"], [])
+        kinds = [(a["msg_id"], a["type"]) for a in report["message_anomalies"]]
+        for identifier in ("msg", "phase", "reference"):
+            self.assertIn((identifier, "metadata_mismatch"), kinds)
+        self.assertIn(("self", "invalid_reply_reference"), kinds)
+        self.assertIn(("self", "missing_send"), kinds)
+
+    def test_corrections_do_not_inflate_messages_or_duplicates(self):
+        self.log("root", "send", "ASK", "a")
+        self.log("impl", "recv", "ASK", "a")
+        code, _, _ = run(["log", "--mission", self.mission, "--session", "root", "--kind", "correction",
+                          "--msg-id", "a", "--at", "2026-10-22T05:59:00Z"])
+        self.assertEqual(code, 0)
+        report = self.report()
+        self.assertEqual(report["message_anomalies"], [])
+        self.assertEqual(report["pairs"][0]["seconds"], 60.0)
+        self.assertEqual(len(report["corrections"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

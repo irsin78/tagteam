@@ -34,6 +34,99 @@ LEGACY_CROSS = {'vendor_precedence': {'implementation_default': 'other'}}
 
 
 class HostRoutes(unittest.TestCase):
+    def test_child_prepare_identity_preservation_and_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            common = root / 'common'
+            common.mkdir()
+            target = root / '.codex/hooks.json'
+            target.parent.mkdir()
+            target.write_bytes(b'preserve existing bytes')
+            head = 'a' * 40
+            def git(cwd, *args):
+                self.assertEqual(Path(cwd), root)
+                return str(root) if args[-1] == '--show-toplevel' else str(common) if args[-1] == '--git-common-dir' else head
+            with patch.object(session, '_git', side_effect=git), patch.object(session, 'linked_worktree_main', return_value=root.parent), patch.object(session, 'check_codex_hooks', return_value=4) as check, patch.object(session.subprocess, 'run') as run, patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0'}):
+                result = {}
+                self.assertEqual(session.prepare_codex_child(str(root), str(common), head, 'unused', result), 4)
+                self.assertEqual(result['preparation'], 'existing')
+                check.assert_called_once()
+                run.assert_not_called()
+                self.assertEqual(target.read_bytes(), b'preserve existing bytes')
+                for count in (0, -1):
+                    check.return_value = count
+                    with self.assertRaisesRegex(ValueError, 'no effective trusted'):
+                        session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+                check.side_effect = ValueError('untrusted')
+                with self.assertRaisesRegex(ValueError, 'untrusted'):
+                    session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+                for expected_common, expected_head in ((str(root), head), (str(common), 'b' * 40), (str(common), 'aaaa')):
+                    with self.assertRaises(ValueError):
+                        session.prepare_codex_child(str(root), expected_common, expected_head, 'unused', {})
+                with patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '1', 'HARNESS_ALLOW_CONTROL_PLANE': '1'}):
+                    with self.assertRaisesRegex(ValueError, 'delegates'):
+                        session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+                with patch.object(session, 'linked_worktree_main', return_value=None):
+                    with self.assertRaisesRegex(ValueError, 'linked child'):
+                        session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+
+    def test_child_prepare_generation_and_partial_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            generator = root / '.claude/scripts/gen-codex-hooks.sh'
+            generator.parent.mkdir(parents=True)
+            generator.write_text('fixture')
+            target = root / '.codex/hooks.json'
+            head = 'a' * 40
+            def git(cwd, *args):
+                if args[0] == 'status': return ''
+                if args[0] == 'ls-files': return 'tracked'
+                return head if args[-1] == 'HEAD' else str(root)
+            def generate(argv, **kwargs):
+                self.assertEqual(argv, [sys.executable, str(generator), '--python', sys.executable])
+                self.assertEqual(kwargs['cwd'], root)
+                self.assertFalse(any(k.upper().startswith('GIT_') for k in kwargs['env']))
+                target.parent.mkdir()
+                target.write_text('generated fixture')
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            with patch.object(session, '_git', side_effect=git), patch.object(session, 'linked_worktree_main', return_value=root.parent), patch.object(session, 'check_codex_hooks', side_effect=ValueError('untrusted')) as check, patch.object(session.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'fixture generation failed')) as run, patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0', 'GIT_CONFIG_COUNT': '1', 'GIT_DIR': 'wrong'}):
+                failed = {}
+                with self.assertRaisesRegex(ValueError, 'generation failed'):
+                    session.prepare_codex_child(str(root), str(root), head, sys.executable, failed)
+                self.assertEqual(failed['preparation'], 'failed')
+                check.assert_not_called()
+                run.side_effect = generate
+                result = {}
+                with self.assertRaisesRegex(ValueError, 'untrusted'):
+                    session.prepare_codex_child(str(root), str(root), head, sys.executable, result)
+                self.assertEqual(result['preparation'], 'generated')
+                self.assertTrue(target.is_file())
+
+    def test_child_prepare_rejects_modified_generator_before_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            generator = root / '.claude/scripts/gen-codex-hooks.sh'
+            generator.parent.mkdir(parents=True)
+            generator.write_text('modified script')
+            for tracked, status in ((None, ''), ('tracked', ' M .claude/scripts/gen-codex-hooks.sh'), ('tracked', ' M .claude/scripts/workspace-snapshot.py'), ('tracked', None)):
+                def git(cwd, *args):
+                    if args[0] == 'ls-files': return tracked
+                    if args[0] == 'status': return status
+                    return 'a' * 40 if args[-1] == 'HEAD' else str(root)
+                with patch.object(session, '_git', side_effect=git), patch.object(session, 'linked_worktree_main', return_value=root.parent), patch.object(session.subprocess, 'run') as run, patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0'}):
+                    with self.assertRaisesRegex(ValueError, 'modified child hook generator'):
+                        session.prepare_codex_child(str(root), str(root), 'a' * 40, sys.executable, {})
+                    run.assert_not_called()
+                    self.assertFalse((root / '.codex').exists())
+
+    def test_hook_cli_zero_compatibility(self):
+        launcher = (HERE / 'codex-run.sh').read_text(encoding='utf-8')
+        self.assertIn('check-codex-hooks', launcher)
+        for flags, expected in (([], 0), (['--json'], 4), (['--workspace-root', str(ROOT)], 4)):
+            with patch.object(sys, 'argv', ['harness-session.py', 'check-codex-hooks', *flags]), patch.object(session, 'check_codex_hooks', return_value=0), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(session.main(), expected)
+                self.assertNotIn('HOOKS_TRUSTED', out.getvalue())
+
     @unittest.skipUnless((ROOT / 'AGENTS.md.template').exists(), 'template source only')
     def test_direct_delegation_instructions_point_to_score_and_scout(self):
         instructions = (ROOT / 'AGENTS.md.template').read_text(encoding='utf-8')

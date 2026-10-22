@@ -33,6 +33,30 @@ detail and prompt skeletons: `docs/peer-sessions.md`.
 
 ## 1. Roles and the responsible orchestrator
 
+### Native Codex child sessions
+
+Use the bounded native recipe in `docs/peer-sessions.md` when the host is Codex.
+The human-started parent remains responsible; both parent-created design and
+implementation tasks are delegates. Pass the requested model explicitly to
+`create_thread`; its wrapper has no effort argument, so record actual effort
+without claiming an override. Do not introduce a relay or recursively spawn workers.
+
+The authorized child creates its own pinned worktree and checks its task-scoped
+attachment. Use the returned `workspaceRoot` explicitly for EVERY command and
+file operation; task metadata cwd is not the worktree. READY reports attachment,
+root, common directory, HEAD and model evidence, then waits. The parent independently
+checks the expected repository and pin and alone runs `prepare-codex-child`.
+Only a positive effective trusted-hook result allows DESIGN and implementation.
+Neither child setup nor a missing local definition authorizes trust repair.
+
+Every new outbound message, including ACK and DECIDE, has a fresh `msg_id`.
+Record `reply_to` for the inbound ID; `ref` remains USER-ANSWER provenance.
+The receive event copies the outbound ID, message kind, phase and reply reference.
+The event report exposes missing/duplicate/mismatched observations; it neither
+delivers messages nor proves delivery merely by reporting no anomalies.
+
+### Claude child sessions
+
 - Two desktop sessions on one machine with fixed titles such as `peer-design` and
   `peer-impl` (any names; the title is the message address). The design session is the one
   the user opens, in the main checkout. It starts the implementation session itself
@@ -275,8 +299,8 @@ lane worktree. Per-lane event files make merges conflict-free. Measured with two
 
 ## 11. Not covered
 
-- Codex session pairs and the exec-driven relay that drives them (both sessions would be
-  parent-created delegates, and the relay's proxy commit is not part of this template).
+- Exec-driven relays, undocumented live-app RPC and native effort mutation. The
+  bounded native Codex procedure above does not grant controller or commit authority.
 - Proxy commits of any kind: the responsible orchestrator reviews and commits.
 - Automatically created peer sessions as orchestrators, new mission states (`needs-input`
   is sufficient so far), and sharing one checkout between two writers as the default (lane

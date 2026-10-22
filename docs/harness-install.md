@@ -223,6 +223,12 @@ operation on unverified platforms is not promised.
 
 ### Codex host (hook mirror and trust registration)
 
+Native child worktrees also require explicit identity and a positive effective trust gate
+before DESIGN. See [native Codex bootstrap](peer-sessions.md#native-codex-bootstrap) for
+the parent-only `prepare-codex-child` interface and required workspace/common-dir/full-SHA
+arguments. An unavailable preparation interface leaves setup incomplete. Delegates never
+generate or repair their own hooks, and preparation never writes trust state.
+
 Establish Codex guards through `.codex/hooks.json`, sharing Claude's decision
 files: SessionStart → `session_preflight.py`, PreToolUse →
 `deny_dangerous.py --host codex`, Stop → `stop_gate.py --host codex`.
@@ -244,8 +250,11 @@ Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
    detection avoids dependence on the desktop app's inherited shell PATH.
 
 3. **Three layers of checks**:
-   - `check-posix.sh` / `check-windows-aliases.ps1` check `.codex/hooks.json`
-     events/registration entries, not hashes, enabled state, or execution.
+   - `check-windows-aliases.ps1` queries effective `hooks/list` for its explicit
+     workspace, checking source, enabled state and current trust; without Codex
+     on PATH this section is skipped as a non-Codex installation. With Codex
+     selected, missing/unverified definitions warn and fail. `check-posix.sh`
+     still checks registration entries only. Neither proves actual hook execution.
      Retrust changed definitions separately. Both run `test_host_routes.py`,
      which detects missing `UserPromptSubmit -> stop_gate.py --new-prompt` wiring.
    - Before execution, `codex-run.sh` queries app-server `hooks/list`: every

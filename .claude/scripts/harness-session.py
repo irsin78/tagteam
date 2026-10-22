@@ -19,9 +19,6 @@ sys.path.insert(0, str(HOOKS))
 from stop_gate import evaluate, evaluate_mission, update_mission, mission_marker  # noqa: E402
 
 
-GIT_OVERRIDES = ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY')
-
-
 def _git(cwd, *args):
     """stdout of a git command, or None on any failure; never raises.
 
@@ -32,7 +29,7 @@ def _git(cwd, *args):
     git = shutil.which('git')
     if not git:
         return None
-    env = {key: value for key, value in os.environ.items() if key not in GIT_OVERRIDES}
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith('GIT_')}
     try:
         done = subprocess.run([git, '-C', str(cwd), *args], capture_output=True, text=True,
                               encoding='utf-8', timeout=10, env=env)
@@ -96,7 +93,7 @@ def hook_expectations(source):
     return expected
 
 
-def check_codex_hooks(root, timeout=20):
+def check_codex_hooks(root, timeout=20, *, details=None):
     """Ask the installed engine about effective trust; never edit trust state.
 
     The accepted source is the project's own .codex/hooks.json or, for a linked
@@ -192,6 +189,8 @@ def check_codex_hooks(root, timeout=20):
         if listed[0] != own.resolve():
             print('Codex hook note: hook definitions come from the main working tree ' + str(listed[0].parent.parent)
                   + ' (linked worktree), not from this worktree', file=sys.stderr)
+        if details is not None:
+            details['sources'] = [str(path) for path in listed]
         return len(by_source[listed[0]])
     finally:
         process.stdin.close()
@@ -202,6 +201,52 @@ def check_codex_hooks(root, timeout=20):
             process.wait(timeout=2)
         reader.join(timeout=2)
         process.stdout.close()
+
+
+def prepare_codex_child(root, expected_common_dir, expected_head, bash, result):
+    """Parent-owned setup, followed by the effective-engine trust gate."""
+    if os.environ.get('HARNESS_DELEGATE_RUN') == '1':
+        raise ValueError('delegates cannot prepare child hooks')
+    if not Path(root).is_absolute() or not Path(expected_common_dir).is_absolute():
+        raise ValueError('workspace and expected common directory must be absolute')
+    root = Path(root).resolve(strict=True)
+    top = _git(root, 'rev-parse', '--show-toplevel')
+    common = _git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir')
+    if not top or Path(top).resolve() != root or not common:
+        raise ValueError('workspace must be the actual Git toplevel')
+    if Path(common).resolve() != Path(expected_common_dir).resolve(strict=True):
+        raise ValueError('unexpected Git common directory')
+    if not re.fullmatch(r'[0-9a-fA-F]{40}|[0-9a-fA-F]{64}', expected_head) or _git(root, 'rev-parse', 'HEAD') != expected_head.lower():
+        raise ValueError('unexpected pinned HEAD')
+    if linked_worktree_main(root) is None:
+        raise ValueError('workspace must be a linked child worktree')
+    target = root / '.codex/hooks.json'
+    # resolve detects directory junctions as well as symlinks on Windows.
+    for path in (target.parent, target):
+        if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()) or not path.resolve().is_relative_to(root):
+            raise ValueError('redirected child hook path')
+    result['preparation'] = 'existing' if target.is_file() else 'not_started'
+    if not target.is_file():
+        generator = root / '.claude/scripts/gen-codex-hooks.sh'
+        if not generator.is_file() or not generator.resolve().is_relative_to(root):
+            raise ValueError('missing or redirected child hook generator')
+        dependencies = ('.claude/scripts/gen-codex-hooks.sh', '.claude/scripts/workspace-snapshot.py')
+        if (not _git(root, 'ls-files', '--error-unmatch', '--', *dependencies)
+                or _git(root, 'status', '--porcelain', '--untracked-files=all', '--', *dependencies) != ''):
+            raise ValueError('modified child hook generator')
+        shell = Path(bash)
+        if not shell.is_absolute() or not shell.is_file() or 'windowsapps' in str(shell).lower():
+            raise ValueError('an absolute real Bash executable is required')
+        env = {key: value for key, value in os.environ.items() if not key.upper().startswith('GIT_')}
+        done = subprocess.run([str(shell), str(generator), '--python', sys.executable],
+                              cwd=root, env=env, capture_output=True, text=True, timeout=30)
+        result['preparation'] = 'generated' if target.is_file() else 'failed'
+        if done.returncode or not target.is_file():
+            raise ValueError('child hook generation failed: ' + (done.stderr or done.stdout).strip())
+    count = check_codex_hooks(root, details=result)
+    if count <= 0:
+        raise ValueError('no effective trusted handlers after child preparation')
+    return count
 
 
 def update_budget(cwd, session, exhausted=None, clear=False):
@@ -269,7 +314,15 @@ def update_time(cwd, session, mode=None, tolerance_min=None, cost_at_tolerance=N
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    commands.add_parser('check-codex-hooks', help='check effective hook trust through the installed Codex engine')
+    check = commands.add_parser('check-codex-hooks', help='check effective hook trust through the installed Codex engine')
+    check.add_argument('--workspace-root')
+    check.add_argument('--json', action='store_true')
+    prepare = commands.add_parser('prepare-codex-child', help='parent-only child setup and effective trust gate')
+    prepare.add_argument('--workspace-root', required=True)
+    prepare.add_argument('--expected-common-dir', required=True)
+    prepare.add_argument('--expected-head', required=True)
+    prepare.add_argument('--bash', required=True)
+    prepare.add_argument('--json', action='store_true')
     start = commands.add_parser('start')
     start.add_argument('--host', choices=('codex', 'claude'), required=True)
     finish = commands.add_parser('finish')
@@ -409,16 +462,30 @@ def main():
         except (ImportError, OSError, ValueError, KeyError, TypeError) as exc:
             parser.error(str(exc))
         return 0
-    if args.command == 'check-codex-hooks':
+    if args.command in ('check-codex-hooks', 'prepare-codex-child'):
+        root = args.workspace_root or os.getcwd()
+        result = {'workspace_root': str(Path(root).resolve()), 'status': 'denied',
+                  'handler_count': 0, 'sources': [], 'error': None}
+        preparing = args.command == 'prepare-codex-child'
+        if preparing:
+            result['preparation'] = 'not_started'
         try:
-            count = check_codex_hooks(os.getcwd())
+            count = (prepare_codex_child(root, args.expected_common_dir, args.expected_head, args.bash, result)
+                     if preparing else check_codex_hooks(root, details=result))
+            result.update(handler_count=count, status='trusted' if count > 0 else 'not_installed')
         except (OSError, ValueError, KeyError, TypeError, queue.Empty, subprocess.SubprocessError) as exc:
-            print('HARNESS_DENIED: Codex hook trust is not confirmed: %s. Check features.hooks and /hooks; '
-                  'hooks/list support is required. HARNESS_ALLOW_UNTRUSTED_HOOKS=1 is only for an '
-                  'explicitly authorized unguarded run.' % (str(exc) or 'query timed out'), file=sys.stderr)
-            return 4
-        print('HOOKS_TRUSTED: %d configured handlers enabled and trusted by Codex' % count)
-        return 0
+            result['error'] = str(exc) or 'query timed out'
+        if args.json:
+            print(json.dumps(result))
+        elif result['status'] == 'trusted':
+            print('HOOKS_TRUSTED: %d configured handlers enabled and trusted by Codex' % result['handler_count'])
+        elif result['status'] == 'not_installed':
+            print('NOT_INSTALLED: no effective project hook definitions')
+        else:
+            print('HARNESS_DENIED: Codex hook trust is not confirmed: ' + result['error']
+                  + '. Check features.hooks and /hooks; hooks/list support is required.', file=sys.stderr)
+        legacy_empty = not preparing and not args.workspace_root and not args.json and result['status'] == 'not_installed'
+        return 0 if result['status'] == 'trusted' or legacy_empty else 4
     if args.command == 'mission':
         try:
             print(update_mission(os.getcwd(), args.session, args.state, args.mission, args.reason, args.run))

@@ -24,6 +24,43 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class InstallChecks(unittest.TestCase):
+    def test_windows_effective_hooks_and_explicit_workspace(self):
+        pwsh = shutil.which('pwsh') or shutil.which('powershell')
+        if not pwsh:
+            self.skipTest('PowerShell required')
+        source = (ROOT / 'check-windows-aliases.ps1').read_text(encoding='utf-8')
+        body = source[source.index('# Codex hook trust'):source.index('# Launcher liveness')]
+        with tempfile.TemporaryDirectory(prefix='effective hooks ') as temp:
+            root = Path(temp).resolve()
+            checker = root / '.claude/scripts/harness-session.py'
+            checker.parent.mkdir(parents=True)
+            checker.write_text("import json,os,sys\nfrom pathlib import Path\nr=Path(__file__).resolve().parents[2]\n(r/'observed.json').write_text(json.dumps({'argv':sys.argv[1:],'cwd':os.getcwd()}))\nx=json.loads((r/'response.json').read_text())\nprint(x['body'])\nsys.exit(x['exit'])\n")
+            probe = root / 'probe.ps1'
+            probe.write_text('$warningCount = 0\nfunction codex {}\n' + body + '\nexit ([int]($warningCount -gt 0))\n', encoding='utf-8')
+            cases = [({'status': 'trusted', 'handler_count': 4, 'sources': ['main/.codex/hooks.json']}, 0, 0),
+                     ({'status': 'not_installed', 'handler_count': 0}, 4, 1),
+                     ({'status': 'denied', 'error': 'disabled'}, 4, 1),
+                     ({'status': 'trusted', 'handler_count': 0}, 0, 1),
+                     ({'status': 'trusted', 'handler_count': 4, 'sources': []}, 0, 1),
+                     ({'status': 'trusted', 'handler_count': 4, 'sources': ['main']}, 4, 1),
+                     ('malformed', 0, 1)]
+            env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ.get('PATH', ''))
+            for data, code, expected in cases:
+                with self.subTest(data=data, code=code):
+                    (root / 'response.json').write_text(json.dumps({'body': json.dumps(data) if isinstance(data, dict) else data, 'exit': code}))
+                    done = subprocess.run([pwsh, '-NoProfile', '-File', str(probe)], cwd=root.parent, env=env, capture_output=True, text=True, encoding='utf-8', timeout=20)
+                    self.assertEqual(done.returncode, expected, done.stdout + done.stderr)
+                    self.assertIn('OK:' if not expected else 'WARN:', done.stdout)
+                    actual = json.loads((root / 'observed.json').read_text())
+                    self.assertEqual(actual['argv'], ['check-codex-hooks', '--workspace-root', str(root), '--json'])
+                    self.assertEqual(Path(actual['cwd']), root)
+            probe.write_text('$warningCount = 0\n' + body + '\nexit ([int]($warningCount -gt 0))\n', encoding='utf-8')
+            env['PATH'] = str(Path(sys.executable).parent)
+            done = subprocess.run([pwsh, '-NoProfile', '-File', str(probe)], cwd=root.parent, env=env, capture_output=True, text=True, encoding='utf-8', timeout=20)
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertIn('non-Codex installation', done.stdout)
+            self.assertNotIn('OK:', done.stdout)
+
     def test_split_guides_copy_targets_and_anchor_links(self):
         docs = ROOT / 'docs'
         if not (docs / 'harness-install.md').read_text(encoding='utf-8').lstrip().startswith('# Harness installation'):
@@ -88,15 +125,6 @@ class InstallChecks(unittest.TestCase):
 
     def test_codex_registration_tracks_installed_events(self):
         runners = []
-        pwsh = shutil.which('pwsh') or shutil.which('powershell')
-        if pwsh:
-            source = (ROOT / 'check-windows-aliases.ps1').read_text(encoding='utf-8')
-            body = source[source.index('# Codex hook trust'):source.index('# Launcher liveness')]
-            config = "$codexConfig = Join-Path $codexHome 'config.toml'"
-            self.assertIn(config, body)
-            body = body.replace(config, "$codexConfig = Join-Path $PSScriptRoot 'fixture-config.toml'")
-            script = '$warningCount = 0\nfunction codex {}\n' + body + '\nexit ([int]($warningCount -gt 0))\n'
-            runners.append(('Windows', 'probe.ps1', [pwsh, '-NoProfile', '-File'], script))
         bash = host_tests.routes.find_bash()
         if bash:
             source = (ROOT / 'check-posix.sh').read_text(encoding='utf-8')

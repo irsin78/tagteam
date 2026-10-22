@@ -22,13 +22,15 @@ Scope and limits (stated, not solved):
   records carrying `--at`; they attach to the record with the same msg_id (else the same session,
   msg, phase and lane whose kind is the prefix of the note, e.g. `send: ...`). Unmatched corrections
   change nothing and are listed as applied counts only.
-- Pairing starts from `send` records that carry a msg_id: a `recv` without a send is not flagged,
-  and several `recv` with the same msg_id keep the last one.
+- Pairing requires an unambiguous send/recv ID and matching metadata. Missing observations,
+  missing IDs, duplicate IDs and invalid reply references are informational report anomalies;
+  a clean report is not proof of delivery. Logging never scans other writers' files.
 - Timings use `at` (corrected) and fall back to `ts`; a DONE before its DESIGN is reported as a
   clock error, not as a negative duration. Costs sum `cost` records once per run id and keep the
   unmeasured count apart. The tool measures; it makes no efficiency claim.
-- `--transport codex`, `--body`, `--ref` and `--trust-dir` exist for an external deliverer that is
-  not part of this template (the Claude desktop transport is SendMessage). USER-ANSWER records
+- `--transport codex` records separately submitted native messages or an external deliverer;
+  this tool supplies no transport (the Claude desktop transport is SendMessage). `--ref` is
+  USER-ANSWER provenance; `--reply-to` references an earlier outbound ID. USER-ANSWER records
   are refused outside a trust directory so a peer cannot forge a user decision inside the mission.
 """
 from __future__ import annotations
@@ -42,7 +44,7 @@ from typing import Iterable, Optional
 
 KINDS = ("send", "recv", "notice", "guard", "merge", "eval", "verdict", "stop", "cost", "note", "correction")
 FIELDS = ("ts", "at", "session", "kind", "phase", "lane", "peer", "msg", "head", "run", "tokens", "usd", "note",
-          "transport", "body", "msg_id", "files", "ref")
+          "transport", "body", "msg_id", "reply_to", "files", "ref")
 # `ts` is when the line was written; `at` (optional) is when the thing happened. A `correction`
 # record re-states `at` for an earlier record of the same session (matched by msg_id, else by
 # kind+msg+phase+lane) — the original line is never edited.
@@ -124,6 +126,7 @@ def log_event(args: argparse.Namespace) -> int:
         "transport": args.transport,
         "body": args.body,
         "msg_id": args.msg_id,
+        "reply_to": args.reply_to,
         "files": args.files,
         "ref": args.ref,
     }
@@ -132,6 +135,15 @@ def log_event(args: argparse.Namespace) -> int:
         return 2
     if args.kind == "correction" and record["at"] is None:
         print("error: a correction needs --at (the corrected occurrence time)", file=sys.stderr)
+        return 2
+    if args.reply_to is not None and (not args.reply_to.strip() or args.reply_to == args.msg_id):
+        print("error: --reply-to must be nonempty and different from --msg-id", file=sys.stderr)
+        return 2
+    if args.msg_id is not None and not args.msg_id.strip():
+        print("error: --msg-id must be nonempty", file=sys.stderr)
+        return 2
+    if args.transport == "codex" and args.kind in ("send", "recv") and not args.msg_id:
+        print("error: Codex send/recv needs --msg-id (receipts copy the outbound ID)", file=sys.stderr)
         return 2
     record = {key: value for key, value in record.items() if value is not None}
     trusted = args.kind == "send" and args.session == "orchestrator" and str(args.msg) == "USER-ANSWER"
@@ -162,7 +174,7 @@ def read_events(mission: str) -> tuple[list[dict], int]:
         if not name.endswith(".jsonl"):
             continue
         with open(os.path.join(folder, name), "rb") as stream:
-            for raw in stream:
+            for line_number, raw in enumerate(stream, 1):
                 raw = raw.strip()
                 if not raw:
                     continue
@@ -175,6 +187,8 @@ def read_events(mission: str) -> tuple[list[dict], int]:
                     skipped += 1
                     continue
                 record.setdefault("session", name[:-6])
+                record["source_file"] = name
+                record["source_line"] = line_number
                 records.append(record)
     records = apply_corrections(records)
     records.sort(key=lambda item: (parse_ts(item.get("at") or item["ts"]), item.get("session", "")))
@@ -226,6 +240,72 @@ def lanes_of(records: list[dict], phase: str) -> list[str]:
 
 def fmt(value) -> str:
     return "n/a" if value is None else str(value)
+
+
+def message_evidence(records: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Keep all observations; never pick a last-wins receipt for an ambiguous ID."""
+    groups, unidentified, anomalies, pairs = {}, [], [], []
+
+    def anomaly(identifier, kind, observations):
+        anomalies.append({"msg_id": identifier, "type": kind,
+                          "send_count": sum(r.get("kind") == "send" for r in observations),
+                          "recv_count": sum(r.get("kind") == "recv" for r in observations),
+                          "records": observations})
+
+    for record in records:
+        if record.get("kind") not in ("send", "recv"):
+            continue  # corrections adjust times, not message counts
+        identifier = record.get("msg_id")
+        if not isinstance(identifier, str) or not identifier.strip():
+            anomaly(None, "missing_id", [record])
+            unidentified.append(record)
+        else:
+            groups.setdefault(identifier, []).append(record)
+    outbound = {identifier for identifier, observations in groups.items()
+                if any(r.get("kind") == "send" for r in observations)}
+    for record in unidentified:
+        if "reply_to" not in record:
+            continue
+        reference = record["reply_to"]
+        if not isinstance(reference, str) or not reference.strip():
+            anomaly(None, "invalid_reply_reference", [record])
+        elif reference not in outbound:
+            anomaly(None, "missing_reply_target", [record])
+    for identifier, observations in sorted(groups.items()):
+        sends = [r for r in observations if r.get("kind") == "send"]
+        recvs = [r for r in observations if r.get("kind") == "recv"]
+        if not sends:
+            anomaly(identifier, "missing_send", observations)
+        if len(sends) > 1:
+            anomaly(identifier, "duplicate_send", observations)
+        if len(recvs) > 1:
+            anomaly(identifier, "duplicate_recv", observations)
+        mismatch = len(sends) == 1 and any(
+            any(recv.get(key) != sends[0].get(key) for key in ("msg", "phase", "reply_to"))
+            for recv in recvs)
+        if mismatch:
+            anomaly(identifier, "metadata_mismatch", observations)
+        for kind, selected in (
+                ("invalid_reply_reference", [r for r in observations if "reply_to" in r and
+                                            (not isinstance(r["reply_to"], str)
+                                             or not r["reply_to"].strip() or r["reply_to"] == identifier)]),
+                ("missing_reply_target", [r for r in observations if isinstance(r.get("reply_to"), str)
+                                         and r["reply_to"].strip() and r["reply_to"] != identifier
+                                         and r["reply_to"] not in outbound])):
+            if selected:
+                anomaly(identifier, kind, selected)
+        if len(sends) != 1 or len(recvs) > 1 or mismatch:
+            continue
+        send, recv = sends[0], recvs[0] if recvs else None
+        delta = seconds_between(send, recv) if recv else None
+        pairs.append({"msg_id": identifier, "msg": send.get("msg"), "phase": send.get("phase"),
+                      "sent_at": send.get("at"), "received_at": recv.get("at") if recv else None,
+                      "seconds": None if delta is not None and delta < 0 else delta,
+                      "problem": "missing (no recv)" if not recv else
+                      ("reversed (recv before send)" if delta is not None and delta < 0 else None)})
+    anomalies.sort(key=lambda a: (a["msg_id"] or "", a["type"],
+                                 json.dumps(a["records"], sort_keys=True, ensure_ascii=False)))
+    return pairs, anomalies
 
 
 def build_report(records: list[dict]) -> dict:
@@ -294,29 +374,19 @@ def build_report(records: list[dict]) -> dict:
         row["cost_runs"] = len(cost_records)
         report["phases"].append(row)
     report["costs"] = [r for r in records if r.get("kind") == "cost"]
-    # message pairing by msg_id: a send whose matching recv is missing or earlier than the send
-    pairs = []
-    sends = [r for r in records if r.get("kind") == "send" and r.get("msg_id")]
-    recvs = {r.get("msg_id"): r for r in records if r.get("kind") == "recv" and r.get("msg_id")}
-    for send in sends:
-        recv = recvs.get(send["msg_id"])
-        delta = seconds_between(send, recv) if recv else None
-        pairs.append({"msg_id": send["msg_id"], "msg": send.get("msg"), "phase": send.get("phase"),
-                      "sent_at": send.get("at"), "received_at": recv.get("at") if recv else None,
-                      "seconds": None if delta is not None and delta < 0 else delta,
-                      "problem": "missing (no recv)" if not recv else ("reversed (recv before send)" if delta is not None and delta < 0 else None)})
-    report["pairs"] = pairs
+    report["pairs"], report["message_anomalies"] = message_evidence(records)
     report["corrections"] = [r for r in records if r.get("kind") == "correction"]
     return report
 
 
 def render_markdown(report: dict, skipped: int) -> str:
     lines = ["## Sent and received (derived from events/)", "",
-             "| time (UTC) | session | kind | msg | phase | lane | peer | HEAD | note |", "|---|---|---|---|---|---|---|---|---|"]
+             "| time (UTC) | session | kind | msg | phase | lane | peer | HEAD | note | msg_id | reply_to |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in report["messages"]:
-        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             r["ts"], r.get("session", ""), r.get("kind", ""), r.get("msg", ""), fmt(r.get("phase")) if r.get("phase") is not None else "",
-            r.get("lane", "") or "", r.get("peer", "") or "", r.get("head", "") or "", r.get("note", "") or ""))
+            r.get("lane", "") or "", r.get("peer", "") or "", r.get("head", "") or "", r.get("note", "") or "",
+            r.get("msg_id", "") or "", r.get("reply_to", "") or ""))
     lines += ["", "## Phase timings", "",
               "| phase | lane | DESIGN sent | DONE received | lane s | phase span s | lane sum s | saved s | TOKENS | USD |",
               "|---|---|---|---|---|---|---|---|---|---|"]
@@ -337,6 +407,17 @@ def render_markdown(report: dict, skipped: int) -> str:
             lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
                 pair["msg_id"], pair.get("msg", ""), fmt(pair.get("phase")) if pair.get("phase") is not None else "",
                 fmt(pair["sent_at"]), fmt(pair["received_at"]), fmt(pair["seconds"]), pair["problem"] or ""))
+    if report.get("message_anomalies"):
+        lines += ["", "## Message anomalies (log observations, not proof of transport loss)", "",
+                  "| msg_id | anomaly | sends | receives | evidence (session/kind/msg/phase/source) |",
+                  "|---|---|---|---|---|"]
+        for anomaly in report["message_anomalies"]:
+            evidence = "; ".join("%s/%s/%s/%s/%s:%s" % (
+                r.get("session", ""), r.get("kind", ""), r.get("msg", ""), r.get("phase", ""),
+                r.get("source_file", ""), r.get("source_line", "")) for r in anomaly["records"])
+            lines.append("| %s | %s | %s | %s | %s |" % (
+                anomaly["msg_id"] or "(missing)", anomaly["type"], anomaly["send_count"],
+                anomaly["recv_count"], evidence))
     if report.get("corrections"):
         lines += ["", "%d correction(s) applied (original lines untouched; timings use the corrected at)" % len(report["corrections"])]
     if skipped:
@@ -380,9 +461,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     log.add_argument("--note")
     log.add_argument("--ts", help="override the timestamp (ISO 8601 UTC); default now")
     log.add_argument("--transport", choices=("claude", "codex"),
-                     help="how the message travels (claude: desktop SendMessage; codex: an external deliverer, not included)")
-    log.add_argument("--body", help="full message text (required for transport codex: the deliverer sends it)")
-    log.add_argument("--msg-id", dest="msg_id", help="delivery id reported by the transport")
+                     help="separately submitted transport (claude: SendMessage; codex: native message or external deliverer)")
+    log.add_argument("--body", help="full message text; this logger does not submit messages")
+    log.add_argument("--msg-id", dest="msg_id", help="unique outbound ID, copied exactly on receipt; required for Codex send/recv")
+    log.add_argument("--reply-to", dest="reply_to", help="inbound message ID this new message replies to (not USER-ANSWER provenance)")
     log.add_argument("--files", help="comma-separated paths this turn changed (the responsible orchestrator commits only these)")
     log.add_argument("--ref", help="USER-ANSWER only: the user's words or message reference (provenance)")
     log.add_argument("--at", help="when it happened (ISO 8601 UTC) if different from now; required for corrections")
