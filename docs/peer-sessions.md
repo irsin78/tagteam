@@ -75,8 +75,13 @@ stays off unless I switch it on here). Commit only the files declared in [PEER D
 explicit path, after comparing the report with the diff; preserve and compare anything
 outside the declaration. Log every send/receipt/guard/eval/verdict/cost with
 tools/peer-event.py and paste its report into state.md.
-Start: set your title to <design-title>, arm the guard, write plan.md §phase 1 (brief +
-design), flip the baton, send [PEER DESIGN] phase 1 [id:…], log it, end with needs-input.
+Start: set your title to <design-title>, arm the guard. Start the implementation session
+yourself: run `python .claude/scripts/harness-route.py --host claude --role implement
+--assess <…,volume=2>`, then start_session with initiation "user_asked", use_worktree true,
+the route's model and effort (never omit them: the child would inherit your model), the
+title <impl-title> and the implementation prompt as the brief; quote the announce line.
+Confirm it in ListAgents, write plan.md §phase 1 (brief + design), flip the baton, send
+[PEER DESIGN] phase 1 [id:…], log it, end with needs-input.
 ```
 
 ## What the responsible orchestrator does with a `[PEER DONE]`

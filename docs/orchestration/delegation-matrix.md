@@ -218,6 +218,10 @@ task: state the task in one clause and quote that line verbatim, replacing
 model/effort only when the launcher call differs (say why). Capability band S-E
 differs from verification Tier 0-2.
 Unknown/inherited settings stay explicit; a planned route is not a running worker.
+A child session started with `start_session` (peer-sessions skill) is a launch in this
+sense: resolve the implement route first, pass its `model` and `effort` to
+`start_session` and quote the announce line. Omitted, the child inherits the parent's
+model, so an S-band design session would hand B-band work to an S-band model.
 Announce material changes before retry/fallback or direct takeover, including lost
 independence. Unchanged retries may reference the first notice; polling needs none.
 Continue authorized work immediately: this is a progress update, not an approval gate.
