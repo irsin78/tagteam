@@ -252,59 +252,32 @@ else {
     Write-Host 'WARN: missing .claude/scripts/test_host_routes.py (host parity not checked).'
 }
 
-# Codex hook trust: the mirrored guards run only once trusted.
-# Codex records trust in ~/.codex/config.toml under
-#   [hooks.state.'<ABSOLUTE hooks.json path>:<event>:<entry>:<handler>']
-# keyed by absolute path, one entry PER EVENT. Read events from the installed
-# definition so new hooks are not silently omitted. This checks registration
-# presence only, not enabled state, the current definition hash, or execution.
-$codexHooks = Join-Path $PSScriptRoot '.codex/hooks.json'
-$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
-$codexConfig = Join-Path $codexHome 'config.toml'
-if (-not (Test-Path -LiteralPath $codexHooks)) {
-    Write-Host "INFO: no .codex/hooks.json in this checkout (Codex host guards not installed)."
-}
-elseif (-not (Get-Command codex -ErrorAction SilentlyContinue)) {
-    Write-Host "INFO: .codex/hooks.json present but codex is not on PATH; trust check skipped."
-}
-elseif (-not (Test-Path -LiteralPath $codexConfig)) {
-    $warningCount++
-    Write-Host "WARN: Codex hook trust not registered: $codexConfig does not exist."
-    Write-Host "      Run codex in $PSScriptRoot once and trust the configured hooks with /hooks (manual: install section, Codex host)."
+# Codex hook trust: query effective engine state for THIS workspace.
+# Registration text alone cannot establish source, enabled state or current hash.
+$checker = Join-Path $PSScriptRoot '.claude/scripts/harness-session.py'
+if (-not (Get-Command codex -ErrorAction SilentlyContinue)) {
+    Write-Host 'INFO: codex not on PATH; effective hook check skipped (non-Codex installation).'
 }
 else {
+try {
+    if (-not (Test-Path -LiteralPath $checker -PathType Leaf)) { throw 'effective hook checker missing' }
+    Push-Location -LiteralPath $PSScriptRoot
     try {
-        $definition = Get-Content -LiteralPath $codexHooks -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-        if ($definition.hooks -isnot [System.Management.Automation.PSCustomObject]) { throw 'hooks must be an object' }
-        $eventNames = @($definition.hooks.PSObject.Properties | ForEach-Object { $_.Name })
-        if ($eventNames.Count -eq 0) { throw 'hooks must not be empty' }
-        $events = @(foreach ($name in $eventNames) {
-            if ($name -cnotmatch '^[A-Z][A-Za-z0-9]*$') { throw 'invalid hook event name' }
-            $name = $name -creplace '([A-Z]+)([A-Z][a-z])', '$1_$2'
-            ($name -creplace '([a-z0-9])([A-Z])', '$1_$2').ToLowerInvariant()
-        })
-        $hooksKey = ((Resolve-Path -LiteralPath $codexHooks).Path -replace '\\', '/').ToLowerInvariant()
-        $configText = ((Get-Content -LiteralPath $codexConfig -Raw -ErrorAction Stop) -replace '\\', '/').ToLowerInvariant()
-        $missing = @()
-        foreach ($event in $events) {
-            if ($configText -notmatch [regex]::Escape("$hooksKey" + ":$event" + ":")) {
-                $missing += $event
-            }
-        }
-        if ($missing.Count -gt 0) {
-            $warningCount++
-            Write-Host "WARN: Codex hook trust missing for: $($missing -join ' ') (registration entries absent)."
-            Write-Host "      Run codex in $PSScriptRoot once and trust the configured hooks with /hooks; re-trust after every edit of .codex/hooks.json."
-        }
-        else {
-            Write-Host "OK: Codex hook registration entries found for: $($eventNames -join ', ')."
-            Write-Host 'INFO: Registration presence only; enabled state, current hash and actual hook execution are not verified.'
-        }
+        $hookJson = (& python $checker check-codex-hooks --workspace-root $PSScriptRoot --json 2>$null) -join "`n"
+        $hookExit = $LASTEXITCODE
     }
-    catch {
-        $warningCount++
-        Write-Host "WARN: Cannot check Codex hook registrations; check $codexHooks and $codexConfig."
+    finally { Pop-Location }
+    $effective = $hookJson | ConvertFrom-Json -ErrorAction Stop
+    if ($hookExit -ne 0 -or $effective.status -ne 'trusted' -or $effective.handler_count -le 0 -or @($effective.sources).Count -eq 0) {
+        throw "status=$($effective.status); $($effective.error)"
     }
+    Write-Host "OK: Codex effective hooks: $($effective.handler_count) enabled and trusted handlers; sources: $($effective.sources -join ', ')"
+}
+catch {
+    $warningCount++
+    Write-Host "WARN: Codex effective hook trust unverified: $($_.Exception.Message)"
+    Write-Host "      Check features.hooks and /hooks in $PSScriptRoot; this diagnostic does not change trust."
+}
 }
 
 # Launcher liveness: the launchers carry the strongest

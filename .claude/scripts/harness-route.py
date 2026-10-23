@@ -922,6 +922,18 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             if route['suggested_timeout_s'] > FOREGROUND_TIMEOUT_CAP_S:
                 route['needs_detached'] = True
                 route['reason'] += f' (exceeds the {FOREGROUND_TIMEOUT_CAP_S} s foreground cap; run with -b --wait)'
+        # Long run (writing roles only): assessed volume 2 means a drifting worker
+        # accumulates changes that are expensive to roll back. The flag asks the
+        # parent to run the work as an implementation session in its own worktree
+        # (visible, steerable, discarded by dropping the branch; peer-sessions
+        # skill) instead of a headless launcher unit; when it delegates to a
+        # launcher anyway it splits the work into foreground-budget units with -P.
+        # Timeout and latency do not set it: the volume-0 seed already suggests
+        # more than the foreground cap, and a detached-only effort row is worker
+        # speed, not work volume. `reason` is unchanged: the flag and the announce
+        # suffix carry it.
+        if role in ('implement', 'write') and str(assess.get('volume', '')) == '2':
+            route['long_run'] = True
     route['announce'] = announce_line(route, assessment, role, tier, latency, len(ordered),
                                       scoring, fallback, retry_reason, refused_vendor, keep,
                                       bool(worker), authors, cross_lane_s, ranked_scores)
@@ -980,6 +992,8 @@ def announce_line(route, assessment, role, tier, latency, eligible_count, scorin
         why.append(f"vendor differs from author ({'/'.join(sorted(authors))})")
     if route.get('needs_detached'):
         why.append('detached run (-b --wait)')
+    if route.get('long_run'):
+        why.append('long run (volume 2): implementation session in its own worktree, not a launcher unit')
     line = f"{head} -> {route['model']}/{effort} via {launcher}: " + '; '.join(why)
     if scoring and route.get('decision') == 'direct' and len(ranked_scores) > 1:
         winner, runner = ranked_scores[0], ranked_scores[1]

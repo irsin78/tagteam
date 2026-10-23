@@ -39,6 +39,27 @@ Export the router's `launch_env` and pass `-t suggested_timeout_s` to the launch
 (detached `-b` for `max` and whenever `needs_detached` is true; a suggestion above
 570 s is detached because foreground `-t` is capped there), so band, assessment and
 role are recorded without hand-typing. Assessed routes without volume use the small-task estimate for timeout.
+`long_run: true` (implement/write routes with assessed volume 2; timeout and
+latency class do not set it) flags work whose rollback is expensive if the
+worker drifts: the announce line ends with `long run (volume 2): implementation session in its own worktree, not a launcher unit`. The default handling
+is not a launcher at all: the orchestrating (design) session starts an
+implementation session in its own worktree and branch
+(`.claude/skills/peer-sessions/SKILL.md`, section 1), so the work is visible
+turn by turn in the app, the user can steer it directly, and a wrong run is
+discarded by dropping the branch. Delegate such work to a launcher only when
+the user asks for it or the host has no sessions (headless); then split it into
+change units that each fit one foreground budget and are verifiable on their
+own, inspect the diff, run the affected checks and commit explicit paths after
+each unit, and pass `-P`: the worker appends one `- done | next | blocked` line
+per completed step to the run's progress file
+(`.harness/progress/progress-<run id>.md`, reported as `PROGRESS:`), and a
+`-P` run that reports no milestones prints `PROGRESS_WARNING` without changing
+STATUS. Watch the progress file, and for a
+Claude worker the live trace (`.claude/claude-logs/trace-<run id>.log`, one line
+per tool call and summary, reported as `TRACE:`), with a bounded read (or Monitor
+on Claude Code) while a detached unit runs; a stalled or off-course milestone or
+tool call is the moment to stop the run, not after it ends. Reviews
+and reads are never long runs: they accumulate nothing to roll back.
 Choose role -> capability band -> latency class -> risk floor/budget -> specialty
 and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
@@ -197,6 +218,10 @@ task: state the task in one clause and quote that line verbatim, replacing
 model/effort only when the launcher call differs (say why). Capability band S-E
 differs from verification Tier 0-2.
 Unknown/inherited settings stay explicit; a planned route is not a running worker.
+A child session started with `start_session` (peer-sessions skill) is a launch in this
+sense: resolve the implement route first, pass its `model` and `effort` to
+`start_session` and quote the announce line. Omitted, the child inherits the parent's
+model, so an S-band design session would hand B-band work to an S-band model.
 Announce material changes before retry/fallback or direct takeover, including lost
 independence. Unchanged retries may reference the first notice; polling needs none.
 Continue authorized work immediately: this is a progress update, not an approval gate.

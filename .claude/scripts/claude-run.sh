@@ -37,6 +37,7 @@ LOG_DIR=.claude/claude-logs
 PROMPT_FILE=
 VERIFY_CMD=
 VERIFY_GIVEN=0
+LONG_RUN=0
 DETACH=0
 WORKER_ROLE=implement
 TIMEOUT=570
@@ -53,7 +54,8 @@ timing_init "$LAUNCH_CLOCK"
 . "$SCRIPT_DIR/run-state.sh" || exit 4
 
 usage() {
-    echo 'Usage: claude-run.sh -p <prompt-file> [-m MODEL] [-e EFFORT] [-a implement|web] [-s workspace-write|read-only] [-v VERIFY_SCRIPT_FILE] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b]' >&2
+    echo 'Usage: claude-run.sh -p <prompt-file> [-m MODEL] [-e EFFORT] [-a implement|web] [-s workspace-write|read-only] [-v VERIFY_SCRIPT_FILE] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b] [-P]' >&2
+    echo '       -P marks a long run: the worker must write milestones to the progress file; none reported -> PROGRESS_WARNING' >&2
     echo '       -t above 570 requires -b (the Bash tool caps a foreground call at 600 s)' >&2
     echo '       claude-run.sh --status <RUN_ID>' >&2
     echo '       claude-run.sh --wait <RUN_ID> [-t SECONDS<=570]' >&2
@@ -66,7 +68,7 @@ usage() {
 # Read-back commands: no delegation, no quota — only the state record.
 launcher_readback "$@"
 
-while getopts ":p:m:e:a:s:v:l:t:b" opt; do
+while getopts ":p:m:e:a:s:v:l:t:bP" opt; do
     case "$opt" in
         p) PROMPT_FILE=$OPTARG ;;
         m) MODEL=$OPTARG ;;
@@ -77,9 +79,48 @@ while getopts ":p:m:e:a:s:v:l:t:b" opt; do
         l) LOG_DIR=$OPTARG ;;
         t) TIMEOUT=$OPTARG ;;
         b) DETACH=1 ;;
+        P) LONG_RUN=1 ;;
         *) usage ;;
     esac
 done
+
+# ---- progress file (worker-written milestones, launcher-read) ----
+# The worker appends one line per milestone; the launcher only reports the
+# count and the path. Never interpolated into the constant role instruction:
+# the path travels as a separate launcher-generated sentence and as
+# HARNESS_PROGRESS_FILE in the child environment. Read-only runs get neither
+# (plan mode / a read-only sandbox cannot write it). The file lives under
+# .harness/progress/ (gitignored by the install contract), not under the log
+# directory: Claude Code refuses delegate writes to any `.claude/` path
+# (measured 2026-10-21, Write denied with --permission-prompts none).
+PROGRESS_DIR=${HARNESS_PROGRESS_DIR:-.harness/progress}
+progress_path_for_worker() {
+    local dir base
+    dir=$(cd "$(dirname "$1")" 2>/dev/null && pwd) || { printf '%s' "$1"; return; }
+    base=$(basename "$1")
+    if command -v cygpath >/dev/null 2>&1; then cygpath -m "$dir/$base"; else printf '%s' "$dir/$base"; fi
+}
+progress_count() {
+    [ -s "$1" ] || { echo 0; return; }
+    # Only well-formed milestone lines count; prose or other notes do not.
+    grep -c -E '^- done: .* \| next: .* \| blocked: ' "$1" 2>/dev/null || echo 0
+}
+progress_report() {
+    local count
+    if [ "$SANDBOX" = read-only ]; then
+        echo "PROGRESS: disabled (read-only run; no progress file requested)"
+        return
+    fi
+    count=$(progress_count "$PROGRESS_FILE")
+    if [ "$count" -gt 0 ]; then
+        echo "PROGRESS: $PROGRESS_FILE ($count milestones)"
+    else
+        echo "PROGRESS: none ($PROGRESS_FILE not written)"
+    fi
+    if [ "$LONG_RUN" -eq 1 ] && [ "$count" -eq 0 ]; then
+        echo "PROGRESS_WARNING: -P long run reported no milestones; read the trace/log before trusting the result and split the next unit smaller"
+    fi
+}
 
 # ---- bindings (same resolution as codex-run.sh: public + local, local
 # wins key-by-key; the first active Claude implement worker supplies the Claude
@@ -186,6 +227,7 @@ command -v claude >/dev/null 2>&1 || {
 
 launcher_timeout || exit 4
 
+mkdir -p "$PROGRESS_DIR" 2>/dev/null
 mkdir -p "$LOG_DIR" 2>/dev/null || {
     echo "CLAUDE_UNAVAILABLE: cannot create log dir $LOG_DIR" >&2
     exit 2
@@ -223,22 +265,58 @@ REPORT_FILE=$(report_file "$RUN_ID")
 RUN_LOG="$LOG_DIR/run-$TIMESTAMP.log"
 RUN_JSON="$LOG_DIR/run-$TIMESTAMP.json"
 LAST_MSG="$LOG_DIR/lastmsg-$TIMESTAMP.txt"
-CHANGED_FILE=$(mktemp "${TMPDIR:-/tmp}/claude-changed.XXXXXX") || exit 2
-CP_BEFORE=$(mktemp "${TMPDIR:-/tmp}/claude-cp-before.XXXXXX") || exit 2
-CP_AFTER=$(mktemp "${TMPDIR:-/tmp}/claude-cp-after.XXXXXX") || exit 2
-TREE_BEFORE=$(mktemp "${TMPDIR:-/tmp}/claude-tree-before.XXXXXX") || exit 2
-TREE_AFTER=$(mktemp "${TMPDIR:-/tmp}/claude-tree-after.XXXXXX") || exit 2
+PROGRESS_FILE="$PROGRESS_DIR/progress-$TIMESTAMP.md"
+# Live trace (claude-trace.py): claude's stream-json stdout goes to STREAM_FILE,
+# the converter follows it into TRACE_FILE and publishes the result event as
+# RUN_JSON. The sentinel lives OUTSIDE the tree (never a workspace change).
+STREAM_FILE="$LOG_DIR/stream-$TIMESTAMP.jsonl"
+TRACE_FILE="$LOG_DIR/trace-$TIMESTAMP.log"
+# Traps first, resources second: every path variable starts empty so that an
+# exit or signal during the allocations below cleans exactly what exists.
+SENTINEL_DIR=
+SENTINEL=
+TRACE_PID=
+TRACE_EXIT=
+TRACE_WARNING=
+CHANGED_FILE=
+CP_BEFORE=
+CP_AFTER=
+TREE_BEFORE=
+TREE_AFTER=
 FINAL_STATE_WRITTEN=0
-cleanup() { rm -f "$CHANGED_FILE" "$CP_BEFORE" "$CP_AFTER" "$TREE_BEFORE" "$TREE_AFTER" ; }
+cleanup() {
+    rm -f "$CHANGED_FILE" "$CP_BEFORE" "$CP_AFTER" "$TREE_BEFORE" "$TREE_AFTER"
+    [ -z "$SENTINEL_DIR" ] || rm -rf "$SENTINEL_DIR"
+}
+# trace_stop: end the converter now (TERM, up to 5 s, then KILL) and sweep
+# the temp file an interrupted atomic write may have left next to RUN_JSON.
+# Called on every exit path after the claude child is gone; the converter
+# latches the sentinel, so cleanup removing SENTINEL_DIR afterwards cannot
+# restart polling.
+trace_stop() {
+    local n=0
+    if [ -n "$TRACE_PID" ]; then
+        if pid_alive "$TRACE_PID"; then
+            kill -TERM "$TRACE_PID" 2>/dev/null
+            while pid_alive "$TRACE_PID" && [ "$n" -lt 25 ]; do sleep 0.2; n=$((n + 1)); done
+            pid_alive "$TRACE_PID" && kill -KILL "$TRACE_PID" 2>/dev/null
+        fi
+        wait "$TRACE_PID" 2>/dev/null
+        TRACE_PID=
+    fi
+    rm -f "$RUN_JSON".tmp*
+}
 on_exit() {
     if [ "$FINAL_STATE_WRITTEN" -eq 0 ] && [ -f "$(state_file "$RUN_ID")" ]; then
         state_write aborted 1 "launcher exited before postflight"
     fi
+    trace_stop
     cleanup
 }
 on_signal() {
     CHILD_TREE_NOTE="no child was running"
     terminate_child_tree
+    trace_stop
     state_write aborted 143 "launcher received a termination signal; claude child pid ${CHILD_PID:-none}: $CHILD_TREE_NOTE"
     FINAL_STATE_WRITTEN=1
     cleanup
@@ -246,6 +324,13 @@ on_signal() {
 }
 trap on_exit EXIT
 trap on_signal HUP INT TERM
+SENTINEL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-sentinel.XXXXXX") || exit 2
+SENTINEL="$SENTINEL_DIR/done"
+CHANGED_FILE=$(mktemp "${TMPDIR:-/tmp}/claude-changed.XXXXXX") || exit 2
+CP_BEFORE=$(mktemp "${TMPDIR:-/tmp}/claude-cp-before.XXXXXX") || exit 2
+CP_AFTER=$(mktemp "${TMPDIR:-/tmp}/claude-cp-after.XXXXXX") || exit 2
+TREE_BEFORE=$(mktemp "${TMPDIR:-/tmp}/claude-tree-before.XXXXXX") || exit 2
+TREE_AFTER=$(mktemp "${TMPDIR:-/tmp}/claude-tree-after.XXXXXX") || exit 2
 
 # ---- preflight ----
 SETTINGS_LOCAL=.claude/settings.local.json
@@ -257,7 +342,8 @@ control_before
 # Only this run's own output files are excluded. A configurable -l directory
 # may also contain project files (including -l .); never hide the whole tree.
 WORKSPACE_EXCLUDES=(
-    --exclude "$RUN_LOG" --exclude "$RUN_JSON" --exclude "$LAST_MSG"
+    --exclude "$RUN_LOG" --exclude "$RUN_JSON" --exclude "$LAST_MSG" --exclude "$PROGRESS_FILE"
+    --exclude "$STREAM_FILE" --exclude "$TRACE_FILE"
     --exclude "$LOG_DIR/baseline-$TIMESTAMP.diff"
     --exclude "$SETTINGS_LOCAL_SNAP"
     --exclude "$LOG_DIR/verify-$TIMESTAMP.log" --exclude "$LOG_DIR/launcher-$RUN_ID.out"
@@ -316,21 +402,118 @@ if [ "$WORKER_ROLE" = web ]; then
     SYSTEM_PROMPT="$DELEGATE_INSTRUCTION$WEB_INSTRUCTION"
     WEB_ARGS=(--json-schema "$WEB_SCHEMA")
 fi
+# Launcher-generated progress sentence (path only, no task text); writable runs only.
+if [ "$SANDBOX" != read-only ]; then
+    PROGRESS_FOR_WORKER=$(progress_path_for_worker "$PROGRESS_FILE")
+    export HARNESS_PROGRESS_FILE=$PROGRESS_FOR_WORKER
+    SYSTEM_PROMPT="$SYSTEM_PROMPT Progress file: when the task has more than one step, append one line per completed step to $PROGRESS_FOR_WORKER in the form '- done: <what> | next: <what> | blocked: <what or none>' right after each step, not batched at the end (create the file; append with an Edit or a shell >> redirect; write nothing else there; do not read other log files)."
+fi
 timing_enter cli
 EFFORT_ARGS=()
 [ -z "$EFFORT" ] || EFFORT_ARGS=(--effort "$EFFORT")
+# stream-json: one event per line, readable while claude runs. The result
+# event carries the same fields as the `--output-format json` envelope, so
+# the converter publishes it as RUN_JSON and every parser below is unchanged.
+: > "$STREAM_FILE"
+: > "$TRACE_FILE"
 set -m
-"${RUNNER[@]}" claude -p --output-format json --model "$MODEL" "${EFFORT_ARGS[@]}" \
+"${RUNNER[@]}" claude -p --output-format stream-json --verbose --model "$MODEL" "${EFFORT_ARGS[@]}" \
     --permission-mode "$PERMISSION_MODE" --permission-prompts none \
     --tools "$WORKER_TOOLS" "${WEB_ARGS[@]}" \
     --append-system-prompt "$SYSTEM_PROMPT" \
-    < "$PROMPT_FILE" > "$RUN_JSON" 2> "$RUN_LOG" &
+    < "$PROMPT_FILE" > "$STREAM_FILE" 2> "$RUN_LOG" &
 CHILD_PID=$!
 set +m
+# The converter follows the stream until the sentinel (created below, after
+# the child exited) and bounds its own life at TIMEOUT+90 s in case this
+# launcher is SIGKILLed (no trap runs then). `-I`: the stream is worker-authored
+# bytes and the cwd is worker-writable. Its stderr goes to the trace file.
+"$PY" -I "$SCRIPT_DIR/claude-trace.py" "$STREAM_FILE" "$TRACE_FILE" "$RUN_JSON" "$SENTINEL" \
+    --max-seconds $((TIMEOUT + 90)) < /dev/null 2>> "$TRACE_FILE" &
+TRACE_PID=$!
+printf '# converter pid=%s sentinel=%s\n' "$TRACE_PID" "$SENTINEL_DIR" >> "$TRACE_FILE"
 CHILD_STIME=$(pid_stime "$CHILD_PID")
 state_write running "" "claude running"
 wait "$CHILD_PID"
 CLAUDE_EXIT=$?
+# ---- converter drain, then result isolation ----
+# The child is gone, so the stream is complete: raise the sentinel and give
+# the converter a bounded time to drain. Whatever happened to it, the result
+# is re-extracted here from the stream whenever its exit or RUN_JSON is not
+# clean -- a trace problem must never cost the result. Only a `type == result`
+# event or a whole-input single JSON value (older envelope) counts.
+: > "$SENTINEL" 2>/dev/null || TRACE_WARNING="sentinel could not be created"
+n=0
+while pid_alive "$TRACE_PID" && [ "$n" -lt 100 ]; do sleep 0.2; n=$((n + 1)); done
+if pid_alive "$TRACE_PID"; then
+    TRACE_WARNING="converter still running 20 s after the stream ended; stopped"
+    trace_stop
+    TRACE_EXIT=1
+else
+    wait "$TRACE_PID"
+    TRACE_EXIT=$?
+    TRACE_PID=
+fi
+# A converter killed between writing its temp file and os.replace leaves
+# `<run json>.tmp<pid>`; it is launcher-owned, so sweep it before the
+# workspace comparison instead of hiding it behind an exclude.
+rm -f "$RUN_JSON".tmp*
+if [ "$TRACE_EXIT" -ne 0 ] || [ ! -s "$RUN_JSON" ]; then
+    REEXTRACT=$("$PY" -I - "$STREAM_FILE" "$RUN_JSON" <<'PY' 2>&1
+import json, os, sys
+stream, target = sys.argv[1], sys.argv[2]
+try:
+    with open(stream, "rb") as handle:
+        raw = handle.read()
+except OSError as exc:
+    print("error: cannot read stream: %s" % exc)
+    sys.exit(0)
+text = raw.decode("utf-8", "replace")
+found = None
+for line in text.split("\n"):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if isinstance(event, dict) and event.get("type") == "result":
+        found = json.dumps(event, ensure_ascii=False)
+kind = "result"
+if found is None:
+    try:
+        json.loads(text.strip())
+        found, kind = text.strip(), "envelope"
+    except ValueError:
+        print("none")
+        sys.exit(0)
+tmp = "%s.tmp%d" % (target, os.getpid())
+try:
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(found + "\n")
+    os.replace(tmp, target)
+except OSError as exc:
+    print("error: cannot write result: %s" % exc)
+    sys.exit(0)
+finally:
+    if os.path.exists(tmp):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+print(kind)
+PY
+)
+    case "$REEXTRACT" in
+        result|envelope)
+            if [ "${TRACE_EXIT:-1}" -ne 0 ]; then
+                TRACE_WARNING="converter exit $TRACE_EXIT${TRACE_WARNING:+ ($TRACE_WARNING)}; $REEXTRACT re-extracted from the stream"
+            fi ;;
+        none)   TRACE_WARNING="no result event in the stream${TRACE_WARNING:+ ($TRACE_WARNING)}" ;;
+        *)      TRACE_WARNING="result re-extraction failed: ${REEXTRACT:-no output}${TRACE_WARNING:+ ($TRACE_WARNING)}" ;;
+    esac
+fi
 timing_enter postflight
 
 # The JSON envelope carries the final message; a non-JSON body (crash,
@@ -578,6 +761,11 @@ report() {
     fi
     echo "$WORKSPACE_DESCRIPTION"
     echo "CHANGED: $CHANGED"
+    progress_report
+    [ -z "$TRACE_WARNING" ] || echo "TRACE_WARNING: $TRACE_WARNING (stream: $STREAM_FILE)"
+    if [ -f "$TRACE_FILE" ]; then
+        echo "TRACE: $TRACE_FILE ($(wc -l < "$TRACE_FILE" | tr -d ' ') lines, stream: $STREAM_FILE)"
+    fi
     if [ "$WORKER_ROLE" = web ]; then
         echo "WEB_FETCH: $WEB_STATE - $WEB_REASON"
     fi

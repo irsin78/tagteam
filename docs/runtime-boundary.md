@@ -244,7 +244,10 @@ to the input character limit and flagged with INPUT_TRUNCATED.
 
 Codex hook admission uses the installed engine's effective `hooks/list` trust
 and enabled state for all configured project handlers; missing or unknown evidence
-refuses the run. Codex/Claude require GNU timeout before foreground or detached
+refuses the run. In a linked git worktree the accepted source is the main
+working tree's `.codex/hooks.json`, because that is what Codex loads there; the
+worktree runs under those hook definitions, and every source Codex lists for the
+worktree must be trusted. Codex/Claude require GNU timeout before foreground or detached
 admission. A native Claude child still holds the active-writer slot if its parent
 exits, subject to the existing PID/start-time identity check.
 

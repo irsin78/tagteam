@@ -34,6 +34,99 @@ LEGACY_CROSS = {'vendor_precedence': {'implementation_default': 'other'}}
 
 
 class HostRoutes(unittest.TestCase):
+    def test_child_prepare_identity_preservation_and_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            common = root / 'common'
+            common.mkdir()
+            target = root / '.codex/hooks.json'
+            target.parent.mkdir()
+            target.write_bytes(b'preserve existing bytes')
+            head = 'a' * 40
+            def git(cwd, *args):
+                self.assertEqual(Path(cwd), root)
+                return str(root) if args[-1] == '--show-toplevel' else str(common) if args[-1] == '--git-common-dir' else head
+            with patch.object(session, '_git', side_effect=git), patch.object(session, 'linked_worktree_main', return_value=root.parent), patch.object(session, 'check_codex_hooks', return_value=4) as check, patch.object(session.subprocess, 'run') as run, patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0'}):
+                result = {}
+                self.assertEqual(session.prepare_codex_child(str(root), str(common), head, 'unused', result), 4)
+                self.assertEqual(result['preparation'], 'existing')
+                check.assert_called_once()
+                run.assert_not_called()
+                self.assertEqual(target.read_bytes(), b'preserve existing bytes')
+                for count in (0, -1):
+                    check.return_value = count
+                    with self.assertRaisesRegex(ValueError, 'no effective trusted'):
+                        session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+                check.side_effect = ValueError('untrusted')
+                with self.assertRaisesRegex(ValueError, 'untrusted'):
+                    session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+                for expected_common, expected_head in ((str(root), head), (str(common), 'b' * 40), (str(common), 'aaaa')):
+                    with self.assertRaises(ValueError):
+                        session.prepare_codex_child(str(root), expected_common, expected_head, 'unused', {})
+                with patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '1', 'HARNESS_ALLOW_CONTROL_PLANE': '1'}):
+                    with self.assertRaisesRegex(ValueError, 'delegates'):
+                        session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+                with patch.object(session, 'linked_worktree_main', return_value=None):
+                    with self.assertRaisesRegex(ValueError, 'linked child'):
+                        session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+
+    def test_child_prepare_generation_and_partial_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            generator = root / '.claude/scripts/gen-codex-hooks.sh'
+            generator.parent.mkdir(parents=True)
+            generator.write_text('fixture')
+            target = root / '.codex/hooks.json'
+            head = 'a' * 40
+            def git(cwd, *args):
+                if args[0] == 'status': return ''
+                if args[0] == 'ls-files': return 'tracked'
+                return head if args[-1] == 'HEAD' else str(root)
+            def generate(argv, **kwargs):
+                self.assertEqual(argv, [sys.executable, str(generator), '--python', sys.executable])
+                self.assertEqual(kwargs['cwd'], root)
+                self.assertFalse(any(k.upper().startswith('GIT_') for k in kwargs['env']))
+                target.parent.mkdir()
+                target.write_text('generated fixture')
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            with patch.object(session, '_git', side_effect=git), patch.object(session, 'linked_worktree_main', return_value=root.parent), patch.object(session, 'check_codex_hooks', side_effect=ValueError('untrusted')) as check, patch.object(session.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'fixture generation failed')) as run, patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0', 'GIT_CONFIG_COUNT': '1', 'GIT_DIR': 'wrong'}):
+                failed = {}
+                with self.assertRaisesRegex(ValueError, 'generation failed'):
+                    session.prepare_codex_child(str(root), str(root), head, sys.executable, failed)
+                self.assertEqual(failed['preparation'], 'failed')
+                check.assert_not_called()
+                run.side_effect = generate
+                result = {}
+                with self.assertRaisesRegex(ValueError, 'untrusted'):
+                    session.prepare_codex_child(str(root), str(root), head, sys.executable, result)
+                self.assertEqual(result['preparation'], 'generated')
+                self.assertTrue(target.is_file())
+
+    def test_child_prepare_rejects_modified_generator_before_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            generator = root / '.claude/scripts/gen-codex-hooks.sh'
+            generator.parent.mkdir(parents=True)
+            generator.write_text('modified script')
+            for tracked, status in ((None, ''), ('tracked', ' M .claude/scripts/gen-codex-hooks.sh'), ('tracked', ' M .claude/scripts/workspace-snapshot.py'), ('tracked', None)):
+                def git(cwd, *args):
+                    if args[0] == 'ls-files': return tracked
+                    if args[0] == 'status': return status
+                    return 'a' * 40 if args[-1] == 'HEAD' else str(root)
+                with patch.object(session, '_git', side_effect=git), patch.object(session, 'linked_worktree_main', return_value=root.parent), patch.object(session.subprocess, 'run') as run, patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0'}):
+                    with self.assertRaisesRegex(ValueError, 'modified child hook generator'):
+                        session.prepare_codex_child(str(root), str(root), 'a' * 40, sys.executable, {})
+                    run.assert_not_called()
+                    self.assertFalse((root / '.codex').exists())
+
+    def test_hook_cli_zero_compatibility(self):
+        launcher = (HERE / 'codex-run.sh').read_text(encoding='utf-8')
+        self.assertIn('check-codex-hooks', launcher)
+        for flags, expected in (([], 0), (['--json'], 4), (['--workspace-root', str(ROOT)], 4)):
+            with patch.object(sys, 'argv', ['harness-session.py', 'check-codex-hooks', *flags]), patch.object(session, 'check_codex_hooks', return_value=0), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(session.main(), expected)
+                self.assertNotIn('HOOKS_TRUSTED', out.getvalue())
+
     @unittest.skipUnless((ROOT / 'AGENTS.md.template').exists(), 'template source only')
     def test_direct_delegation_instructions_point_to_score_and_scout(self):
         instructions = (ROOT / 'AGENTS.md.template').read_text(encoding='utf-8')
@@ -533,6 +626,128 @@ for line in sys.stdin:
                             with self.assertRaises((ValueError, KeyError)):
                                 session.check_codex_hooks(root)
             self.assertEqual(config.read_text(), '# trust state must remain untouched\n')
+
+    def test_codex_hook_trust_accepts_main_repository_source_in_linked_worktree(self):
+        # Codex loads a linked worktree's project hooks from the main repository's
+        # .codex/hooks.json; the check accepts that source with the same trust rules
+        # and never accepts it outside a worktree.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / 'worktree'
+            main = Path(temp) / 'main'
+            for base in (root, main):
+                (base / '.codex').mkdir(parents=True)
+            definitions = json.dumps({'hooks': {event: [{'hooks': [{'type': 'command', 'command': 'echo ok'}]}]
+                                                for event in ('PreToolUse', 'Stop', 'UserPromptSubmit')}})
+            (main / '.codex/hooks.json').write_text(definitions)
+            stub = Path(temp) / 'engine.py'
+            stub.write_text('''import json, sys
+from pathlib import Path
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get('method') == 'initialize':
+        response = {'id': request['id'], 'result': {}}
+    elif request.get('method') == 'hooks/list':
+        response = json.loads(Path(sys.argv[1]).read_text())
+    else:
+        continue
+    print(json.dumps(response), flush=True)
+''')
+            response_file = Path(temp) / 'response.json'
+            native = subprocess.Popen
+            def spawn(*args, **kwargs):
+                return native([sys.executable, str(stub), str(response_file)], **kwargs)
+            def listing(source, status='trusted'):
+                hooks = [{'key': str(source) + ':' + event + ':0:0', 'sourcePath': str(source),
+                          'enabled': True, 'trustStatus': status}
+                         for event in ('pre_tool_use', 'stop', 'user_prompt_submit')]
+                return {'id': 2, 'result': {'data': [{'hooks': hooks, 'warnings': [], 'errors': []}]}}
+            main_source = (main / '.codex/hooks.json').resolve()
+            with patch.object(session.shutil, 'which', return_value='codex'), patch.object(session.subprocess, 'Popen', side_effect=spawn):
+                with patch.object(session, 'linked_worktree_main', return_value=main.resolve()):
+                    # worktree without its own file: main source accepted
+                    response_file.write_text(json.dumps(listing(main_source)))
+                    self.assertEqual(session.check_codex_hooks(root), 3)
+                    # the worktree's own file exists but Codex loaded main's: still accepted
+                    (root / '.codex/hooks.json').write_text(definitions)
+                    self.assertEqual(session.check_codex_hooks(root), 3)
+                    # same trust rules on the main source
+                    response_file.write_text(json.dumps(listing(main_source, status='untrusted')))
+                    with self.assertRaisesRegex(ValueError, 'untrusted'):
+                        session.check_codex_hooks(root)
+                    # both sources listed: a trusted worktree copy never excuses an untrusted main definition
+                    both = listing((root / '.codex/hooks.json').resolve())
+                    both['result']['data'][0]['hooks'] += listing(main_source, status='untrusted')['result']['data'][0]['hooks']
+                    response_file.write_text(json.dumps(both))
+                    with self.assertRaisesRegex(ValueError, 'untrusted.*main'):
+                        session.check_codex_hooks(root)
+                    both = listing((root / '.codex/hooks.json').resolve())
+                    both['result']['data'][0]['hooks'] += listing(main_source)['result']['data'][0]['hooks']
+                    response_file.write_text(json.dumps(both))
+                    self.assertEqual(session.check_codex_hooks(root), 3)
+                    # neither source listed
+                    response_file.write_text(json.dumps(listing(Path(temp) / 'elsewhere/hooks.json')))
+                    with self.assertRaisesRegex(ValueError, 'missing from effective hooks/list'):
+                        session.check_codex_hooks(root)
+                    # no hooks.json anywhere in a worktree: nothing to confirm, like a plain project without one
+                    (root / '.codex/hooks.json').unlink()
+                    (main / '.codex/hooks.json').unlink()
+                    self.assertEqual(session.check_codex_hooks(root), 0)
+                    # an unreadable candidate is an error, never a confirmed absence
+                    with patch.object(session.Path, 'is_file', side_effect=OSError('EACCES')):
+                        with self.assertRaisesRegex(ValueError, 'cannot inspect'):
+                            session.check_codex_hooks(root)
+                    (main / '.codex/hooks.json').write_text(definitions)
+                with patch.object(session, 'linked_worktree_main', return_value=None):
+                    # not a worktree: the main repository's source is never accepted
+                    response_file.write_text(json.dumps(listing(main_source)))
+                    with self.assertRaisesRegex(ValueError, 'no .codex/hooks.json in the project'):
+                        session.check_codex_hooks(root)
+                    (root / '.codex/hooks.json').write_text(definitions)
+                    with self.assertRaisesRegex(ValueError, 'missing from effective hooks/list'):
+                        session.check_codex_hooks(root)
+
+    def test_linked_worktree_main_detects_git_worktrees(self):
+        git = shutil.which('git')
+        if not git: self.skipTest('git required')
+        with tempfile.TemporaryDirectory() as temp:
+            main = Path(temp) / 'main'
+            main.mkdir()
+            env = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@x', GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@x')
+            def run(*args, cwd=main):
+                subprocess.run([git, *args], cwd=cwd, env=env, check=True, capture_output=True)
+            run('init', '-q')
+            run('commit', '-q', '--allow-empty', '-m', 'init')
+            linked = Path(temp) / 'linked'
+            run('worktree', 'add', '-q', str(linked), '-b', 'exp')
+            self.assertIsNone(session.linked_worktree_main(main))
+            self.assertEqual(session.linked_worktree_main(linked), main.resolve())
+            # a subfolder of a plain repository is not a linked worktree
+            (main / 'docs').mkdir()
+            self.assertIsNone(session.linked_worktree_main(main / 'docs'))
+            (linked / 'docs').mkdir()
+            self.assertEqual(session.linked_worktree_main(linked / 'docs'), main.resolve())
+            plain = Path(temp) / 'plain'
+            plain.mkdir()
+            self.assertIsNone(session.linked_worktree_main(plain))
+            # GIT_DIR / GIT_WORK_TREE overrides never redirect the path-based answer
+            with patch.dict(os.environ, {'GIT_DIR': str(main / '.git'), 'GIT_WORK_TREE': str(main)}):
+                self.assertEqual(session.linked_worktree_main(linked), main.resolve())
+                self.assertIsNone(session.linked_worktree_main(plain))
+            # a submodule's main repository keeps its git dir under the superproject's
+            # .git/modules; `worktree list` names that git dir, so core.worktree decides.
+            upstream = Path(temp) / 'upstream'
+            upstream.mkdir()
+            run('init', '-q', cwd=upstream)
+            run('commit', '-q', '--allow-empty', '-m', 'sub', cwd=upstream)
+            try:
+                run('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', upstream.as_posix(), 'sub')
+            except subprocess.CalledProcessError:
+                self.skipTest('git submodule add unavailable')
+            sub = main / 'sub'
+            sub_linked = Path(temp) / 'sub-linked'
+            run('worktree', 'add', '-q', str(sub_linked), '-b', 'exp', cwd=sub)
+            self.assertEqual(session.linked_worktree_main(sub_linked), sub.resolve())
+            self.assertIsNone(session.linked_worktree_main(sub))
 
     def test_generated_hooks_execute_in_paths_with_shell_metacharacters(self):
         bash = routes.find_bash()
@@ -1582,6 +1797,35 @@ class ScoredRoutes(unittest.TestCase):
 
     def scores(self, route):
         return {score['option']: score for score in route['scores']}
+
+    def test_long_run_flag_for_writing_roles_only(self):
+        # Assessed volume 2 marks a writing route as a long run: the announce line
+        # asks for a worktree implementation session instead of a launcher unit. Timeout past the cap, latency and
+        # read-only roles never set it; `reason` is unchanged.
+        suffix = 'long run (volume 2): implementation session in its own worktree, not a launcher unit'
+        with patch.object(routes, 'worker_estimate', return_value=(1, 0, 'seed')):
+            data = json.loads(json.dumps(self.data))
+            for seed in data['selection_policy']['estimates']['delegate_overhead'].values():
+                seed['minutes'] = 0
+            small = self.route(data, assess=self.assess(volume=0))
+            self.assertNotIn('long_run', small)
+            self.assertNotIn('long run', small['announce'])
+            big = self.route(data, assess=self.assess(volume=2))
+            self.assertTrue(big['long_run'])
+            self.assertTrue(big['announce'].endswith(suffix))
+            self.assertNotIn('long run', big['reason'])
+            self.assertEqual(big['suggested_timeout_s'], 570)
+            self.assertFalse(big['needs_detached'])
+            read = self.route(data, role='explore', assess=self.assess(volume=2))
+            self.assertNotIn('long_run', read)
+        with patch.object(routes, 'worker_estimate', return_value=(1, 10, 'seed')):
+            slow = self.route(assess=self.assess(volume=1))
+            self.assertGreater(slow['suggested_timeout_s'], routes.FOREGROUND_TIMEOUT_CAP_S)
+            self.assertTrue(slow['needs_detached'])
+            self.assertNotIn('long_run', slow)
+            big = self.route(assess=self.assess(volume=2))
+            self.assertTrue(big['long_run'])
+            self.assertIn('detached run (-b --wait); ' + suffix, big['announce'])
 
     def test_timeout_minimum_rounding_and_launch_environment(self):
         for volume in (None, 0, 1, 2):

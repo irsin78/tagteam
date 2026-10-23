@@ -22,7 +22,7 @@ entire manual for onboarding.
 .claude/
   agents/     Six subagent definitions (2 external CLI + 4 Claude)
   rules/      Shared policies: roles, verification, security boundaries (Claude auto-loads; Codex reads through AGENTS.md)
-  skills/     Recipes loaded only when needed (codex delegation, agy delegation, safety guard verification)
+  skills/     Recipes loaded only when needed (codex delegation, agy delegation, safety guard verification, peer sessions — experimental)
   hooks/      Host-specific hooks and regression tests for dangerous commands, startup, stop, delegation results
   scripts/    codex·agy·claude·local delegation launchers (preflight/invocation/postflight), control-plane hashes, WSL isolation lane helpers
   settings.json · sandbox-sensitive.json · model-bindings.json (tier table) · model-bindings.local.json.example (local override skeleton; .local.json is gitignored)
@@ -115,7 +115,11 @@ line verbatim. For example:
 > vendor differs from author (claude)
 
 When the launcher call's model/effort differ from the route, replace that part
-with the actual values and the reason.
+with the actual values and the reason. An announce line ending in `long run: …`
+means the route set `long_run: true`: start an implementation session in its
+own worktree instead (peer-sessions skill, section 1) or, when delegating to a
+launcher anyway, say which change unit this launch covers and pass `-P`
+(delegation-matrix.md, "Assign a worker").
 Capability bands S–E differ from verification risk Tiers 0–2. Announce model changes and
 reasons; this message requires no renewed approval.
 
@@ -200,6 +204,9 @@ explicit cross-host handoff contracts.
   Codex also follows AGENTS.md's explicit read path. Examples:
   [Mission operation](missions/README.md).
 - Recipes: `skills/delegate-codex/SKILL.md`, `skills/delegate-agy/SKILL.md`.
+  Experimental two-session handoff (design/judgment ↔ implementation over desktop
+  messages): `skills/peer-sessions/SKILL.md`, operating notes `docs/peer-sessions.md`,
+  event log `tools/peer-event.py`. It adds a procedure, no permissions.
   Entry instructions resolve roles and required reading.
 
 ### Rationale for rules and scope of reconsideration
