@@ -48,7 +48,10 @@ class InstallChecks(unittest.TestCase):
             for data, code, expected in cases:
                 with self.subTest(data=data, code=code):
                     (root / 'response.json').write_text(json.dumps({'body': json.dumps(data) if isinstance(data, dict) else data, 'exit': code}))
-                    done = subprocess.run([pwsh, '-NoProfile', '-File', str(probe)], cwd=root.parent, env=env, capture_output=True, text=True, encoding='utf-8', timeout=20)
+                    # errors='replace': a non-English PowerShell prints its ConvertFrom-Json
+                    # error in the console code page (cp949 on Korean Windows), which is
+                    # not UTF-8; the malformed case must still be judged by exit code.
+                    done = subprocess.run([pwsh, '-NoProfile', '-File', str(probe)], cwd=root.parent, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20)
                     self.assertEqual(done.returncode, expected, done.stdout + done.stderr)
                     self.assertIn('OK:' if not expected else 'WARN:', done.stdout)
                     actual = json.loads((root / 'observed.json').read_text())
@@ -56,7 +59,7 @@ class InstallChecks(unittest.TestCase):
                     self.assertEqual(Path(actual['cwd']), root)
             probe.write_text('$warningCount = 0\n' + body + '\nexit ([int]($warningCount -gt 0))\n', encoding='utf-8')
             env['PATH'] = str(Path(sys.executable).parent)
-            done = subprocess.run([pwsh, '-NoProfile', '-File', str(probe)], cwd=root.parent, env=env, capture_output=True, text=True, encoding='utf-8', timeout=20)
+            done = subprocess.run([pwsh, '-NoProfile', '-File', str(probe)], cwd=root.parent, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20)
             self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
             self.assertIn('non-Codex installation', done.stdout)
             self.assertNotIn('OK:', done.stdout)
