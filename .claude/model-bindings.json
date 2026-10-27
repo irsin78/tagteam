@@ -52,7 +52,7 @@
           "gpt-6.1-sol": "OK at medium (3,841 tokens) and high (3,842 tokens) on codex-cli 0.159.3, 2026-10-01: rollout reached this ChatGPT account. History: 2026-09-30 on codex-cli 0.158.0 it was refused with HTTP 400 'not supported when using Codex with a ChatGPT account' while the rollout was pending.",
           "note": "A catalog or leaderboard listing is not runnability. A candidate enters alternatives/pending_replacement only with a probe result and date; it becomes a worker row only after a successful probe on the installed CLI and account.",
           "stdin_note": "codex-cli 0.159.x reads additional input from stdin when it is not closed; a manual probe without '< /dev/null' waits instead of answering. The launchers already pass the prompt on stdin.",
-          "gpt-6.1-terra": "OK at medium on codex-cli 0.164.0, 2026-10-27: codex-run.sh read-only probe returned TERRA_OK, STATUS DONE, CHANGED none, 5,080 tokens, 17s total. Model availability only; not a quality, tool-use or latency benchmark."
+          "gpt-6.1-terra": "OK at medium on codex-cli 0.164.0, 2026-10-27: codex-run.sh read-only probe returned TERRA_OK, STATUS DONE, CHANGED none, 5,080 tokens, 17s total. Model availability only; not a quality, tool-use or latency benchmark. Xhigh probe also passed on 2026-10-27 (TERRA_XHIGH_OK, STATUS DONE, CHANGED none)."
         },
         "model_details": {
           "gpt-6.1-terra": {
@@ -92,7 +92,7 @@
                 "ultra"
               ]
             },
-            "adoption": "Catalogued and medium availability probed. Not added to scored workers: no performance/cost/TTFT evidence for a routing band yet. Existing Sol/Astra/Luna defaults unchanged. Explicit launcher -m gpt-6.1-terra -e medium is verified. Other efforts and image/tool behavior are untested. The existing delegate ultra ban and detached-only max rule still apply."
+            "adoption": "Medium and xhigh availability probes passed. Explicit-only candidates: terra61-medium (D), terra61-xhigh (C), user-approved 2026-10-27. Existing default cells unchanged. AA index/cost evidence is provisional; TTFT and long-horizon/vision task acceptance are unverified. Existing ultra ban and detached-only max rule unchanged."
           }
         }
       }
@@ -1510,6 +1510,73 @@
         "local_endpoint": true
       },
       "scored": false
+    },
+    {
+      "id": "terra61-xhigh",
+      "model": "gpt-6.1-terra",
+      "vendor": "openai",
+      "effort": "xhigh",
+      "tier": "C",
+      "status": "conditional",
+      "tier_cell": false,
+      "launcher": ".claude/scripts/codex-run.sh",
+      "metrics": {
+        "index": 45,
+        "cost": 0.19,
+        "ttft_s": null,
+        "tps": 90.9,
+        "source": "artificial_analysis",
+        "read": "2026-10-27",
+        "url": "https://artificialanalysis.ai/models/gpt-6-1-terra-xhigh",
+        "secondary_pass1": null,
+        "provisional": true,
+        "note": "Cost per Intelligence Index task, not token price. TTFT not collected; use explicit detached routing until measured. No long-horizon coding or vision acceptance inferred."
+      },
+      "probe": {
+        "date": "2026-10-27",
+        "result": "OK at xhigh; read-only availability probe, unchanged workspace; not a task benchmark",
+        "cli": "codex-cli 0.164.0"
+      },
+      "roles": {
+        "implement": 130,
+        "write": 130,
+        "review_gate": 130,
+        "image_verify": 130
+      },
+      "note": "User-approved C candidate; explicit selection only, existing default cell unchanged. Band assignment is provisional role scope, not a conversion of the Intelligence Index."
+    },
+    {
+      "id": "terra61-medium",
+      "model": "gpt-6.1-terra",
+      "vendor": "openai",
+      "effort": "medium",
+      "tier": "D",
+      "status": "conditional",
+      "tier_cell": false,
+      "launcher": ".claude/scripts/codex-run.sh",
+      "metrics": {
+        "index": 41,
+        "cost": 0.1,
+        "ttft_s": null,
+        "tps": null,
+        "source": "artificial_analysis",
+        "read": "2026-10-27",
+        "url": "https://artificialanalysis.ai/models/gpt-6-1-terra-medium",
+        "secondary_pass1": null,
+        "provisional": true,
+        "note": "Cost per Intelligence Index task, not token price. TTFT not collected; use explicit detached routing until measured. No long-horizon coding or vision acceptance inferred."
+      },
+      "probe": {
+        "date": "2026-10-27",
+        "result": "OK at medium; read-only availability probe, unchanged workspace; not a task benchmark",
+        "cli": "codex-cli 0.164.0"
+      },
+      "roles": {
+        "implement": 131,
+        "write": 131,
+        "explore": 131
+      },
+      "note": "User-approved D candidate; explicit selection only, existing default cell unchanged. Band assignment is provisional role scope, not a conversion of the Intelligence Index."
     }
   ],
   "bands": {

@@ -1526,16 +1526,16 @@ class AssessmentRoutes(unittest.TestCase):
     def assess(self, **ratings):
         return dict(dict(open=0, tangle=0, precedent=0, verifier=0, consequence=0), **ratings)
 
-    def test_catalog_contains_exactly_the_23_supported_rows(self):
+    def test_catalog_contains_exactly_the_25_supported_rows(self):
         expected = {
             'S': {'fable-medium', 'fable-high', 'fable-xhigh', 'astra-medium', 'astra-high', 'astra-xhigh'},
             'A': {'opus55-high', 'opus55-xhigh', 'sol61-max', 'sol61-xhigh', 'argon-high'},
             'B': {'opus55-medium', 'sol61-high'},
-            'C': {'sonnet55-high', 'sol61-medium', 'flash-medium'},
-            'D': {'sonnet55-medium', 'luna6-high', 'sol61-low', 'flash-low', 'local-reader'},
+            'C': {'sonnet55-high', 'sol61-medium', 'flash-medium', 'terra61-xhigh'},
+            'D': {'sonnet55-medium', 'luna6-high', 'sol61-low', 'flash-low', 'local-reader', 'terra61-medium'},
             'E': {'haiku55', 'luna6-low'},
         }
-        self.assertEqual(len(self.data['workers']), 23)
+        self.assertEqual(len(self.data['workers']), 25)
         for band, ids in expected.items():
             self.assertEqual({w['id'] for w in self.data['workers'] if w['tier'] == band}, ids)
         # One Claude cell and one OpenAI cell per band (user decision 2026-10-19); the
@@ -1546,7 +1546,7 @@ class AssessmentRoutes(unittest.TestCase):
         self.assertEqual({cells[(b, 'openai')] for b in 'SABCDE'},
                          {'astra-medium', 'sol61-xhigh', 'sol61-high', 'sol61-medium', 'luna6-high', 'luna6-low'})
         self.assertEqual({w['id'] for w in self.data['workers'] if w['status'] == 'conditional'},
-                         {'fable-high', 'fable-xhigh', 'astra-high', 'astra-xhigh', 'opus55-xhigh', 'sol61-max'})
+                         {'fable-high', 'fable-xhigh', 'astra-high', 'astra-xhigh', 'opus55-xhigh', 'sol61-max', 'terra61-medium', 'terra61-xhigh'})
         # Luna low reads for the Codex host only; the Claude host keeps its in-process Haiku agents.
         self.assertEqual(routes.resolve(self.data, 'claude', 'explore')['worker_id'], 'haiku55')
         self.assertEqual(routes.resolve(self.data, 'codex', 'explore')['worker_id'], 'luna6-low')
