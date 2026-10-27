@@ -2,7 +2,7 @@
   "schema_version": 3,
   "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-10-20",
+  "updated": "2026-10-27",
   "catalog_checked": "2026-10-19",
   "vendors": {
     "claude": {
@@ -33,23 +33,67 @@
         "https://developers.openai.com/api/docs/guides/latest-model",
         "https://developers.openai.com/api/docs/models/gpt-6-astra",
         "https://learn.chatgpt.com/docs/models",
-        "https://learn.chatgpt.com/docs/config-file/config-reference"
+        "https://learn.chatgpt.com/docs/config-file/config-reference",
+        "https://developers.openai.com/api/docs/models/gpt-6.1-terra"
       ],
       "effort_note": "The Astra API lists low/medium/high/xhigh/max explicitly (model page re-read 2026-10-06; API default medium per the latest-model guide). The Codex models page (2026-10-06) says \"Start with Light for Astra\", \"Start with High for Luna\" and, for GPT-6.1 Sol, the client default; The same page states: Light in the desktop app, ChatGPT Work on the web and the IDE extension, or Low in the CLI, suits quick, well-scoped tasks, so Light = model_reasoning_effort=low (verified 2026-10-06). The installed CLI cache (~/.codex/models_cache.json, fetched 2026-10-06) lists low/medium/high/xhigh/max/ultra for Astra with default_reasoning_level medium and multi_agent_reasoning_effort xhigh; GPT-6.1 Sol has default_reasoning_level low, so the client default the page refers to is low on this CLI. The S lane runs at medium (user decision 2026-10-19); high/xhigh/max rows are conditional and need an explicit --worker. Codex app Ultra is an automatic sub-agent mode; the delegation launcher and router refuse it under the no-redelegation contract. max is -b only. The enumeration in the official config-reference is separate and does not replace a measured success on the installed CLI. The human main session's model and mode are never changed.",
       "catalog": {
-        "checked": "2026-10-01",
-        "source": "~/.codex/models_cache.json (codex-cli 0.159.3, cache fetched 2026-10-01T01:19Z)",
+        "checked": "2026-10-27",
+        "source": "~/.codex/models_cache.json (codex-cli 0.164.0, cache fetched 2026-10-27T07:37Z); Terra official model page checked 2026-10-27. Earlier probe dates remain historical.",
         "listed": [
           "gpt-6.1-sol (priority 1)",
           "gpt-6-astra (priority 2)",
-          "gpt-6-luna (priority 4)"
+          "gpt-6.1-terra (priority 3)",
+          "gpt-6-luna (priority 5)"
         ],
         "probe": {
           "date": "2026-10-01",
           "command": "codex exec -m <model> -c model_reasoning_effort=<effort> -s read-only --skip-git-repo-check \"Reply with exactly: OK\" < /dev/null",
           "gpt-6.1-sol": "OK at medium (3,841 tokens) and high (3,842 tokens) on codex-cli 0.159.3, 2026-10-01: rollout reached this ChatGPT account. History: 2026-09-30 on codex-cli 0.158.0 it was refused with HTTP 400 'not supported when using Codex with a ChatGPT account' while the rollout was pending.",
           "note": "A catalog or leaderboard listing is not runnability. A candidate enters alternatives/pending_replacement only with a probe result and date; it becomes a worker row only after a successful probe on the installed CLI and account.",
-          "stdin_note": "codex-cli 0.159.x reads additional input from stdin when it is not closed; a manual probe without '< /dev/null' waits instead of answering. The launchers already pass the prompt on stdin."
+          "stdin_note": "codex-cli 0.159.x reads additional input from stdin when it is not closed; a manual probe without '< /dev/null' waits instead of answering. The launchers already pass the prompt on stdin.",
+          "gpt-6.1-terra": "OK at medium on codex-cli 0.164.0, 2026-10-27: codex-run.sh read-only probe returned TERRA_OK, STATUS DONE, CHANGED none, 5,080 tokens, 17s total. Model availability only; not a quality, tool-use or latency benchmark."
+        },
+        "model_details": {
+          "gpt-6.1-terra": {
+            "checked": "2026-10-27",
+            "source": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "description": "Fast, efficient model for visual reasoning, precise computer use and natural writing.",
+            "api": {
+              "reasoning_efforts": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "default_effort": "medium",
+              "context_window": 1050000,
+              "max_output_tokens": 128000,
+              "tool_calling": "Responses API required",
+              "standard_usd_per_million_tokens": {
+                "input": 1.0,
+                "cached_input": 0.05,
+                "output": 5.0
+              },
+              "pricing_note": "Standard text rates, <=272K input tokens; API prices are not benchmark metrics.cost or ChatGPT plan usage."
+            },
+            "codex_cache": {
+              "cli": "codex-cli 0.164.0",
+              "checked": "2026-10-27",
+              "default_effort": "low",
+              "listed_efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
+            },
+            "adoption": "Catalogued and medium availability probed. Not added to scored workers: no performance/cost/TTFT evidence for a routing band yet. Existing Sol/Astra/Luna defaults unchanged. Explicit launcher -m gpt-6.1-terra -e medium is verified. Other efforts and image/tool behavior are untested. The existing delegate ultra ban and detached-only max rule still apply."
+          }
         }
       }
     },
