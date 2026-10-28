@@ -370,7 +370,7 @@ if [ "$DETACH" -eq 1 ] && [ "${HARNESS_RUN_CHILD:-}" != "1" ]; then
     echo "$BINDINGS_LINE"
     echo "DETACHED: launcher pid $DETACHED_PID, stdout → $LAUNCHER_OUT"
     echo "STATE: $(state_file "$RUN_ID")"
-    echo "WAIT: bash $0 --wait $RUN_ID -t 570   (exit 6 = still running, call again; --status for one look)"
+    echo "WAIT: bash $0 --wait $RUN_ID -t 120   (exit 6 = still running: tell the user its HEARTBEAT line, then call again; --status for one look)"
     exit 0
 fi
 # Plumbing only: consumed above, never meant for the CLI child or a -v
@@ -379,6 +379,7 @@ fi
 unset HARNESS_RUN_CHILD HARNESS_RUN_ID
 
 RUN_LOG="$LOG_DIR/run-$TIMESTAMP.log"
+ACTIVITY_LOG=$RUN_LOG
 REPORT_FILE=$(report_file "$RUN_ID")
 VERIFY_LOG=$(mktemp "${TMPDIR:-/tmp}/codex-verify.XXXXXX") || exit 2
 CHANGED_FILE=$(mktemp "${TMPDIR:-/tmp}/codex-changed.XXXXXX") || exit 2

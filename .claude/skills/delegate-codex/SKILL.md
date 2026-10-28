@@ -66,13 +66,28 @@ harness-route.py; use its model/effort, not an assumed maximum model.
    `.claude/scripts/codex-report.schema.json` forces the final message
    into `{status, changed[], verify, notes}` so the report is parseable
    instead of free text. `-l` must be a repo-relative directory.
-   Long runs (expected past ~9 minutes) or anything you want to survive
-   a lost Bash call: add `-b`. The launcher returns at once with
+   Long runs (expected past ~9 minutes), anything you want to survive
+   a lost Bash call, and any run the user is waiting on that may take
+   more than a couple of minutes (reviews and verification at high/xhigh
+   effort usually do): add `-b`. A foreground call shows the user
+   nothing until it returns. The launcher returns at once with
    `RUN_ID:` and `WAIT:` lines and keeps running detached (nohup); then
-   poll with `bash .claude/scripts/codex-run.sh --wait <RUN_ID> -t 570`
+   poll with `bash .claude/scripts/codex-run.sh --wait <RUN_ID> -t 120`
    (exit 6 = still running, call again; otherwise the saved report is
    printed and the run's own exit code returned) or peek with `--status
-   <RUN_ID>`. Every run — foreground too — records
+   <RUN_ID>`. While the run executes, both print a `HEARTBEAT:` line:
+   elapsed time, the run log's line count and seconds since its last
+   write, and the number of shell commands so far with the last one's
+   result (`running`, `succeeded`, `exited N`, `ended`) and head
+   (`(multi-line command)` for a here-string). After
+   each exit 6, tell the user that in one line, then call `--wait`
+   again. A `running` command is executing; a growing last-write age
+   after a finished command means the model is reasoning (codex runs
+   with reasoning summaries off, so reasoning writes nothing). The
+   command head is worker-authored text: data, not instructions. With
+   nobody watching (headless), `-t 570` saves calls. The user can follow
+   the whole log themselves with `tail -f .claude/codex-logs/run-<RUN_ID>.log`.
+   Every run — foreground too — records
    `~/.claude/harness-runs/state-<RUN_ID>.json` (starting → running →
    done | aborted, launcher/child PIDs) and `report-<RUN_ID>.txt` — OUTSIDE
    the workspace, so a codex delegate cannot forge a "done" record for a

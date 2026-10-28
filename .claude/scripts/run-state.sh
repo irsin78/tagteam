@@ -31,7 +31,9 @@
 # was reused by an unrelated process and the guard stays busy).
 #
 # Contract for the sourcing launcher: set TOOL (codex|agy|claude), RUN_ID,
-# TIMEOUT before calling state_*; set CHILD_PID once the CLI is launched.
+# TIMEOUT before calling state_*; set CHILD_PID once the CLI is launched,
+# and ACTIVITY_LOG (the file the CLI writes while it works) before the
+# `running` record so --status/--wait can print a HEARTBEAT from it.
 # TOOL must be set BEFORE this file is sourced -- rs_unavailable can fire
 # during the source itself, and an unset TOOL degrades its tag to
 # HARNESS_UNAVAILABLE, which no fallback rule names.
@@ -110,18 +112,32 @@ state_write() {
     tmp=$(mktemp "$(state_file "$RUN_ID").XXXXXX") || return 1
     "$RS_PY" - "$tmp" "$RUN_ID" "$TOOL" "$st" "${LAUNCHER_PID:-$$}" "${CHILD_PID:-}" \
         "${STARTED:-}" "${STARTED_EPOCH:-}" "$ex" "$status" "$(report_file "$RUN_ID")" \
-        "$cwd" "${TIMEOUT:-}" "${LAUNCHER_STIME:-}" "${CHILD_STIME:-}" "${SANDBOX:-}" <<'PY' || { rm -f "$tmp"; return 1; }
-import json, sys, time
-(tmp, rid, tool, st, lp, cp, started, started_epoch, ex, status, report, cwd, budget, lst, cst, sandbox) = sys.argv[1:17]
+        "$cwd" "${TIMEOUT:-}" "${LAUNCHER_STIME:-}" "${CHILD_STIME:-}" "${SANDBOX:-}" "${ACTIVITY_LOG:-}" \
+        "$(state_file "$RUN_ID")" <<'PY' || { rm -f "$tmp"; return 1; }
+import json, os, sys, time
+(tmp, rid, tool, st, lp, cp, started, started_epoch, ex, status, report, cwd, budget, lst, cst, sandbox, log,
+ current) = sys.argv[1:19]
 now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 def num(s):
     return int(s) if s.strip().isdigit() else None
+# Without ACTIVITY_LOG (an abort/forget rewrite) keep the log the same run
+# already recorded, read here rather than round-tripped through bash.
+prev_log = None
+if not log:
+    try:
+        old = json.load(open(current, encoding="utf-8"))
+        if old.get("run_id") == rid and old.get("started") == started:
+            prev_log = old.get("log")
+    except Exception:
+        pass
 rec = {"run_id": rid, "tool": tool, "state": st, "launcher_pid": num(lp), "child_pid": num(cp),
        "launcher_stime": lst or None, "child_stime": cst or None,
        "started": started or now, "started_epoch": num(started_epoch) or int(time.time()),
        "updated": now, "updated_epoch": int(time.time()), "exit": num(ex),
        "status": " ".join(status.split()), "report": report, "cwd": cwd, "budget": num(budget),
-       "sandbox": sandbox or None}
+       "sandbox": sandbox or None,
+       # Absolute, so --wait/--status find it from any working directory.
+       "log": os.path.abspath(log) if log else prev_log}
 json.dump(rec, open(tmp, "w", encoding="utf-8"))
 PY
     mv -f "$tmp" "$(state_file "$RUN_ID")"
@@ -293,7 +309,7 @@ classify_record() {
     ( RUN_ID=${REC[run_id]} TOOL=${REC[tool]} LAUNCHER_PID=${REC[launcher_pid]} CHILD_PID=${REC[child_pid]} \
       LAUNCHER_STIME=${REC[launcher_stime]} CHILD_STIME=${REC[child_stime]} \
       STARTED=${REC[started]} STARTED_EPOCH=${REC[started_epoch]} RECORD_CWD=${REC[cwd]} TIMEOUT=${REC[budget]} SANDBOX=${REC[sandbox]} \
-      state_write aborted 1 "launcher died before writing a final state (classified at age ${age}s)" ) || { RS_STATE=running; return; }
+      ACTIVITY_LOG= state_write aborted 1 "launcher died before writing a final state (classified at age ${age}s)" ) || { RS_STATE=running; return; }
     read_record "$f" || return 0
     RS_STATE=${REC[state]}
 }
@@ -398,9 +414,181 @@ print_status() {
             if [ -s "$(report_file "$rid")" ]; then cat "$(report_file "$rid")"; else echo "REPORT: (none written — ${REC[status]:-?})"; fi
             ex=${REC[exit]:-1}; case "$ex" in ''|null|*[!0-9]*) ex=1 ;; esac
             return "$ex" ;;
-        running) return 6 ;;
+        running) print_heartbeat "$(state_file "$rid")"; return 6 ;;
         *) echo "REPORT: record unreadable"; return 7 ;;
     esac
+}
+
+# print_heartbeat <state-file>: one HEARTBEAT line for a run that is still
+# executing, from the record (elapsed) and the activity log it names (line
+# count, seconds since the last write). A codex log also yields its shell
+# commands, a claude trace its tool calls: how many so far, and the last
+# one's result and head (`<tool>: <main argument>` for claude). Only an
+# `exec` entry whose next line has codex's own shell-invocation shape
+# (shell, flags, -Command/-c/-lc, ending with the closing quote and
+# ` in <dir>`) counts, so an `exec` line in worker prose or command output
+# is not read as a command. Nothing else from the log is echoed -- it
+# carries worker output derived from project files: the head of a
+# single-line command is one line, control characters replaced, capped at
+# 100 characters, and a multi-line command (here-string) shows no text.
+# Output that reproduces a whole single-line codex exec header can still
+# be counted; its head stays capped and sanitized. Reads are bounded: at
+# most the first 16 MiB as sized at the start (else only the last 1 MiB),
+# 64 KiB per line, so a huge or growing log never stalls the caller.
+print_heartbeat() {
+    "$RS_PY" - "$1" <<'PY' 2>/dev/null || echo "HEARTBEAT: unavailable (could not read the run record)"
+import json, os, re, sys, time
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+except Exception:
+    pass
+FULL_SCAN, TAIL, MAX_LINE = 16 << 20, 1 << 20, 64 << 10
+rec = json.load(open(sys.argv[1], encoding="utf-8"))
+now = time.time()
+started = rec.get("started_epoch")
+parts = ["elapsed %ds" % max(0, now - started) if isinstance(started, int) else "elapsed ?"]
+# `"C:\\...\\pwsh.exe" -ExecutionPolicy Bypass -Command '<cmd>' in D:\repo`
+# or `/bin/bash -lc '<cmd>' in /repo`; a flag may take one bare value.
+SHELL = re.compile(r'''^(?:"(?P<q>[^"]*)"|(?P<u>\S+))(?:\s+-(?!(?:Command|c|lc)\s)\S+(?:\s+[^\s'"-]\S*)?)*\s+-(?:Command|c|lc)\s+(?P<rest>.+)$''')
+SHELL_EXE = re.compile(r'(?i)(?:^|[\\/])(?:pwsh|powershell|bash|zsh|sh|dash)(?:\.exe)?$')
+RESULT = re.compile(r"^ (succeeded|exited -?\d+) in [0-9.]+m?s:")
+DIR = re.compile(r'(?:[A-Za-z]:[\\/]|/|~)')
+
+def shell_rest(line):
+    m = SHELL.match(line)
+    if m and SHELL_EXE.search(m.group("q") or m.group("u")):
+        return m.group("rest")
+    return None
+
+def split_dir(text, quote):
+    """(command, dir) when text ends with the closing quote + ` in <dir>`.
+    The directory may itself contain ` in `, so a quoted command splits at
+    the quote that precedes it; an unquoted command is a single word."""
+    if not quote:
+        body, sep, where = text.partition(" in ")
+        return (body, where) if sep and DIR.match(where) else None
+    i = text.rfind(quote + " in ")
+    while i >= 0:
+        where = text[i + len(quote) + 4:]
+        if DIR.match(where) and quote not in where:
+            return text[:i + len(quote)], where
+        i = text.rfind(quote + " in ", 0, i)
+    return None
+
+def head(cmd):
+    if cmd is None:
+        return "(multi-line command)"
+    cmd = cmd.strip()
+    if len(cmd) >= 2 and cmd[0] == cmd[-1] and cmd[0] in "'\"":
+        cmd = cmd[1:-1]
+    cmd = " ".join(re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", cmd).split())
+    return cmd if len(cmd) <= 100 else cmd[:100] + "..."
+
+def bounded_lines(fh, budget):
+    """Complete lines within `budget` bytes. A line longer than MAX_LINE,
+    or one cut by the budget or EOF, comes back as None (opaque)."""
+    used = 0
+    while used < budget:
+        raw = fh.readline(min(MAX_LINE, budget - used))
+        if not raw:
+            return
+        used += len(raw)
+        if raw.endswith(b"\n"):
+            yield raw.decode("utf-8", "replace").rstrip("\r\n")
+            continue
+        while used < budget:
+            more = fh.readline(min(MAX_LINE, budget - used))
+            if not more:
+                break
+            used += len(more)
+            if more.endswith(b"\n"):
+                break
+        yield None
+
+def scan(lines_iter):
+    count, lines, last = 0, 0, None
+    state, quote, span = None, None, 0
+    for line in lines_iter:
+        lines += 1
+        if state == "header":
+            state, rest = None, shell_rest(line) if line is not None else None
+            if rest is not None:
+                quote = rest[0] if rest[:1] in ("'", '"') else None
+                found = split_dir(rest, quote)
+                if found:
+                    count, last = count + 1, [found[0], "running"]
+                else:
+                    # Multi-line command: it ends at a line closing the
+                    # quote before ` in <dir>`; its text is never shown.
+                    state, span = "body", 0
+        elif state == "body":
+            span += 1
+            if line is not None and split_dir(line, quote):
+                state, count, last = None, count + 1, [None, "running"]
+            elif span > 5000:
+                state = None
+        elif line == "exec":
+            state = "header"
+        elif line is not None and last is not None and last[1] == "running":
+            m = RESULT.match(line)
+            if m:
+                last[1] = m.group(1)
+            elif line == "codex":
+                last[1] = "ended"
+    return count, lines, last
+
+# claude-trace.py writes every trace entry itself on one line (whitespace
+# collapsed), so a tool call is exactly `HH:MM:SSZ tool_use <name>: <detail>`
+# and worker text cannot fake one.
+TRACE_TOOL = re.compile(r"^\d\d:\d\d:\d\dZ tool_use (?P<name>[^:]{1,80}): (?P<detail>.*)$")
+TRACE_RESULT = re.compile(r"^\d\d:\d\d:\d\dZ tool_result( error)?: ")
+
+def scan_claude(lines_iter):
+    count, lines, last = 0, 0, None
+    for line in lines_iter:
+        lines += 1
+        m = TRACE_TOOL.match(line) if line is not None else None
+        if m:
+            count, last = count + 1, [m.group("name") + ": " + m.group("detail"), "running"]
+        elif line is not None and last is not None and last[1] == "running":
+            r = TRACE_RESULT.match(line)
+            if r:
+                last[1] = "error" if r.group(1) else "done"
+    return count, lines, last
+
+tool = rec.get("tool")
+scanner = scan_claude if tool == "claude" else scan
+log = rec.get("log")
+if not log:
+    parts.append("log unknown (the record names none)")
+elif not os.path.isfile(log):
+    parts.append("log not written yet")
+else:
+    try:
+        size, age = os.path.getsize(log), max(0, now - os.path.getmtime(log))
+        with open(log, "rb") as fh:
+            if size <= FULL_SCAN:
+                count, lines, last = scanner(bounded_lines(fh, size))
+                parts.append("log %d lines, last write %ds ago" % (lines, age))
+            else:
+                fh.seek(size - TAIL)
+                tail = bounded_lines(fh, TAIL)
+                next(tail, None)  # the partial first line
+                count, lines, last = scanner(tail)
+                count = None
+                parts.append("log %d MiB (last 1 MiB read), last write %ds ago" % (size >> 20, age))
+        if tool in ("codex", "claude"):
+            one, many = ("tool call", "tool calls") if tool == "claude" else ("shell command", "shell commands")
+            if last is None:
+                parts.append("no %s yet" % many if count is not None else "no %s in the last 1 MiB" % one)
+            elif count is None:
+                parts.append("last %s %s: %s" % (one, last[1], head(last[0])))
+            else:
+                parts.append("%d %s, last %s: %s" % (count, many, last[1], head(last[0])))
+    except OSError:
+        parts.append("log unreadable")
+print("HEARTBEAT: " + "; ".join(parts))
+PY
 }
 
 # --wait <RUN_ID> [-t N]: poll (5 s, backing off to 15 s after a minute)
@@ -425,7 +613,8 @@ cmd_wait() {
         waited=$((SECONDS - started))
         remaining=$((deadline - SECONDS))
         if [ "$remaining" -le 0 ]; then
-            echo "STATE: running (waited ${waited}s; run $rid, child pid ${REC[child_pid]:-?}) — call --wait $rid again"
+            echo "STATE: running (waited ${waited}s; run $rid, child pid ${REC[child_pid]:-?}) — tell the user the HEARTBEAT in one line, then call --wait $rid again"
+            print_heartbeat "$f"
             return 6
         fi
         step=5
@@ -452,7 +641,7 @@ cmd_forget() {
     read_record "$f" || { echo "STATE: corrupt record"; return 7; }
     ( RUN_ID=$rid TOOL=${REC[tool]} LAUNCHER_PID=${REC[launcher_pid]} CHILD_PID=${REC[child_pid]} \
       STARTED=${REC[started]} STARTED_EPOCH=${REC[started_epoch]} RECORD_CWD=${REC[cwd]} TIMEOUT=${REC[budget]} SANDBOX=${REC[sandbox]} \
-      state_write aborted 1 "marked aborted by --forget (orchestrator override)" )
+      ACTIVITY_LOG= state_write aborted 1 "marked aborted by --forget (orchestrator override)" )
     echo "STATE: aborted (run $rid forgotten by --forget; any live process was NOT touched)"
     return 0
 }

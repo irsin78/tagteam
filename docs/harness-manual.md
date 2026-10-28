@@ -371,9 +371,11 @@ acceptance scripts. This is a procedure, not a script included in the template.
 - Use local bindings for per-account model access, subscriptions, and budget
   declarations. Do not automatically query usage at startup or economize by
   skipping mandatory verification.
-- For long delegation, use launcher `-b` and `--wait <RUN_ID> -t 570`. Wait exit
-  code 6 means still running, so continue checking status. Follow each launcher's
-  recipe for specific options.
+- For long delegation, or a review the user is waiting on, use launcher `-b` and
+  `--wait <RUN_ID> -t 120`. Wait exit code 6 means still running: relay its
+  `HEARTBEAT:` line to the user in one line and continue checking status
+  (`-t 570` when nobody is watching). Follow each launcher's recipe for specific
+  options.
 - If actual costs/delays repeatedly miss expectations, inspect existing execution
   records and [TIMING](harness-launchers.md#meaning-of-launcher-statistics). Do not treat older measurements as current performance.
 

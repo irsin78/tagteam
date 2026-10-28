@@ -156,6 +156,20 @@ permissions, not a general network sandbox.
    it finishes; ending the turn after `-b` abandons the worker.
    `--wait -t N` is a wait budget including status/PID checks. A final exit-race
    recheck may exceed it by one check duration. On exit 6, wait for the same ID.
+   While a run executes, `--status` and an expired `--wait` print a `HEARTBEAT:`
+   line from the activity log the run's record names (codex run log, claude
+   trace, agy log): elapsed time, line count and seconds since the last write,
+   and for codex the shell command count with the last command's result and a
+   sanitized 100-character head (a multi-line command shows only
+   `(multi-line command)`), for claude the tool-call count with the last call's
+   result (`running`, `done`, `error`) and `<tool>: <main argument>`. No other
+   log text (assistant text, tool results, command output) is echoed, and a log
+   over 16 MiB is read only in its last 1 MiB (no count then). The `WAIT:` hint
+   uses `-t 120` so the orchestrator can relay that line to a watching user every
+   two minutes; an unattended orchestrator can use `-t 570`. The claude
+   implement route resolves to a foreground claude-run.sh call, which shows the
+   user nothing until it returns: when the user is waiting on a run that may take
+   more than a couple of minutes, start it with `-b` and poll the same way.
    Exit 2 is availability failure, exit 4 policy denial, exit 1 task/verification
    failure. Claude corrective retries are new calls inlining the original spec
    and failure; `-r` is unsupported. On availability failure, fall back once to

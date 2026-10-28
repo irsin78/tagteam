@@ -254,7 +254,7 @@ if [ "$DETACH" -eq 1 ] && [ "${HARNESS_RUN_CHILD:-}" != "1" ]; then
     echo "RUN_ID: $RUN_ID"
     echo "DETACHED: launcher pid $DETACHED_PID, stdout → $LAUNCHER_OUT"
     echo "STATE: $(state_file "$RUN_ID")"
-    echo "WAIT: bash $0 --wait $RUN_ID -t 570   (exit 6 = still running, call again; --status for one look)"
+    echo "WAIT: bash $0 --wait $RUN_ID -t 120   (exit 6 = still running: tell the user its HEARTBEAT line, then call again; --status for one look)"
     exit 0
 fi
 # Plumbing only: a nested launcher inheriting these would skip its own
@@ -271,6 +271,7 @@ PROGRESS_FILE="$PROGRESS_DIR/progress-$TIMESTAMP.md"
 # RUN_JSON. The sentinel lives OUTSIDE the tree (never a workspace change).
 STREAM_FILE="$LOG_DIR/stream-$TIMESTAMP.jsonl"
 TRACE_FILE="$LOG_DIR/trace-$TIMESTAMP.log"
+ACTIVITY_LOG=$TRACE_FILE
 # Traps first, resources second: every path variable starts empty so that an
 # exit or signal during the allocations below cleans exactly what exists.
 SENTINEL_DIR=

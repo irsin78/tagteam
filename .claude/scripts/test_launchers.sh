@@ -500,6 +500,19 @@ state_path() {
     find "$CASE_HOME/.claude/harness-runs" -type f -name "state-$1.json" -print 2>/dev/null | head -n 1
 }
 
+# state_log_is <rid> <basename>: the record names its activity log by an
+# absolute path ending in <basename> (either separator).
+state_log_is() {
+    local file
+    file=$(state_path "$1")
+    [ -n "$file" ] || return 1
+    "$REAL_PY" - "$file" "$2" <<'PY'
+import json, ntpath, os, sys
+log = json.load(open(sys.argv[1], encoding="utf-8")).get("log") or ""
+raise SystemExit(0 if os.path.isabs(log) and ntpath.basename(log) == sys.argv[2] else 1)
+PY
+}
+
 state_field_is() {
     local rid=$1 field=$2 expected=$3 file
     file=$(state_path "$rid")
@@ -515,12 +528,12 @@ PY
 }
 
 plant_record() {
-    local rid=$1 pid=$2 sandbox=$3
+    local rid=$1 pid=$2 sandbox=$3 log=${4:-} tool=${5:-codex}
     (
         cd "$CASE_REPO" || exit 1
         env HOME="$CASE_HOME" PATH="$STUB_BIN:$ORIGINAL_PATH" RID="$rid" PLANT_PID="$pid" PLANT_SANDBOX="$sandbox" \
-            RUN_STATE_PATH="$RUN_STATE" "$BASH" -c '
-                TOOL=codex RUN_ID=$RID TIMEOUT=570 SANDBOX=$PLANT_SANDBOX
+            PLANT_LOG="$log" PLANT_TOOL="$tool" RUN_STATE_PATH="$RUN_STATE" "$BASH" -c '
+                TOOL=$PLANT_TOOL RUN_ID=$RID TIMEOUT=570 SANDBOX=$PLANT_SANDBOX ACTIVITY_LOG=$PLANT_LOG
                 . "$RUN_STATE_PATH" || exit 1
                 LAUNCHER_PID=$PLANT_PID
                 LAUNCHER_STIME=$(pid_stime "$PLANT_PID")
@@ -1631,7 +1644,129 @@ if [ "$detach_rc" -eq 0 ] && has "$detach_out" '^RUN_ID: detachrun$' && has "$de
    && [ "$wait_rc" -eq 0 ] && has "$wait_out" '^STATUS: DONE' && state_field_is detachrun state done; then ok=1; fi
 LAST_OUT=$wait_out
 timing_ok "$LAST_OUT" 1 0 || ok=0
+state_log_is detachrun run-detachrun.log || ok=0
 expect_case "detached max run status and wait lifecycle" "$ok" "detach=$detach_rc status=$status_rc wait=$wait_rc"
+
+# HEARTBEAT: --status and an expired --wait on a live run print one line
+# with elapsed time, the activity log's size and age and, for codex, the
+# last shell command's result and head. Only exec entries in codex's own
+# shell-invocation shape count (an `exec` line in prose or command output
+# does not); the head is single-line, control characters replaced, capped;
+# no other log text (prose, command output, here-string bodies).
+fresh_case
+start_live_shell
+mkdir -p "$CASE_REPO/.claude/codex-logs"
+hb_log=.claude/codex-logs/run-hbrun.log
+hb_esc=$'\033'
+hb_long=$(printf 'x%.0s' {1..150})
+printf '%s\n' 'codex' 'exec' 'SECRET_PROSE planning the review' 'exec' \
+    '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -ExecutionPolicy Bypass -NoProfile -Command '"'git status --short'"' in D:\repo' \
+    ' succeeded in 120ms:' 'exec' 'SECRET_OUTPUT line' > "$CASE_REPO/$hb_log"
+plant_record hbrun "$LIVE_PID" read-only "$hb_log"
+run_capture hb-status-done bash "$CODEX_RUN" --status hbrun
+hb_done_rc=$LAST_RC; hb_done_out=$LAST_OUT
+printf '%s\n' '' 'exec' "/bin/bash -lc 'printf \"${hb_esc}[31mred\"; echo $hb_long' in /repo" >> "$CASE_REPO/$hb_log"
+run_capture hb-status-running bash "$CODEX_RUN" --status hbrun
+hb_run_rc=$LAST_RC; hb_run_out=$LAST_OUT
+printf '%s\n' ' exited 1 in 5ms:' 'SECRET_OUTPUT failure' >> "$CASE_REPO/$hb_log"
+run_capture hb-wait bash "$CODEX_RUN" --wait hbrun -t 1
+hb_wait_rc=$LAST_RC; hb_wait_out=$LAST_OUT
+printf '%s\n' '' 'exec' '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "@'"'" 'exec' \
+    'SECRET_HEREDOC body' "'@ | python -B -\" in D:\\repo" >> "$CASE_REPO/$hb_log"
+run_capture hb-multiline bash "$CODEX_RUN" --status hbrun
+hb_multi_out=$LAST_OUT
+plant_record hbnolog "$LIVE_PID" read-only
+run_capture hb-nolog bash "$CODEX_RUN" --status hbnolog
+hb_nolog_out=$LAST_OUT
+plant_record hbmissing "$LIVE_PID" read-only .claude/codex-logs/run-hbmissing.log
+run_capture hb-missing bash "$CODEX_RUN" --status hbmissing
+hb_missing_out=$LAST_OUT
+# Over 16 MiB only the tail is read: no count, the tail's last command.
+"$REAL_PY" - "$CASE_REPO/.claude/codex-logs/run-hbbig.log" <<'PY'
+import sys
+with open(sys.argv[1], "wb") as fh:
+    fh.write(b"exec\n/bin/bash -lc 'SECRET_EARLY' in /repo\n")
+    fh.write((b"o" * 99 + b"\n") * (17 * 10486))
+    fh.write(b"exec\n/bin/bash -lc 'make test' in /repo\n")
+PY
+plant_record hbbig "$LIVE_PID" read-only .claude/codex-logs/run-hbbig.log
+run_capture hb-big bash "$CODEX_RUN" --status hbbig
+hb_big_out=$LAST_OUT
+# A partial header in output must not swallow the next real command's
+# text; a heredoc line that looks like a closing line, an over-long line
+# ending in `exec`, and a working directory containing ` in `.
+printf '%s\n' 'exec' "/bin/bash -lc 'SECRET_PARTIAL output" 'exec' \
+    "/bin/bash -lc 'git status' in /repos/work in progress" ' succeeded in 3ms:' > "$CASE_REPO/.claude/codex-logs/run-hbpartial.log"
+printf '%s\n' 'exec' "/bin/bash -lc 'cat <<EOF" "SECRET_BODY' in /tmp" "EOF' in /repo" > "$CASE_REPO/.claude/codex-logs/run-hbheredoc.log"
+"$REAL_PY" - "$CASE_REPO/.claude/codex-logs/run-hblong.log" <<'PY'
+import sys
+with open(sys.argv[1], "wb") as fh:
+    # Split at the 64 KiB read limit, the second piece is exactly `exec`.
+    fh.write(b"o" * 65536 + b"exec\n/bin/bash -lc 'SECRET_LONG' in /repo\n")
+PY
+printf '%s\n' 'exec' "/bin/bash -lc 'git status' in /repos/work in progress" > "$CASE_REPO/.claude/codex-logs/run-hbdir.log"
+for hb_rid in hbpartial hbheredoc hblong hbdir; do
+    plant_record "$hb_rid" "$LIVE_PID" read-only ".claude/codex-logs/run-$hb_rid.log"
+    run_capture "hb-$hb_rid" bash "$CODEX_RUN" --status "$hb_rid"
+    printf -v "hb_${hb_rid}_out" '%s' "$LAST_OUT"
+done
+# A claude trace: tool calls only, never assistant text or tool results.
+mkdir -p "$CASE_REPO/.claude/claude-logs"
+hb_trace=.claude/claude-logs/trace-hbclaude.log
+printf '%s\n' '# converter pid=1 sentinel=/tmp/x' '08:00:01Z assistant: SECRET_PROSE I will look first' \
+    '08:00:02Z tool_use Bash: git status' '08:00:03Z tool_result: SECRET_RESULT clean tree' \
+    '08:00:04Z tool_use Edit: src/app.py' > "$CASE_REPO/$hb_trace"
+plant_record hbclaude "$LIVE_PID" workspace-write "$hb_trace" claude
+run_capture hb-claude bash "$CLAUDE_RUN" --status hbclaude
+hb_claude_out=$LAST_OUT
+printf '%s\n' '08:00:05Z tool_result error: SECRET_ERROR old_string not found' >> "$CASE_REPO/$hb_trace"
+run_capture hb-claude-error bash "$CLAUDE_RUN" --status hbclaude
+hb_claude_err_out=$LAST_OUT
+hb_head=$(sed -n 's/^HEARTBEAT: .*shell commands, last running: //p' "$hb_run_out")
+ok=0
+if [ "$hb_done_rc" -eq 6 ] && has "$hb_done_out" '^STATE: running' \
+   && has "$hb_done_out" '^HEARTBEAT: elapsed [0-9]+s; log 8 lines, last write [0-9]+s ago; 1 shell commands, last succeeded: git status --short$' \
+   && [ "$hb_run_rc" -eq 6 ] && has "$hb_run_out" '^HEARTBEAT: elapsed [0-9]+s; log 11 lines, .*; 2 shell commands, last running: printf " \[31mred"; echo x+\.\.\.$' \
+   && [ "${#hb_head}" -le 103 ] && ! grep -q "$hb_esc" "$hb_run_out" \
+   && [ "$hb_wait_rc" -eq 6 ] && has "$hb_wait_out" '^STATE: running \(waited [0-9]+s; .*tell the user the HEARTBEAT' \
+   && has "$hb_wait_out" '^HEARTBEAT: .*; 2 shell commands, last exited 1: printf ' \
+   && has "$hb_multi_out" '^HEARTBEAT: .*; 3 shell commands, last running: \(multi-line command\)$' \
+   && has "$hb_hbpartial_out" '^HEARTBEAT: .*; 1 shell commands, last succeeded: \(multi-line command\)$' \
+   && has "$hb_hbheredoc_out" '^HEARTBEAT: .*; 1 shell commands, last running: \(multi-line command\)$' \
+   && has "$hb_hblong_out" '^HEARTBEAT: .*log 2 lines, .*; no shell commands yet$' \
+   && has "$hb_hbdir_out" '^HEARTBEAT: .*; 1 shell commands, last running: git status$' \
+   && has "$hb_claude_out" '^HEARTBEAT: elapsed [0-9]+s; log 5 lines, last write [0-9]+s ago; 2 tool calls, last running: Edit: src/app.py$' \
+   && has "$hb_claude_err_out" '^HEARTBEAT: .*; 2 tool calls, last error: Edit: src/app.py$' \
+   && has "$hb_nolog_out" '^HEARTBEAT: elapsed [0-9]+s; log unknown' \
+   && has "$hb_missing_out" '^HEARTBEAT: elapsed [0-9]+s; log not written yet$' \
+   && has "$hb_big_out" '^HEARTBEAT: elapsed [0-9]+s; log 1[67] MiB \(last 1 MiB read\), last write [0-9]+s ago; last shell command running: make test$' \
+   && ! grep -q SECRET_ "$hb_done_out" "$hb_run_out" "$hb_wait_out" "$hb_multi_out" "$hb_big_out" \
+        "$hb_hbpartial_out" "$hb_hbheredoc_out" "$hb_hblong_out" "$hb_hbdir_out" \
+        "$hb_claude_out" "$hb_claude_err_out"; then ok=1; fi
+expect_case "HEARTBEAT reports elapsed, log age and a sanitized last command only" "$ok" "done=$hb_done_rc running=$hb_run_rc wait=$hb_wait_rc head=${#hb_head}"
+# An abort rewrite of a dead run keeps the log it recorded.
+stop_live_shell "$LIVE_PID"
+run_capture hb-dead bash "$CODEX_RUN" --status hbrun
+ok=0; has "$LAST_OUT" '^STATE: aborted' && state_field_is hbrun state aborted && state_log_is hbrun run-hbrun.log && ok=1
+expect_case "abort rewrite keeps the recorded activity log" "$ok" "exit=$LAST_RC"
+
+# The same line from a real detached codex run: the record names the run
+# log once the CLI is spawned.
+fresh_case
+run_capture hb-detach env STUB_ACTION=sleep:4 HARNESS_RUN_ID=hbdetach bash "$CODEX_RUN" -p prompt.txt -b
+hb_detach_out=$LAST_OUT
+ok=0
+for _ in $(seq 1 30); do
+    run_capture hb-detach-status bash "$CODEX_RUN" --status hbdetach
+    if has "$LAST_OUT" '^HEARTBEAT: elapsed [0-9]+s; log [1-9][0-9]* lines, last write [0-9]+s ago; no shell commands yet$'; then ok=1; break; fi
+    [ "$LAST_RC" -eq 6 ] || break
+    sleep 0.2
+done
+hb_status_out=$LAST_OUT
+run_capture hb-detach-wait bash "$CODEX_RUN" --wait hbdetach -t 60
+[ "$LAST_RC" -eq 0 ] && has "$hb_detach_out" '^WAIT: .* -t 120 .*HEARTBEAT' && state_log_is hbdetach run-hbdetach.log || ok=0
+LAST_OUT=$hb_status_out
+expect_case "detached codex run serves a HEARTBEAT from its run log" "$ok" "wait=$LAST_RC"
 
 
 fi
@@ -1891,6 +2026,9 @@ for tool in codex claude agy; do
     # agy passes the budget through to the CLI, so the stub's args log shows
     # that the full 900 s reached the worker rather than a clamped value.
     [ "$tool" != agy ] || grep -Fq -- '--print-timeout 900s' "$TEST_ROOT/agy-args.log" || ok=0
+    # Each launcher names the file its CLI writes while working.
+    case "$tool" in codex) hb_name=run ;; claude) hb_name=trace ;; *) hb_name=agy ;; esac
+    has "$long_out" '^WAIT: .* -t 120 ' && state_log_is "longbudget$tool" "$hb_name-longbudget$tool.log" || ok=0
     expect_case "$tool -b accepts -t 900 and completes detached" "$ok" "detach=$long_rc wait=$LAST_RC"
 done
 

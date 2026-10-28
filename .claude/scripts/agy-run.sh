@@ -174,7 +174,7 @@ if [ "$DETACH" -eq 1 ] && [ "${HARNESS_RUN_CHILD:-}" != "1" ]; then
     echo "RUN_ID: $RUN_ID"
     echo "DETACHED: launcher pid $DETACHED_PID, stdout → $LAUNCHER_OUT"
     echo "STATE: $(state_file "$RUN_ID")"
-    echo "WAIT: bash $0 --wait $RUN_ID -t 570   (exit 6 = still running, call again; --status for one look)"
+    echo "WAIT: bash $0 --wait $RUN_ID -t 120   (exit 6 = still running: tell the user its HEARTBEAT line, then call again; --status for one look)"
     exit 0
 fi
 # Plumbing only: consumed above, never meant for the CLI child or a -v
@@ -186,6 +186,7 @@ REPORT_FILE=$(report_file "$RUN_ID")
 RUN_JSON="$LOG_DIR/run-$TIMESTAMP.json"
 RUN_ERR="$LOG_DIR/run-$TIMESTAMP.err"
 AGY_LOG="$LOG_DIR/agy-$TIMESTAMP.log"
+ACTIVITY_LOG=$AGY_LOG
 RESPONSE_FILE="$LOG_DIR/response-$TIMESTAMP.txt"
 CHANGED_FILE=$(mktemp "${TMPDIR:-/tmp}/agy-changed.XXXXXX") || exit 2
 TREE_BEFORE=$(mktemp "${TMPDIR:-/tmp}/agy-tree-before.XXXXXX") || exit 2

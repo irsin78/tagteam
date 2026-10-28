@@ -51,8 +51,10 @@ the prompt (rules/security-boundary.md).
    only proof the writes landed where intended.
    Long or lost-call-proof runs: add `-b` — the launcher returns
    `RUN_ID:`/`WAIT:` at once and continues detached; poll with
-   `bash .claude/scripts/agy-run.sh --wait <RUN_ID> -t 570` (exit 6 =
-   still running) or `--status <RUN_ID>`. Every run records
+   `bash .claude/scripts/agy-run.sh --wait <RUN_ID> -t 120` (exit 6 =
+   still running; its `HEARTBEAT:` line gives elapsed time and the agy
+   log's size and last-write age — tell the user in one line, then call
+   again; `-t 570` when nobody is watching) or `--status <RUN_ID>`. Every run records
    `~/.claude/harness-runs/state-<RUN_ID>.json` (starting → running →
    done | aborted) and `report-<RUN_ID>.txt` outside the workspace (for
    agy, whose grant reaches every path, this is detection-grade); a new
