@@ -65,6 +65,11 @@ and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
 measured index/cost/TTFT and per-host role priorities; declare optional workers
 with `status: optional` and `requires`.
+For `implement` and `write`, explicit `--worker <id>` selects that worker's vendor,
+including the author's own vendor, regardless of the automatic vendor preference.
+It does not make the work an independent review; review/advice roles still exclude
+every artifact author. Existing worker eligibility and option checks still apply.
+
 Implementation goes to the orchestrator's own vendor by default and crosses only on
 `--vendor` or exhaustion; reviews always cross (see "Separate authorship from review").
 Bands are capability labels independent of leaderboard index values, with one

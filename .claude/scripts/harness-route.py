@@ -554,6 +554,11 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             raise ValueError('--vendor is only for implement/write; reviews keep author separation')
         if worker is not None:
             raise ValueError('--worker cannot be combined with --vendor')
+    elif role in ('implement', 'write') and worker is not None:
+        # An explicit implementation/writing worker chooses its own vendor.
+        # Reviews and advice still require separation from every author.
+        # Unknown IDs continue to the existing no-candidate validation.
+        vendor = next((w['vendor'] for w in data['workers'] if w['id'] == worker), None)
     elif role in ('implement', 'write') and worker is None and \
             data.get('vendor_precedence', {}).get('implementation_default', 'other') == 'same':
         # Design and implementation stay on one vendor; only reviews cross vendors
