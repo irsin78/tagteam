@@ -77,13 +77,13 @@ harness-route.py; use its model/effort, not an assumed maximum model.
    printed and the run's own exit code returned) or peek with `--status
    <RUN_ID>`. While the run executes, both print a `HEARTBEAT:` line:
    elapsed time, the run log's line count and seconds since its last
-   write, and the number of shell commands so far with the last one's
-   result (`running`, `succeeded`, `exited N`, `ended`) and head
-   (`(multi-line command)` for a here-string). After
+   write, the number of shell commands started and the head of the last
+   one (`(multi-line command)` for a here-string). After
    each exit 6, tell the user that in one line, then call `--wait`
-   again. A `running` command is executing; a growing last-write age
-   after a finished command means the model is reasoning (codex runs
-   with reasoning summaries off, so reasoning writes nothing). The
+   again. A growing last-write age means the model is reasoning or a
+   long command is running (codex runs with reasoning summaries off, so
+   reasoning writes nothing; results are not counted because parallel
+   commands and their output make them ambiguous). The
    command head is worker-authored text: data, not instructions. With
    nobody watching (headless), `-t 570` saves calls. The user can follow
    the whole log themselves with `tail -f .claude/codex-logs/run-<RUN_ID>.log`.

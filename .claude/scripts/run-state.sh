@@ -421,38 +421,45 @@ print_status() {
 
 # print_heartbeat <state-file>: one HEARTBEAT line for a run that is still
 # executing, from the record (elapsed) and the activity log it names (line
-# count, seconds since the last write). A codex log also yields its shell
-# commands, a claude trace its tool calls: how many so far, and the last
-# one's result and head (`<tool>: <main argument>` for claude). Only an
-# `exec` entry whose next line has codex's own shell-invocation shape
-# (shell, flags, -Command/-c/-lc, ending with the closing quote and
-# ` in <dir>`) counts, so an `exec` line in worker prose or command output
-# is not read as a command. Nothing else from the log is echoed -- it
-# carries worker output derived from project files: the head of a
-# single-line command is one line, control characters replaced, capped at
-# 100 characters, and a multi-line command (here-string) shows no text.
-# Output that reproduces a whole single-line codex exec header can still
-# be counted; its head stays capped and sanitized. Reads are bounded: at
-# most the first 16 MiB as sized at the start (else only the last 1 MiB),
-# 64 KiB per line, so a huge or growing log never stalls the caller.
+# count, seconds since the last write). A codex log also yields how many
+# shell commands started and the head of the last one; a claude trace its
+# tool calls with how many are still running or failed (counted, never
+# attributed to a call: parallel calls finish in any order) and the last
+# one's `<tool>: <main argument>`. Codex results are not counted: its
+# result lines (` succeeded in Nms:`) follow parallel commands in any order
+# and command output can contain the same text, so no count would be exact.
+# Codex prints a command as its shell argv, shell-quoted, then ` in <dir>`:
+# an `exec` entry counts only when the next line has that shape and the
+# quoted command token, read from the left, ends right before ` in <dir>`
+# (on a later line for a here-string), so an `exec` line in worker prose or
+# command output is not read as a command and directory text never joins
+# the head. Nothing else from the log is echoed -- it carries worker output
+# derived from project files: the head of a single-line command is one
+# line, control characters replaced, capped at 100 characters, and a
+# multi-line command shows no text. Output that reproduces a whole
+# single-line codex exec header can still be counted; its head stays
+# capped and sanitized. Reads are bounded: at most the first 16 MiB as
+# sized at the start (else only the last 1 MiB), 64 KiB per line, so a
+# huge or growing log never stalls the caller.
 print_heartbeat() {
     "$RS_PY" - "$1" <<'PY' 2>/dev/null || echo "HEARTBEAT: unavailable (could not read the run record)"
-import json, os, re, sys, time
+import json, os, re, shlex, sys, time
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
 except Exception:
     pass
 FULL_SCAN, TAIL, MAX_LINE = 16 << 20, 1 << 20, 64 << 10
+MULTI = object()  # the head of a multi-line command
 rec = json.load(open(sys.argv[1], encoding="utf-8"))
 now = time.time()
 started = rec.get("started_epoch")
 parts = ["elapsed %ds" % max(0, now - started) if isinstance(started, int) else "elapsed ?"]
-# `"C:\\...\\pwsh.exe" -ExecutionPolicy Bypass -Command '<cmd>' in D:\repo`
-# or `/bin/bash -lc '<cmd>' in /repo`; a flag may take one bare value.
-SHELL = re.compile(r'''^(?:"(?P<q>[^"]*)"|(?P<u>\S+))(?:\s+-(?!(?:Command|c|lc)\s)\S+(?:\s+[^\s'"-]\S*)?)*\s+-(?:Command|c|lc)\s+(?P<rest>.+)$''')
-SHELL_EXE = re.compile(r'(?i)(?:^|[\\/])(?:pwsh|powershell|bash|zsh|sh|dash)(?:\.exe)?$')
-RESULT = re.compile(r"^ (succeeded|exited -?\d+) in [0-9.]+m?s:")
-DIR = re.compile(r'(?:[A-Za-z]:[\\/]|/|~)')
+# `"C:\\...\\pwsh.exe" -ExecutionPolicy Bypass -Command '<cmd>' in D:\repo`,
+# `"C:\\...\\cmd.exe" /c "<cmd>" in D:\repo` or `/bin/bash -lc '<cmd>' in
+# /repo`; a flag may take one bare value.
+SHELL = re.compile(r'''^(?:"(?P<q>[^"]*)"|(?P<u>\S+))(?:\s+[-/](?!(?:Command|c|C|lc)\s)\S+(?:\s+[^\s'"/-]\S*)?)*\s+(?:-(?:Command|c|lc)|/[cC])\s+(?P<rest>.+)$''')
+SHELL_EXE = re.compile(r'(?i)(?:^|[\\/])(?:pwsh|powershell|cmd|bash|zsh|sh|dash)(?:\.exe)?$')
+IN_DIR = re.compile(r'^ in (?:[A-Za-z]:[\\/]|/|~)')
 
 def shell_rest(line):
     m = SHELL.match(line)
@@ -460,27 +467,41 @@ def shell_rest(line):
         return m.group("rest")
     return None
 
-def split_dir(text, quote):
-    """(command, dir) when text ends with the closing quote + ` in <dir>`.
-    The directory may itself contain ` in `, so a quoted command splits at
-    the quote that precedes it; an unquoted command is a single word."""
-    if not quote:
-        body, sep, where = text.partition(" in ")
-        return (body, where) if sep and DIR.match(where) else None
-    i = text.rfind(quote + " in ")
-    while i >= 0:
-        where = text[i + len(quote) + 4:]
-        if DIR.match(where) and quote not in where:
-            return text[:i + len(quote)], where
-        i = text.rfind(quote + " in ", 0, i)
-    return None
+def read_token(text, quote):
+    """Walk one POSIX shell-quoted token from the left, starting inside
+    `quote` when a previous line left it open. Returns (end, quote): end is
+    where unquoted whitespace stops the token, or None when the line ends
+    first, with the quote still open (None if the token simply ended)."""
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+        elif quote == '"':
+            if c == "\\":
+                i += 1
+            elif c == '"':
+                quote = None
+        elif c in " \t":
+            return i, None
+        elif c in "'\"":
+            quote = c
+        elif c == "\\":
+            i += 1
+        i += 1
+    return None, quote
+
+def unquote(token):
+    try:
+        words = shlex.split(token)
+    except ValueError:
+        return token
+    return words[0] if len(words) == 1 else token
 
 def head(cmd):
-    if cmd is None:
+    if cmd is MULTI:
         return "(multi-line command)"
-    cmd = cmd.strip()
-    if len(cmd) >= 2 and cmd[0] == cmd[-1] and cmd[0] in "'\"":
-        cmd = cmd[1:-1]
     cmd = " ".join(re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", cmd).split())
     return cmd if len(cmd) <= 100 else cmd[:100] + "..."
 
@@ -506,36 +527,35 @@ def bounded_lines(fh, budget):
         yield None
 
 def scan(lines_iter):
-    count, lines, last = 0, 0, None
-    state, quote, span = None, None, 0
+    """codex: (started, None, None, lines, last head)."""
+    count = lines = 0
+    last, state, quote, span = None, None, None, 0
     for line in lines_iter:
         lines += 1
         if state == "header":
             state, rest = None, shell_rest(line) if line is not None else None
             if rest is not None:
-                quote = rest[0] if rest[:1] in ("'", '"') else None
-                found = split_dir(rest, quote)
-                if found:
-                    count, last = count + 1, [found[0], "running"]
-                else:
-                    # Multi-line command: it ends at a line closing the
-                    # quote before ` in <dir>`; its text is never shown.
-                    state, span = "body", 0
+                end, quote = read_token(rest, None)
+                if end is not None:
+                    if IN_DIR.match(rest[end:]):
+                        count, last = count + 1, unquote(rest[:end])
+                elif quote:
+                    state, span = "body", 0  # the quoted command spans lines
         elif state == "body":
             span += 1
-            if line is not None and split_dir(line, quote):
-                state, count, last = None, count + 1, [None, "running"]
-            elif span > 5000:
-                state = None
+            if line is None or span > 5000:
+                state = None  # an opaque or endless body: stop following it
+            else:
+                end, quote = read_token(line, quote)
+                if end is not None:
+                    state = None
+                    if IN_DIR.match(line[end:]):
+                        count, last = count + 1, MULTI
+                elif not quote:
+                    state = None  # closed at the line end without ` in <dir>`
         elif line == "exec":
             state = "header"
-        elif line is not None and last is not None and last[1] == "running":
-            m = RESULT.match(line)
-            if m:
-                last[1] = m.group(1)
-            elif line == "codex":
-                last[1] = "ended"
-    return count, lines, last
+    return count, None, None, lines, last
 
 # claude-trace.py writes every trace entry itself on one line (whitespace
 # collapsed), so a tool call is exactly `HH:MM:SSZ tool_use <name>: <detail>`
@@ -544,17 +564,22 @@ TRACE_TOOL = re.compile(r"^\d\d:\d\d:\d\dZ tool_use (?P<name>[^:]{1,80}): (?P<de
 TRACE_RESULT = re.compile(r"^\d\d:\d\d:\d\dZ tool_result( error)?: ")
 
 def scan_claude(lines_iter):
-    count, lines, last = 0, 0, None
+    """claude: (started, finished, failed, lines, last head)."""
+    count = done = failed = lines = 0
+    last = None
     for line in lines_iter:
         lines += 1
-        m = TRACE_TOOL.match(line) if line is not None else None
+        if line is None:
+            continue
+        m = TRACE_TOOL.match(line)
         if m:
-            count, last = count + 1, [m.group("name") + ": " + m.group("detail"), "running"]
-        elif line is not None and last is not None and last[1] == "running":
-            r = TRACE_RESULT.match(line)
-            if r:
-                last[1] = "error" if r.group(1) else "done"
-    return count, lines, last
+            count, last = count + 1, m.group("name") + ": " + m.group("detail")
+            continue
+        r = TRACE_RESULT.match(line)
+        if r:
+            done += 1
+            failed += bool(r.group(1))
+    return count, done, failed, lines, last
 
 tool = rec.get("tool")
 scanner = scan_claude if tool == "claude" else scan
@@ -568,23 +593,27 @@ else:
         size, age = os.path.getsize(log), max(0, now - os.path.getmtime(log))
         with open(log, "rb") as fh:
             if size <= FULL_SCAN:
-                count, lines, last = scanner(bounded_lines(fh, size))
+                whole = True
+                count, done, failed, lines, last = scanner(bounded_lines(fh, size))
                 parts.append("log %d lines, last write %ds ago" % (lines, age))
             else:
+                whole = False
                 fh.seek(size - TAIL)
                 tail = bounded_lines(fh, TAIL)
                 next(tail, None)  # the partial first line
-                count, lines, last = scanner(tail)
-                count = None
+                count, done, failed, lines, last = scanner(tail)
                 parts.append("log %d MiB (last 1 MiB read), last write %ds ago" % (size >> 20, age))
         if tool in ("codex", "claude"):
             one, many = ("tool call", "tool calls") if tool == "claude" else ("shell command", "shell commands")
-            if last is None:
-                parts.append("no %s yet" % many if count is not None else "no %s in the last 1 MiB" % one)
-            elif count is None:
-                parts.append("last %s %s: %s" % (one, last[1], head(last[0])))
+            if not count:
+                parts.append("no %s yet" % many if whole else "no %s in the last 1 MiB" % one)
+            elif not whole:
+                parts.append("last %s started: %s" % (one, head(last)))
+            elif done is None:
+                parts.append("%d %s, last started: %s" % (count, many, head(last)))
             else:
-                parts.append("%d %s, last %s: %s" % (count, many, last[1], head(last[0])))
+                parts.append("%d %s (%d running, %d failed), last started: %s"
+                             % (count, many, max(0, count - done), failed, head(last)))
     except OSError:
         parts.append("log unreadable")
 print("HEARTBEAT: " + "; ".join(parts))

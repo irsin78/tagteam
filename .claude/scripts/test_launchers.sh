@@ -1705,7 +1705,24 @@ with open(sys.argv[1], "wb") as fh:
     fh.write(b"o" * 65536 + b"exec\n/bin/bash -lc 'SECRET_LONG' in /repo\n")
 PY
 printf '%s\n' 'exec' "/bin/bash -lc 'git status' in /repos/work in progress" > "$CASE_REPO/.claude/codex-logs/run-hbdir.log"
-for hb_rid in hbpartial hbheredoc hblong hbdir; do
+# Parallel calls finish in any order, and output can look like a result
+# line: codex results are not counted at all.
+printf '%s\n' 'exec' "/bin/bash -lc 'make a' in /repo" 'exec' "/bin/bash -lc 'make b' in /repo" \
+    ' exited 1 in 5ms:' 'SECRET_OUTPUT a' > "$CASE_REPO/.claude/codex-logs/run-hboverlap.log"
+printf '%s\n' 'exec' "/bin/bash -lc 'cat fixture.txt' in /repo" ' succeeded in 3ms:' ' exited 1 in 5ms:' \
+    > "$CASE_REPO/.claude/codex-logs/run-hbresult.log"
+# Windows cmd.exe /c, with backslash escapes inside double quotes.
+printf '%s\n' 'exec' '"C:\\windows\\system32\\cmd.exe" /d /c "rmdir \"D:\\Projects\\x\"" in D:\Projects\repo' \
+    > "$CASE_REPO/.claude/codex-logs/run-hbcmd.log"
+# Directory text never joins the head: a cwd with a quote and ` in `.
+printf '%s\n' 'exec' "/bin/bash -lc 'git log' in /tmp/SECRET_CWD' in /home/O'Brien" > "$CASE_REPO/.claude/codex-logs/run-hbcwd.log"
+# Shell-quoted as codex prints it, a first line that looks closed is not.
+"$REAL_PY" - "$CASE_REPO/.claude/codex-logs/run-hbshlex.log" <<'PY'
+import shlex, sys
+with open(sys.argv[1], "w", encoding="utf-8", newline="\n") as fh:
+    fh.write("exec\n" + shlex.join(["/bin/bash", "-lc", "printf ' in /SECRET_PRIVATE\nrest'"]) + " in /repo\n")
+PY
+for hb_rid in hbpartial hbheredoc hblong hbdir hboverlap hbresult hbcmd hbcwd hbshlex; do
     plant_record "$hb_rid" "$LIVE_PID" read-only ".claude/codex-logs/run-$hb_rid.log"
     run_capture "hb-$hb_rid" bash "$CODEX_RUN" --status "$hb_rid"
     printf -v "hb_${hb_rid}_out" '%s' "$LAST_OUT"
@@ -1719,29 +1736,35 @@ printf '%s\n' '# converter pid=1 sentinel=/tmp/x' '08:00:01Z assistant: SECRET_P
 plant_record hbclaude "$LIVE_PID" workspace-write "$hb_trace" claude
 run_capture hb-claude bash "$CLAUDE_RUN" --status hbclaude
 hb_claude_out=$LAST_OUT
-printf '%s\n' '08:00:05Z tool_result error: SECRET_ERROR old_string not found' >> "$CASE_REPO/$hb_trace"
+printf '%s\n' '08:00:05Z tool_use Read: src/b.py' '08:00:06Z tool_result error: SECRET_ERROR old_string not found' >> "$CASE_REPO/$hb_trace"
 run_capture hb-claude-error bash "$CLAUDE_RUN" --status hbclaude
 hb_claude_err_out=$LAST_OUT
-hb_head=$(sed -n 's/^HEARTBEAT: .*shell commands, last running: //p' "$hb_run_out")
+hb_head=$(sed -n 's/^HEARTBEAT: .*shell commands, last started: //p' "$hb_run_out")
 ok=0
 if [ "$hb_done_rc" -eq 6 ] && has "$hb_done_out" '^STATE: running' \
-   && has "$hb_done_out" '^HEARTBEAT: elapsed [0-9]+s; log 8 lines, last write [0-9]+s ago; 1 shell commands, last succeeded: git status --short$' \
-   && [ "$hb_run_rc" -eq 6 ] && has "$hb_run_out" '^HEARTBEAT: elapsed [0-9]+s; log 11 lines, .*; 2 shell commands, last running: printf " \[31mred"; echo x+\.\.\.$' \
+   && has "$hb_done_out" '^HEARTBEAT: elapsed [0-9]+s; log 8 lines, last write [0-9]+s ago; 1 shell commands, last started: git status --short$' \
+   && [ "$hb_run_rc" -eq 6 ] && has "$hb_run_out" '^HEARTBEAT: elapsed [0-9]+s; log 11 lines, .*; 2 shell commands, last started: printf " \[31mred"; echo x+\.\.\.$' \
    && [ "${#hb_head}" -le 103 ] && ! grep -q "$hb_esc" "$hb_run_out" \
    && [ "$hb_wait_rc" -eq 6 ] && has "$hb_wait_out" '^STATE: running \(waited [0-9]+s; .*tell the user the HEARTBEAT' \
-   && has "$hb_wait_out" '^HEARTBEAT: .*; 2 shell commands, last exited 1: printf ' \
-   && has "$hb_multi_out" '^HEARTBEAT: .*; 3 shell commands, last running: \(multi-line command\)$' \
-   && has "$hb_hbpartial_out" '^HEARTBEAT: .*; 1 shell commands, last succeeded: \(multi-line command\)$' \
-   && has "$hb_hbheredoc_out" '^HEARTBEAT: .*; 1 shell commands, last running: \(multi-line command\)$' \
+   && has "$hb_wait_out" '^HEARTBEAT: .*; 2 shell commands, last started: printf ' \
+   && has "$hb_multi_out" '^HEARTBEAT: .*; 3 shell commands, last started: \(multi-line command\)$' \
+   && has "$hb_hbpartial_out" '^HEARTBEAT: .*; no shell commands yet$' \
+   && has "$hb_hbheredoc_out" '^HEARTBEAT: .*; 1 shell commands, last started: \(multi-line command\)$' \
    && has "$hb_hblong_out" '^HEARTBEAT: .*log 2 lines, .*; no shell commands yet$' \
-   && has "$hb_hbdir_out" '^HEARTBEAT: .*; 1 shell commands, last running: git status$' \
-   && has "$hb_claude_out" '^HEARTBEAT: elapsed [0-9]+s; log 5 lines, last write [0-9]+s ago; 2 tool calls, last running: Edit: src/app.py$' \
-   && has "$hb_claude_err_out" '^HEARTBEAT: .*; 2 tool calls, last error: Edit: src/app.py$' \
+   && has "$hb_hbdir_out" '^HEARTBEAT: .*; 1 shell commands, last started: git status$' \
+   && has "$hb_hboverlap_out" '^HEARTBEAT: .*; 2 shell commands, last started: make b$' \
+   && has "$hb_hbresult_out" '^HEARTBEAT: .*; 1 shell commands, last started: cat fixture.txt$' \
+   && has "$hb_hbcmd_out" '^HEARTBEAT: .*; 1 shell commands, last started: rmdir "D:\\Projects\\x"$' \
+   && has "$hb_hbcwd_out" '^HEARTBEAT: .*; 1 shell commands, last started: git log$' \
+   && has "$hb_hbshlex_out" '^HEARTBEAT: .*; 1 shell commands, last started: \(multi-line command\)$' \
+   && has "$hb_claude_out" '^HEARTBEAT: elapsed [0-9]+s; log 5 lines, last write [0-9]+s ago; 2 tool calls \(1 running, 0 failed\), last started: Edit: src/app.py$' \
+   && has "$hb_claude_err_out" '^HEARTBEAT: .*; 3 tool calls \(1 running, 1 failed\), last started: Read: src/b.py$' \
    && has "$hb_nolog_out" '^HEARTBEAT: elapsed [0-9]+s; log unknown' \
    && has "$hb_missing_out" '^HEARTBEAT: elapsed [0-9]+s; log not written yet$' \
-   && has "$hb_big_out" '^HEARTBEAT: elapsed [0-9]+s; log 1[67] MiB \(last 1 MiB read\), last write [0-9]+s ago; last shell command running: make test$' \
+   && has "$hb_big_out" '^HEARTBEAT: elapsed [0-9]+s; log 1[67] MiB \(last 1 MiB read\), last write [0-9]+s ago; last shell command started: make test$' \
    && ! grep -q SECRET_ "$hb_done_out" "$hb_run_out" "$hb_wait_out" "$hb_multi_out" "$hb_big_out" \
         "$hb_hbpartial_out" "$hb_hbheredoc_out" "$hb_hblong_out" "$hb_hbdir_out" \
+        "$hb_hboverlap_out" "$hb_hbcwd_out" "$hb_hbshlex_out" \
         "$hb_claude_out" "$hb_claude_err_out"; then ok=1; fi
 expect_case "HEARTBEAT reports elapsed, log age and a sanitized last command only" "$ok" "done=$hb_done_rc running=$hb_run_rc wait=$hb_wait_rc head=${#hb_head}"
 # An abort rewrite of a dead run keeps the log it recorded.
