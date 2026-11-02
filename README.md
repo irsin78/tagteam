@@ -21,8 +21,9 @@ Projects that do not use Git run the same way.
 | Claude Code | Claude Code | Claude (directly or a Claude worker) | Codex |
 | Codex | Codex | Codex (directly or a Codex worker) | Claude Code |
 
-Implementation crosses to the other vendor only when the orchestrator passes
-`--vendor` to the router on purpose or the default vendor is declared exhausted.
+Implementation crosses to the other vendor only on the user's request or a
+stated task reason, which the delegation announcement shows (`--vendor` with
+`--vendor-reason`), or when the default vendor is declared exhausted.
 
 Optional workers are declared in the bindings' `workers` list or local `workers_local` overrides and selected only when their requirements are met.
 

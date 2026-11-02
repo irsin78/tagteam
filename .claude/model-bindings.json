@@ -221,7 +221,7 @@
     }
   },
   "vendor_precedence": {
-    "rationale": "Review by a vendor other than the author is the rule; design and implementation stay on one vendor by default (implementation_default = same, user decision 2026-10-20), so the other vendor is the review lane and the clearly separated area to switch to when one side runs out of quota. harness-route.py --vendor <other vendor> crosses implementation on purpose; a declared-exhausted default vendor hands the route to another vendor automatically. The route is re-selected from the actual authoring vendor, risk and availability.",
+    "rationale": "Review by a vendor other than the author is the rule; design and implementation stay on one vendor by default (implementation_default = same, user decision 2026-10-20), so the other vendor is the review lane and the clearly separated area to switch to when one side runs out of quota. harness-route.py --vendor <other vendor> --vendor-reason \"<reason>\" crosses implementation on the user's request or a stated task reason (implementer/reviewer separation is not one; without a reason the router refuses); a declared-exhausted default vendor hands the route to another vendor automatically. The route is re-selected from the actual authoring vendor, risk and availability.",
     "overridden_by": "specialties and hard constraints (vision, web, isolation, platform, data that must not leave) beat this order. Never the other way round.",
     "by_orchestrator": {
       "claude": [
@@ -241,8 +241,8 @@
       "write",
       "decide"
     ],
-    "note": "by_orchestrator orders cross-vendor candidates (write/decide, and implementation when --vendor names another vendor or the default vendor is exhausted); with implementation_default = same the implementation lane is the host's own vendor. OpenAI lane shape: Astra (S), GPT-6.1 Sol (A/B/C), GPT-6 Luna (D/E), mirroring Fable / Opus / Sonnet / Haiku. The HTML specialty is kept.",
-    "implementation_vendor": "same: the design author's vendor (host vendor, or the previous worker's vendor on a retry); the route reports same_vendor: true, separation_satisfied: false. --vendor <other> crosses; reviews never accept --vendor. Set implementation_default to \"other\" to restore cross-vendor implementation as the default.",
+    "note": "by_orchestrator orders cross-vendor candidates (write/decide, and implementation when --vendor names another vendor with --vendor-reason or the default vendor is exhausted); with implementation_default = same the implementation lane is the host's own vendor. OpenAI lane shape: Astra (S), GPT-6.1 Sol (A/B/C), GPT-6 Luna (D/E), mirroring Fable / Opus / Sonnet / Haiku. The HTML specialty is kept.",
+    "implementation_vendor": "same: the design author's vendor (host vendor, or the previous worker's vendor on a retry); the route reports same_vendor: true, separation_satisfied: false. --vendor <other> with --vendor-reason crosses (a --worker on another vendor needs the reason too); reviews never accept --vendor. Set implementation_default to \"other\" to restore cross-vendor implementation as the default.",
     "implementation_default": "same"
   },
   "budget": {

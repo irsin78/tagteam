@@ -1084,7 +1084,8 @@ for line in sys.stdin:
             data = json.loads(route.stdout)
             self.assertEqual((data['vendor'], data['available'], data['budget']), ('claude', True, 'exhausted:openai'))
             crossed = subprocess.run([sys.executable, str(HERE / 'harness-route.py'), '--host', 'claude', '--role', 'implement',
-                                      '--vendor', 'openai'], cwd=root, env=dict(env, HARNESS_SESSION_ID='sess-9'),
+                                      '--vendor', 'openai', '--vendor-reason', 'test: explicit cross to the exhausted vendor'],
+                                     cwd=root, env=dict(env, HARNESS_SESSION_ID='sess-9'),
                                      capture_output=True, text=True)
             self.assertEqual(crossed.returncode, 2, crossed.stderr)
             data = json.loads(crossed.stdout)
@@ -1405,7 +1406,10 @@ class SameVendorDefault(unittest.TestCase):
         self.assertEqual((route['worker_id'], route['vendor']), ('sol61-high', 'openai'))
         self.assertTrue(route['separation_satisfied'])
         self.assertNotIn('same_vendor', route)
-        self.assertTrue(route['reason'].startswith('vendor openai selected: implementation crosses to another vendor'))
+        self.assertEqual(route['vendor_override'],
+                         {'default': 'claude', 'vendor': 'openai', 'by': '--vendor', 'reason': None})
+        self.assertTrue(route['reason'].startswith('vendor openai instead of the default claude (--vendor): no reason given; '
+                                                   'vendor openai selected: implementation crosses to another vendor'))
         for role, expected in [('review_gate', 'sol61-medium'), ('review_deep', 'sol61-high'), ('plan_review', 'sol61-high')]:
             review = routes.resolve(self.data, 'claude', role, author_vendors=['claude'])
             self.assertEqual((review['worker_id'], review['vendor']), (expected, 'openai'))
@@ -1447,6 +1451,123 @@ class SameVendorDefault(unittest.TestCase):
         self.assertEqual(output['announce'],
                          'band B (implement role floor) -> claude-opus-5-5/medium via claude-run.sh: cheapest of 2 eligible '
                          'in foreground; same vendor as the author; the review must cross vendors')
+
+
+class VendorOverrideReason(unittest.TestCase):
+    """Moving implementation off its default vendor needs a stated reason (2026-11-02).
+
+    An orchestrator crossed with --vendor only because a stale README named the
+    other app as the implementer; the CLI now refuses a crossing --vendor or
+    --worker without --vendor-reason and shows the reason in the announce line.
+    """
+
+    OTHER = {('claude', 'implement'): ('openai', 'sol61-high'), ('claude', 'write'): ('openai', 'sol61-medium'),
+             ('codex', 'implement'): ('claude', 'opus55-medium'), ('codex', 'write'): ('claude', 'sonnet55-high')}
+
+    def setUp(self):
+        public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
+        self.data = routes.merge_bindings(public, {})
+        self.assertEqual(self.data['vendor_precedence']['implementation_default'], 'same')
+
+    def cli(self, *argv, data=None, budget='normal'):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(routes, 'load_bindings', return_value=data or self.data), patch.object(
+                routes, 'find_bash', return_value='bash'), patch.object(
+                routes, 'budget_for', return_value=budget), patch.object(sys, 'argv', ['harness-route.py', *argv]), \
+                patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0'}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = routes.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def test_crossing_vendor_or_worker_without_reason_is_refused(self):
+        for (host, role), (other, worker) in self.OTHER.items():
+            own = {'claude': 'claude', 'codex': 'openai'}[host]
+            for flag, value in (('--vendor', other), ('--worker', worker)):
+                with self.subTest(host=host, role=role, flag=flag):
+                    code, out, err = self.cli('--host', host, '--role', role, flag, value)
+                    self.assertEqual((code, out), (4, ''))
+                    self.assertIn(f'implementation on {other} instead of the default {own} ({flag})', err)
+                    self.assertIn('needs --vendor-reason', err)
+                    self.assertIn('separating implementer from reviewer is not one', err)
+
+    def test_reason_reaches_metadata_reason_and_announce(self):
+        for (host, role), (other, worker) in self.OTHER.items():
+            own = {'claude': 'claude', 'codex': 'openai'}[host]
+            for flag, value in (('--vendor', other), ('--worker', worker)):
+                with self.subTest(host=host, role=role, flag=flag):
+                    code, out, err = self.cli('--host', host, '--role', role, flag, value,
+                                              '--vendor-reason', 'user asked for the other app')
+                    self.assertEqual(code, 0, err)
+                    route = json.loads(out)
+                    self.assertEqual(route['vendor'], other)
+                    self.assertEqual(route['vendor_override'], {'default': own, 'vendor': other, 'by': flag,
+                                                                'reason': 'user asked for the other app'})
+                    clause = f'implementation on {other} instead of the default {own} ({flag}): user asked for the other app'
+                    self.assertIn('; ' + clause + '; ', route['announce'])
+                    self.assertTrue(route['reason'].startswith(
+                        f'vendor {other} instead of the default {own} ({flag}): user asked for the other app; '))
+
+    def test_default_vendor_and_automatic_crossing_need_no_reason(self):
+        for argv in (('--host', 'claude', '--role', 'implement', '--vendor', 'claude'),
+                     ('--host', 'codex', '--role', 'write', '--vendor', 'openai'),
+                     ('--host', 'claude', '--role', 'implement', '--worker', 'opus55-high')):
+            with self.subTest(argv=argv):
+                code, out, err = self.cli(*argv)
+                self.assertEqual(code, 0, err)
+                self.assertNotIn('vendor_override', json.loads(out))
+        # A reason without an override is accepted and not shown.
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor-reason', 'unused reason')
+        self.assertEqual(code, 0, err)
+        route = json.loads(out)
+        self.assertNotIn('vendor_override', route)
+        self.assertNotIn('unused reason', route['announce'] + route['reason'])
+        # The own vendor declared exhausted: the route crosses on its own.
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai', budget='exhausted:claude')
+        self.assertEqual(code, 0, err)
+        self.assertNotIn('vendor_override', json.loads(out))
+        # A project that crosses by default has no default vendor to override.
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai',
+                                  data=routes.merge_bindings(self.data, LEGACY_CROSS))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn('vendor_override', json.loads(out))
+
+    def test_default_vendor_follows_retry_author_and_rows(self):
+        env = dict(os.environ)
+        default = routes.default_implementation_vendor
+        self.assertEqual(default(self.data, 'claude', 'implement', {'claude'}, None, 'normal', ROOT, env), 'claude')
+        self.assertEqual(default(self.data, 'claude', 'implement', {'claude'}, 'sol61-high', 'normal', ROOT, env), 'openai')
+        self.assertEqual(default(self.data, 'claude', 'implement', {'openai'}, None, 'normal', ROOT, env), 'openai')
+        self.assertEqual(default(self.data, 'codex', 'write', {'openai', 'claude'}, None, 'normal', ROOT, env), 'openai')
+        self.assertIsNone(default(self.data, 'claude', 'implement', {'claude'}, None, 'exhausted:claude', ROOT, env))
+        self.assertIsNone(default(self.data, 'claude', 'plan_review', {'claude'}, None, 'normal', ROOT, env))
+        no_row = dict(self.data, workers=[dict(w, status='retired') if w['vendor'] == 'claude' else w
+                                          for w in self.data['workers']])
+        self.assertIsNone(default(no_row, 'claude', 'implement', {'claude'}, None, 'normal', ROOT, env))
+        # A single author on the other vendor makes that vendor the default.
+        route = routes.resolve(self.data, 'claude', 'implement', author_vendors=['openai'], vendor='claude')
+        self.assertEqual(route['vendor_override'], {'default': 'openai', 'vendor': 'claude', 'by': '--vendor', 'reason': None})
+
+    def test_reason_validation_and_review_roles(self):
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai',
+                                  '--vendor-reason', ' user\nasked\x1b[31m  for\tcodex ')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)['vendor_override']['reason'], 'user asked [31m for codex')
+        for reason in ('', ' \n\t ', 'x' * 201):
+            with self.subTest(length=len(reason)):
+                code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai',
+                                          '--vendor-reason', reason)
+                self.assertEqual((code, out), (4, ''))
+                self.assertIn('--vendor-reason must be 1-200 characters', err)
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai', '--vendor-reason', 'x' * 200)
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli('--host', 'claude', '--role', 'review_deep', '--author-vendor', 'claude',
+                                  '--vendor-reason', 'not for reviews')
+        self.assertEqual((code, out), (4, ''))
+        self.assertIn('--vendor-reason is only for implement/write', err)
+
+    def test_internal_launcher_default_is_not_refused(self):
+        self.assertEqual(routes.launcher_default(self.data, 'openai', 'implement')['id'], 'sol61-high')
+        self.assertEqual(routes.launcher_default(self.data, 'claude', 'write')['id'], 'sonnet55-high')
 
 
 class ReviewFollowUps(unittest.TestCase):

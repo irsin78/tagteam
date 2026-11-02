@@ -69,9 +69,12 @@ For `implement` and `write`, explicit `--worker <id>` selects that worker's vend
 including the author's own vendor, regardless of the automatic vendor preference.
 It does not make the work an independent review; review/advice roles still exclude
 every artifact author. Existing worker eligibility and option checks still apply.
+A worker on another vendor than the default implementation vendor is a cross and
+needs `--vendor-reason`, like `--vendor` below.
 
 Implementation goes to the orchestrator's own vendor by default and crosses only on
-`--vendor` or exhaustion; reviews always cross (see "Separate authorship from review").
+`--vendor` with a stated reason or exhaustion; reviews always cross (see "Separate
+authorship from review").
 Bands are capability labels independent of leaderboard index values, with one
 Claude cell and one OpenAI cell per band (`tier_cell`, user decision 2026-10-19):
 S Fable 5.1 medium / Astra medium (each vendor's top line at medium effort; the
@@ -200,9 +203,14 @@ Review plans against designers and code against implementers with a fresh worker
 Implementation and writing stay on the design author's vendor by default
 (`vendor_precedence.implementation_default = same`): the router returns
 `same_vendor: true` with `separation_satisfied: false`, and the review that
-follows must name that vendor as author so it goes to another vendor. Pass
-`--vendor <other vendor>` to cross implementation on purpose; a declared-exhausted
-default vendor crosses automatically. Reviews never accept `--vendor`. Keeping
+follows must name that vendor as author so it goes to another vendor. Cross
+implementation only on the user's request or a stated task reason (for example
+a capability the task needs that the other vendor's rows provide): pass
+`--vendor <other vendor> --vendor-reason "<reason>"`. Separating implementer from
+reviewer is not a reason: the review already crosses. The router refuses a crossing
+`--vendor` or `--worker` without a reason (HARNESS_DENIED, exit 4) and shows the
+reason in the announce line. A declared-exhausted default vendor crosses
+automatically without one. Reviews never accept `--vendor`. Keeping
 design and implementation on one vendor leaves the other vendor free as the
 review lane and as the clearly separated fallback when one side runs out of quota.
 Recompute when authorship changes; never hide a coauthor or call self-review

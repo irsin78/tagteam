@@ -56,7 +56,8 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    decides under 4.
    When the other lane is already independent, this retry is refused; choose it
    through normal `--tier S` / `--worker` routing, with the orchestrator enforcing
-   rule 5's attempt limit.
+   rule 5's attempt limit. A `--worker` on the other vendor is a cross and needs
+   `--vendor-reason` (for example "S failed on <vendor>").
    `selection_policy.cross_lane_s: false` disables this final exception. A step
    over the requested latency limit runs detached (`-b --wait`). Never raise effort for
    slowness. `max` is detached only; Codex worker `ultra` is a policy refusal,
