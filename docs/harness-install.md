@@ -76,7 +76,7 @@ dialogs.
 
 ## Installation
 
-The starting host is Claude Code or Codex; external implementation needs the other CLI.
+The starting host is Claude Code or Codex; cross-vendor reviews need the other app's CLI.
 Antigravity/local inference are optional. Hooks need Python; shell launchers need Bash.
 See [Dependencies](dependencies.md) for platform prerequisites and failure modes;
 prepare only selected routes. [Support status](#support-status) defines verified scope;

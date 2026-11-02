@@ -1,8 +1,9 @@
 # tagteam
 
 A **harness template for solo developers** pairing Claude Code and Codex:
-whichever you start orchestrates; the other implements and cross-checks. Copy
-it into your projects to divide work, choose models and verify results.
+whichever you start orchestrates and implements on its own vendor; the other
+reviews plans and code. Copy it into your projects to divide work, choose
+models and verify results.
 
 The goal is to complete work that meets the required quality and safety bar
 with less cost, time and user intervention. Models are chosen for the tier of
@@ -15,10 +16,13 @@ is handled directly.
 is opened from a terminal, a desktop app or an IDE is not a routing criterion.
 Projects that do not use Git run the same way.
 
-| App you start | Orchestrates | Default implementation delegate |
-|---|---|---|
-| Claude Code | Claude Code | Codex |
-| Codex | Codex | Claude Code |
+| App you start | Orchestrates | Implements by default | Reviews plans and code |
+|---|---|---|---|
+| Claude Code | Claude Code | Claude (directly or a Claude worker) | Codex |
+| Codex | Codex | Codex (directly or a Codex worker) | Claude Code |
+
+Implementation crosses to the other vendor only when the orchestrator passes
+`--vendor` to the router on purpose or the default vendor is declared exhausted.
 
 Optional workers are declared in the bindings' `workers` list or local `workers_local` overrides and selected only when their requirements are met.
 
@@ -32,7 +36,7 @@ Direct handling is chosen when the actual target code and interfaces have been
 read, the change closes locally and the way to verify it is known. A request
 that looks short or touches one file is not evidence. When the behaviour is
 unclear, several modules' contracts are involved, or several new behaviours
-interact, cross-vendor delegation is used. A change is not "small" because it
+interact, the implementation is delegated. A change is not "small" because it
 fits in one file, and a directly started change that grows is not extended on
 the spot: the remaining implementation is delegated.
 
