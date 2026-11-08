@@ -539,7 +539,17 @@ class HostRoutes(unittest.TestCase):
         result = routes.resolve(self.data, 'claude', 'write', budget=budget + ',google', latency='detached')
         self.assertFalse(result['available'])
         for host in ('claude', 'codex'):
+            # Argon is the remaining independent reviewer: detached, read-only (-r).
             result = routes.resolve(self.data, host, 'review_deep', author_vendors=['openai', 'claude'], budget=budget)
+            self.assertEqual((result['worker_id'], result['available']), ('argon-high', True))
+            self.assertEqual(result['launcher_flags'], ['-r'])
+            self.assertTrue(result['needs_detached'])
+            result = routes.resolve(self.data, host, 'review_deep', author_vendors=['openai', 'claude'],
+                                    budget=budget + ',google')
+            self.assertFalse(result['available'])
+            self.assertIn('independent reviewer is exhausted', result['reason'])
+            result = routes.resolve(self.data, host, 'review_deep', author_vendors=['openai', 'claude', 'google'],
+                                    budget=budget)
             self.assertFalse(result['separation_satisfied'])
             self.assertFalse(result['available'])
             self.assertIn('no configured route is independent', result['reason'])
@@ -831,7 +841,7 @@ for line in sys.stdin:
     def test_exhausted_review_reports_incomplete_without_implementation_fallback(self):
         for role in ('plan_review', 'review_gate', 'review_deep'):
             route = routes.resolve(self.data, 'codex', role,
-                                   budget='exhausted:claude', author_vendors=['openai'])
+                                   budget='exhausted:claude,google', author_vendors=['openai'])
             self.assertFalse(route['available'])
             self.assertIn('required review as incomplete', route['reason'])
             self.assertIn('do not use implementation fallback', route['reason'])
@@ -845,7 +855,8 @@ for line in sys.stdin:
         output = StringIO()
         with patch.object(routes, 'find_bash', return_value=None), patch.object(sys, 'argv', [
                 'harness-route.py', '--host', 'codex', '--role', 'review_deep',
-                '--author-vendor', 'openai', '--author-vendor', 'claude']), redirect_stdout(output):
+                '--author-vendor', 'openai', '--author-vendor', 'claude', '--author-vendor', 'google']), \
+                redirect_stdout(output):
             self.assertEqual(routes.main(), 2)
         route = json.loads(output.getvalue())
         self.assertFalse(route['available'])
@@ -996,10 +1007,11 @@ for line in sys.stdin:
         for role in ('plan_review', 'review_gate', 'review_deep'):
             with self.assertRaisesRegex(ValueError, 'actual artifact'):
                 routes.resolve(self.data, 'codex', role)
-        result = routes.resolve(self.data, 'codex', 'review_deep', author_vendors=['openai', 'claude'])
+        result = routes.resolve(self.data, 'codex', 'review_deep', author_vendors=['openai', 'claude', 'google'])
         self.assertFalse(result['available'])
         self.assertFalse(result['separation_satisfied'])
-        result = routes.resolve(self.data, 'codex', 'review_deep', author_vendors=['openai'], budget='exhausted:claude')
+        result = routes.resolve(self.data, 'codex', 'review_deep', author_vendors=['openai'],
+                                budget='exhausted:claude,google')
         self.assertFalse(result['available'])
         self.assertEqual(result['vendor'], 'claude')
 

@@ -201,8 +201,11 @@ def validate_bindings(data):
             raise ValueError('optional worker needs requires')
         for role in w['roles']:
             cfg = role_config(w, role)
-            if set(cfg) - {'priority', 'hosts', 'requires'}:
+            if set(cfg) - {'priority', 'hosts', 'requires', 'fallback', 'explicit_only'}:
                 raise ValueError('unknown role configuration')
+            for flag in ('fallback', 'explicit_only'):
+                if flag in cfg and cfg[flag] is not True:
+                    raise ValueError(flag + ' must be true when present')
             prio = cfg['priority']
             if isinstance(prio, dict):
                 if not prio or set(prio) - set(HOSTS):
@@ -495,13 +498,16 @@ def score_order(scores, priorities):
     return ordered
 
 
-def cost_order(rows, data, exhausted):
+def cost_order(rows, data, exhausted, role=None):
     if not rows:
         return []
     c0 = min(metric(w, 'cost') for w in rows)
     ceiling = c0 * (1 + data['selection_policy']['cost_tie_pct'] / 100)
-    # trust 'low' (a user call on a new model) ranks after every other row in the pool.
+    # trust 'low' (a user call on a new model) ranks after every other row in the pool;
+    # a role marked fallback (a user call for that role only) ranks after the other rows
+    # of a non-exhausted vendor, so it takes over when they are exhausted.
     return sorted(rows, key=lambda w: (w['vendor'] in exhausted, w.get('trust') == 'low',
+                  role is not None and role_config(w, role).get('fallback') is True,
                   w.get('metrics', {}).get('provisional', True),
                   0 if metric(w, 'cost') <= ceiling else metric(w, 'cost'),
                   metric(w, 'ttft_s')))
@@ -542,6 +548,7 @@ def default_implementation_vendor(data, host, role, authors, retry_from, budget,
     if vendor in (set(budget[10:].split(',')) if budget.startswith('exhausted:') else set()):
         return None
     if not any(w['vendor'] == vendor and role in w['roles'] and w['status'] == 'active'
+               and not role_config(w, role).get('explicit_only')
                and not exclusion(w, role, host, False, data, root, env) for w in data['workers']):
         return None  # no automatic row on the own vendor: cross instead of failing
     return vendor
@@ -569,6 +576,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('--worker cannot be combined with --tier')
     same_vendor = False
     vendor_default = None
+    vendor_explicit = vendor is not None
     if vendor is not None:
         if vendor not in VENDORS:
             raise ValueError('invalid vendor')
@@ -630,6 +638,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
     scoring = assessment is not None and 'volume' in assess
     if direct_band is not None and direct_band not in data['bands']['order']:
         raise ValueError('invalid direct band')
+    latency_requested = latency is not None
     latency = latency or data['roles'][role].get('latency_default', 'foreground')
     if floor not in data['bands']['order'] or latency not in ('interactive', 'foreground', 'detached'):
         raise ValueError('invalid band or latency')
@@ -679,6 +688,9 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             reason = 'missing metrics.cost for score'
         if not reason and vendor_pick is not None and w['vendor'] != vendor_pick:
             reason = f'vendor {vendor_pick} selected for this route'
+        if (not reason and role_config(w, role).get('explicit_only') and explicit is None
+                and not vendor_explicit):
+            reason = 'role is explicit-only (--worker or --vendor)'
         if not reason:
             diagnostic.append(w)
             if role in SEPARATED_ROLES and w['vendor'] in authors and not same_vendor:
@@ -737,6 +749,10 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('Codex worker ultra enables re-delegation; select a single-agent effort')
     if explicit:
         chosen = [w for w in pool if within_latency(w, data, latency) or keep]
+        if not chosen and pool and not latency_requested:
+            # A named worker whose TTFT is unknown or slow still runs; it runs detached.
+            chosen = list(pool)
+            needs_detached = True
     elif promoting:
         chosen = pool
     else:
@@ -758,7 +774,9 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                 chosen.append(w)
     assessed_detached = False
     derived_detached = False
-    if not chosen and (assessment is not None or derived_tier is not None):
+    exhausted_detached = False
+    if not chosen and (assessment is not None or derived_tier is not None
+                       or (vendor_explicit and not latency_requested)):
         # An assessed or author-derived band is a requirement, not a preference:
         # prefer a detached row of that band over a lower band in this class.
         chosen = [w for w in pool if (within_band(w, data, floor, latency) or
@@ -777,7 +795,32 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         chosen = [w for w in pool if w['tier'] != 'S' and w.get('scored') is not False and
                   within_latency(w, data, latency)]
         fallback = True
-    ordered = cost_order(chosen, data, exhausted)
+    ordered = cost_order(chosen, data, exhausted, role)
+    if ((not ordered or ordered[0]['vendor'] in exhausted) and separation_ok and not explicit
+            and not promoting and not scoring and role not in ('implement', 'write') and not latency_requested):
+        # Review and advice: when no row of this latency class is eligible, or every one
+        # belongs to a declared-exhausted vendor, a detached row of the same band from a
+        # vendor that is not exhausted keeps the independent route available (same rule
+        # as an author-derived band above).
+        spare = [w for w in pool if w['vendor'] not in exhausted and w.get('scored') is not False and
+                 within_band(w, data, floor, 'detached') and
+                 (allow_ultra or w['vendor'] != 'openai' or w.get('effort') != 'ultra')]
+        ordered_before = bool(ordered)
+        if not spare and not ordered:
+            # Every independent row is exhausted too: report that row (unavailable,
+            # review incomplete) instead of failing as if none were configured.
+            spare = [w for w in pool if w.get('scored') is not False and
+                     within_band(w, data, floor, 'detached') and
+                     (allow_ultra or w['vendor'] != 'openai' or w.get('effort') != 'ultra')]
+        if spare:
+            chosen = spare
+            ordered = cost_order(chosen, data, exhausted, role)
+            needs_detached = True
+            exhausted_detached = 'exhausted' if ordered_before else 'none'
+            fallback = False
+            floor_met = True
+            eligible_ids = {w['id'] for w in ordered}
+            skipped = [item for item in skipped if item['id'] not in eligible_ids]
     if fallback:
         ordered.sort(key=lambda w: (w['vendor'] in exhausted, w.get('trust') == 'low',
                      -data['bands']['order'].index(w['tier']), metric(w, 'cost'), metric(w, 'ttft_s')))
@@ -879,6 +922,15 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                  floor_met=floor_met, reason=reason, needs_detached=needs_detached,
                  eligible=[w['id'] for w in ordered], worker_id=selected['id'], skipped=skipped,
                  tier_fallback=not floor_met, available=(separation_ok or cross_lane_s) and vendor not in exhausted)
+    if Path(route['launcher'] or '').name == 'agy-run.sh' and role not in ('implement', 'write'):
+        # agy has no per-run sandbox class; -r runs it in plan mode and fails a run that
+        # changed the workspace (docs/harness-launchers.md).
+        route['launcher_flags'] = ['-r']
+    if exhausted_detached:
+        route['exhausted_detached'] = exhausted_detached
+        why_detached = ('belong to declared-exhausted vendors' if exhausted_detached == 'exhausted'
+                        else 'are not eligible')
+        route['reason'] = f'{latency} rows {why_detached}; detached row of the same band; ' + route['reason']
     if author_tier is not None:
         route['author_tier'] = author_tier
         route['reason'] = f'author band {author_tier} -> review floor {floor}; ' + route['reason']
@@ -1006,6 +1058,10 @@ def announce_line(route, assessment, role, tier, latency, eligible_count, scorin
         why.append(f'other vendor after {refused_vendor} refused')
     elif retry_reason == 'reasoning':
         why.append('promoted after a reasoning failure')
+    elif route.get('exhausted_detached'):
+        why.append(f'cheapest of {eligible_count} eligible detached; {latency} rows '
+                   + ('are of a declared-exhausted vendor' if route['exhausted_detached'] == 'exhausted'
+                      else 'are not eligible'))
     elif scoring:
         why.append(f'best cost score of {eligible_count} eligible')
     elif fallback:
@@ -1022,6 +1078,8 @@ def announce_line(route, assessment, role, tier, latency, eligible_count, scorin
         why.append('same vendor as the author; the review must cross vendors')
     elif role in SEPARATED_ROLES and route['vendor'] not in authors:
         why.append(f"vendor differs from author ({'/'.join(sorted(authors))})")
+    if route.get('launcher_flags'):
+        why.append('read-only plan mode (-r)')
     if route.get('needs_detached'):
         why.append('detached run (-b --wait)')
     if route.get('long_run'):

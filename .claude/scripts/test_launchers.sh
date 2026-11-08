@@ -664,6 +664,65 @@ run_capture agy-large-prompt bash "$AGY_RUN" -p large.txt
 ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" '> 30000' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
 expect_case "agy rejects prompt over 30 KB" "$ok" "exit=$LAST_RC"
 
+# -r: read-only review in agy plan mode; a workspace change fails the run.
+fresh_case
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-readonly env STUB_ACTION=none HARNESS_RUN_ID=agyro bash "$AGY_RUN" -p prompt.txt -r
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE .*mode=plan, sandbox=read-only' \
+    && grep -Fq -- '--mode plan' "$TEST_ROOT/agy-args.log" && ! grep -Fq -- '--sandbox' "$TEST_ROOT/agy-args.log" && ok=1
+expect_case "agy -r runs plan mode and reports read-only" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-readonly-write env STUB_ACTION="write:$CASE_REPO/review-notes.txt" HARNESS_RUN_ID=agyrow bash "$AGY_RUN" -p prompt.txt -r
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(read-only workspace changed, was DONE\)' \
+    && has "$LAST_OUT" '^CHANGED: .*review-notes.txt' && ok=1
+expect_case "agy -r fails a run that changed the workspace" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-readonly-notice env STUB_ACTION=notice HARNESS_RUN_ID=agyron bash "$AGY_RUN" -p prompt.txt -r
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+expect_case "agy -r ignores session-owned notice files" "$ok" "exit=$LAST_RC"
+
+for bad in "-r -x $TEST_ROOT/out.txt" "-r -c"; do
+    fresh_case
+    rm -f "$TEST_ROOT/agy-args.log"
+    run_capture agy-mode-conflict bash "$AGY_RUN" -p prompt.txt $bad
+    ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -r' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+    expect_case "agy refuses $bad" "$ok" "exit=$LAST_RC"
+done
+
+# -c: per-run command grant through --settings; the saved global grant is untouched.
+fresh_case
+rm -f "$TEST_ROOT/agy-args.log"
+cp "$CASE_HOME/.gemini/antigravity-cli/settings.json" "$CASE_HOME/settings.before"
+run_capture agy-commands env STUB_ACTION=none HARNESS_RUN_ID=agyc bash "$AGY_RUN" -p prompt.txt -c
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^AGY_COMMANDS: per-run sandbox grant' \
+    && has "$LAST_OUT" '^STATUS: DONE .*mode=commands-sandbox' \
+    && grep -Fq -- '--sandbox --settings {"permissions":{"allow":["write_file(*)","command(*)"]}}' "$TEST_ROOT/agy-args.log" \
+    && ! grep -Fq -- '--mode plan' "$TEST_ROOT/agy-args.log" \
+    && cmp -s "$CASE_HOME/settings.before" "$CASE_HOME/.gemini/antigravity-cli/settings.json" && ok=1
+expect_case "agy -c passes a this-run command grant and keeps global settings" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf '%s\n' '{"permissions":{"allow":["write_file(*)","command(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-commands-global bash "$AGY_RUN" -p prompt.txt -c
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy -c still refuses a saved global command grant" "$ok" "exit=$LAST_RC"
+
+# Detached runs re-execute with the original arguments, so the mode survives -b.
+for mode in r c; do
+    fresh_case
+    rm -f "$TEST_ROOT/agy-args.log"
+    run_capture "agy-detach-$mode" env STUB_ACTION=none HARNESS_RUN_ID="agydetach$mode" bash "$AGY_RUN" -p prompt.txt "-$mode" -b
+    detach_rc=$LAST_RC
+    run_capture "agy-detach-wait-$mode" bash "$AGY_RUN" --wait "agydetach$mode" -t 60
+    case "$mode" in r) want='--mode plan' ;; *) want='--sandbox --settings' ;; esac
+    ok=0; [ "$detach_rc" -eq 0 ] && [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' \
+        && grep -Fq -- "$want" "$TEST_ROOT/agy-args.log" && ok=1
+    expect_case "agy -$mode survives -b" "$ok" "detach=$detach_rc wait=$LAST_RC"
+done
+
 
 fi
 

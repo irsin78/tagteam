@@ -33,6 +33,8 @@ PROMPT_FILE=
 EXPECTED=
 TIMEOUT=570
 DETACH=0
+READ_ONLY=0
+COMMANDS=0
 TOOL=agy
 AGY_SETTINGS=${HARNESS_AGY_SETTINGS:-$HOME/.gemini/antigravity-cli/settings.json}
 PROMPT_MAX_BYTES=30000   # Windows 32K command-line limit; -p is an argument
@@ -45,7 +47,9 @@ timing_init "$LAUNCH_CLOCK"
 . "$SCRIPT_DIR/run-state.sh" || exit 4
 
 usage() {
-    echo 'Usage: agy-run.sh -p <prompt-file> [-m MODEL] [-e low|medium|high] [-x <expected-output-file>[,...]] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b]' >&2
+    echo 'Usage: agy-run.sh -p <prompt-file> [-m MODEL] [-e low|medium|high] [-r | -c] [-x <expected-output-file>[,...]] [-l LOG_DIR] [-t TIMEOUT_SECONDS] [-b]' >&2
+    echo '       -r  read-only review: agy --mode plan; any workspace change fails the run (no -x)' >&2
+    echo '       -c  per-run command grant: agy --sandbox with a this-run-only --settings command grant' >&2
     echo '       agy-run.sh --status <RUN_ID>' >&2
     echo '       agy-run.sh --wait <RUN_ID> [-t SECONDS<=570]' >&2
     echo '       -t above 570 requires -b (the Bash tool caps a foreground call at 600 s)' >&2
@@ -56,7 +60,7 @@ usage() {
 # Read-back commands: no delegation, no quota — only the state record.
 launcher_readback "$@"
 
-while getopts ":p:e:x:l:t:bm:" opt; do
+while getopts ":p:e:x:l:t:bm:rc" opt; do
     case "$opt" in
         m) MODEL=$OPTARG ;;
         p) PROMPT_FILE=$OPTARG ;;
@@ -65,6 +69,8 @@ while getopts ":p:e:x:l:t:bm:" opt; do
         l) LOG_DIR=$OPTARG ;;
         t) TIMEOUT=$OPTARG ;;
         b) DETACH=1 ;;
+        r) READ_ONLY=1 ;;
+        c) COMMANDS=1 ;;
         *) usage ;;
     esac
 done
@@ -74,6 +80,14 @@ case "$EFFORT" in
     low|medium|high) ;;
     *) echo "HARNESS_DENIED: unknown effort '$EFFORT' (low|medium|high)" >&2; exit 4 ;;
 esac
+if [ "$READ_ONLY" -eq 1 ] && [ "$COMMANDS" -eq 1 ]; then
+    echo "HARNESS_DENIED: -r (read-only review) and -c (command grant) are mutually exclusive" >&2
+    exit 4
+fi
+if [ "$READ_ONLY" -eq 1 ] && [ -n "$EXPECTED" ]; then
+    echo "HARNESS_DENIED: -r (read-only review) cannot take -x expected outputs" >&2
+    exit 4
+fi
 case "$LOG_DIR" in
     ""|/*|*\\*|[A-Za-z]:*|..|../*|*/..|*/../*)
         echo "HARNESS_DENIED: -l must be a repo-relative directory without '..' or backslashes (got '$LOG_DIR')" >&2
@@ -278,10 +292,18 @@ fi
 # to the launcher can be forwarded; `wait` keeps the call synchronous.
 MODEL_ARGS=()
 [ -z "$MODEL" ] || MODEL_ARGS=(--model "$MODEL")
+# -r: plan mode makes no edits (measured 2026-11-08, agy 1.5.3); postflight still
+# fails a run that changed the workspace. -c: --settings applies to this run
+# only and is never saved, so the global grant gate above keeps refusing a
+# saved command grant. --sandbox blocked network in that measurement but did
+# not contain writes outside the workspace (docs/runtime-boundary.md).
+MODE_ARGS=()
+[ "$READ_ONLY" -eq 1 ] && MODE_ARGS=(--mode plan)
+[ "$COMMANDS" -eq 1 ] && MODE_ARGS=(--sandbox --settings '{"permissions":{"allow":["write_file(*)","command(*)"]}}')
 run_agy() {
     timing_enter cli
     set -m   # own process group, so a signal reaches agy and its children
-    "${RUNNER[@]}" agy --log-file "$AGY_LOG" --effort "$EFFORT" "${MODEL_ARGS[@]}" --output-format json \
+    "${RUNNER[@]}" agy --log-file "$AGY_LOG" --effort "$EFFORT" "${MODEL_ARGS[@]}" "${MODE_ARGS[@]}" --output-format json \
         --print-timeout "${TIMEOUT}s" -p "$(cat "$PROMPT_FILE")" > "$RUN_JSON" 2> "$RUN_ERR" < /dev/null &
     CHILD_PID=$!
     set +m
@@ -426,6 +448,10 @@ fi
 if [ "$STATUS" = AGY_UNAVAILABLE ] && { [ -s "$CHANGED_FILE" ] || [ -n "$PRODUCED" ]; }; then
     STATUS="FAILED(unusable result after workspace changes)"
 fi
+# Session-owned notices are recorded but do not turn a read into a write.
+if [ "$READ_ONLY" -eq 1 ] && grep -qvE "$CONTROL_PLANE_NOTICE_RE" "$CHANGED_FILE"; then
+    STATUS="FAILED(read-only workspace changed, was $STATUS)"
+fi
 if [ "$CP_EVIDENCE_OK" -ne 1 ]; then
     STATUS="FAILED(control-plane evidence unavailable, was $STATUS)"
 fi
@@ -452,7 +478,10 @@ esac
 
 # ---- report ----
 report() {
-echo "STATUS: $STATUS (agy_exit=$AGY_EXIT, agy_status=$AGY_STATUS, attempts=$ATTEMPTS, effort=$EFFORT, turns=$TURNS)"
+MODE_TAG=
+[ "$READ_ONLY" -eq 1 ] && MODE_TAG=", mode=plan, sandbox=read-only"
+[ "$COMMANDS" -eq 1 ] && MODE_TAG=", mode=commands-sandbox"
+echo "STATUS: $STATUS (agy_exit=$AGY_EXIT, agy_status=$AGY_STATUS, attempts=$ATTEMPTS, effort=$EFFORT, turns=$TURNS$MODE_TAG)"
 retry_header_echo
 [ "$EXHAUSTED" != 1 ] || echo "AVAILABILITY: exhausted:google"
 echo "RUN_ID: $RUN_ID (state: $(state_file "$RUN_ID"), report: $REPORT_FILE)"
@@ -470,6 +499,9 @@ if [ -n "$DENIED" ]; then
 fi
 if [ -n "$AGY_ERROR" ]; then
     echo "AGY_ERROR: $AGY_ERROR"
+fi
+if [ "$COMMANDS" -eq 1 ]; then
+    echo "AGY_COMMANDS: per-run sandbox grant (--sandbox; this-run --settings command grant; global settings unchanged)"
 fi
 if [ "${HARNESS_ALLOW_AGY_COMMAND:-}" = "1" ]; then
     echo "AGY_COMMAND_APPROVED: HARNESS_ALLOW_AGY_COMMAND=1 was present for this run"

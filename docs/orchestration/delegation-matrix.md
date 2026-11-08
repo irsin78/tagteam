@@ -213,6 +213,17 @@ reason in the announce line. A declared-exhausted default vendor crosses
 automatically without one. Reviews never accept `--vendor`. Keeping
 design and implementation on one vendor leaves the other vendor free as the
 review lane and as the clearly separated fallback when one side runs out of quota.
+Gemini 4 Argon (agy) is the third review lane: its review roles are marked
+`fallback`, so it ranks after the other vendor and is chosen when that vendor is
+declared exhausted (`HARNESS_BUDGET=exhausted:openai` on a Claude host) or is an
+author. Its TTFT is unmeasured, so the router returns it detached; such a route
+carries `launcher_flags: ["-r"]` (agy plan mode, read-only). Argon's implement role
+is `explicit_only`: it runs web front-end work only when the parent passes
+`--vendor google` or `--worker argon-high` with a `--vendor-reason` naming that
+task, never on automatic crossing. These
+detached fallbacks (exhausted review rows, a named worker or vendor) apply only when
+`--latency` is not given; an assessed or `--author-tier` band keeps its existing rule
+of preferring a detached row of that band.
 Recompute when authorship changes; never hide a coauthor or call self-review
 independent. Missing independence is unavailable. Acceptance still needs actual
 outputs and checks. Review triggers, risk floors and limits: verification-tiering.md.

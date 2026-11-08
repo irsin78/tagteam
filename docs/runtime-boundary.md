@@ -260,6 +260,13 @@ runs from the project root with its own stdin at EOF; use root-relative paths, n
 isolation, nor does it freeze files/dependencies the verifier reads.
 The agy task prompt, unlike Claude's stdin prompt, travels as the `-p` argument (agy reads
 stdin only in stream-json mode), so it is visible in the process list; keep secrets out of it.
+`agy-run.sh -r` relies on agy's plan mode to make no edits and on the workspace
+snapshot to fail a run that did; it does not see writes outside the workspace.
+`agy-run.sh -c` passes a command grant for that run only (`--settings`, never
+saved) with agy's `--sandbox`. Measured on macOS (agy 1.5.3, 2026-11-08, inside a
+Claude Code session) the sandbox blocked network access but a command still
+wrote to the home directory, and postflight cannot see or undo that. Treat `-c`
+as command execution by the model, not containment.
 
 The local read path does not take a workspace snapshot. A report's
 `CHANGED: not measured` is not an observation of no change. When change

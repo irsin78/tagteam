@@ -489,6 +489,10 @@ project chooses additional isolation and auditing.
 - Usage limits/credit/billing errors do not trigger the fallbackModel chain.
   This harness handles exhausted credits through a "protocol" (manual switching
   rules).
+- `agy-run.sh -r` runs a read-only review in agy plan mode; `-c` grants commands for
+  one run in agy's sandbox (`skills/delegate-agy/SKILL.md`, docs/runtime-boundary.md).
+  Gemini 4 Argon is the fallback reviewer for the three review roles and implements
+  web front-end work only when named (`--vendor google --vendor-reason "<task>"`).
 - The agy write launcher uses the CLI's default model and medium effort unless
   `-e` is supplied; it does not select the model from the binding JSON. Candidate
   bindings are not evidence of the model actually used. After a diagnosed

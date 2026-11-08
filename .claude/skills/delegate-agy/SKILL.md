@@ -6,10 +6,14 @@ description: Antigravity (agy) delegation recipe for this harness — load BEFOR
 # agy delegation recipe (launcher path)
 
 Routing lives in `docs/orchestration/delegation-matrix.md` and the current
-model bindings. The declared specialty is HTML/CSS/static prototypes; other
-pure-write tasks need an explicit assignment. Images use the codex launcher
-`-i` route, never agy. This skill is the HOW. Use it when a pure-write task fits the tool
-capabilities, and handoff is worthwhile. The worker must not own its grading
+model bindings. The declared specialty is web front-end work (HTML/CSS/JS,
+static prototypes) and documents; other tasks need an explicit assignment.
+Gemini 4 Argon also takes three review roles as the fallback reviewer (read-only
+`-r`, when the other vendor is exhausted or is an author) and implementation when
+the parent names it (`--vendor google` or `--worker argon-high`, with `--vendor-reason` naming the web
+front-end task). Images use the
+codex launcher `-i` route, never agy. This skill is the HOW. Use it when the task
+fits the tool capabilities, and handoff is worthwhile. The worker must not own its grading
 gate; tasks requiring execution use a capable route instead. Domain-specific
 file restrictions come from the project. No raw untrusted content enters
 the prompt (rules/security-boundary.md).
@@ -33,15 +37,30 @@ the prompt (rules/security-boundary.md).
    prompt travels as one command-line argument on Windows).
 2. Call the launcher DIRECTLY with Bash, `timeout: 600000`:
 
-       bash .claude/scripts/agy-run.sh -p <prompt-file> [-m MODEL] [-e low|medium|high] [-x <expected-file>[,...]] [-t <seconds>]
+       bash .claude/scripts/agy-run.sh -p <prompt-file> [-m MODEL] [-e low|medium|high] [-r | -c] [-x <expected-file>[,...]] [-t <seconds>]
+
+   `-r` (reviews; the router's `launcher_flags` asks for it): agy runs in
+   `--mode plan`, which makes no edits, and any workspace change still turns
+   the run into `FAILED(read-only workspace changed, was …)`. The prompt
+   names the files to read and asks for a `VERDICT:` line; `-x` is refused.
+   `-c` (a task that must run tests or builds): agy runs with `--sandbox` and a
+   `command(*)` grant passed through `--settings` for this run only; the saved
+   global settings stay write_file only and a saved command grant is still
+   refused. The report shows `AGY_COMMANDS:`. The sandbox blocked network but
+   not writes outside the workspace when measured, and postflight sees only the
+   workspace, so never use `-c` with untrusted external content in the prompt,
+   and rerun the checks yourself. `-r` and `-c` are exclusive.
 
    The model is the agy CLI default unless `-m MODEL` passes `--model` explicitly.
    Do not report a binding candidate as the model used without passing it.
    Select model/effort from the router's launcher default
-   (`harness-route.py --launcher-default --vendor google --role write`: agy rows
-   carry only the write role, so `--role implement` finds no row; band floor C,
-   foreground, availability and trust first, then the cheapest measured row),
-   passing `-m`/`-e` explicitly.
+   (`harness-route.py --launcher-default --vendor google --role write`; band
+   floor C, availability and trust first, then the cheapest measured row) or
+   from the route itself (`--role implement --vendor google --vendor-reason
+   "<web front-end task>"`, or a review route
+   that resolved to agy), passing `-m`/`-e` explicitly. agy names the model with
+   its effort (`-m gemini-4-argon-high -e high`). Argon's TTFT is unmeasured, so
+   its routes come back detached: run them with `-b` and `--wait`.
    Retry settings follow retry-policy.md: one worker attempt per retry, attempt cap 3.
    Other defaults: `-t 570` (above 570 only with `-b`; the Bash tool kills a
    foreground call at 600 s) / logs in `.claude/agy-logs/`. `-x` lists the
@@ -71,7 +90,8 @@ records that availability signal; the launcher does not switch vendors.
 ## What the launcher does deterministically
 
 - Policy checks (exit 4 `HARNESS_DENIED`): effort not in low|medium|high,
-  `-l` outside the repo, bad `-t`, prompt over 30 KB, and — the agy grant
+  `-l` outside the repo, bad `-t`, prompt over 30 KB, `-r` with `-c` or `-x`,
+  and — the agy grant
   gate — a `command(...)` entry in agy's global settings without
   `HARNESS_ALLOW_AGY_COMMAND=1` (per-task, explicit user approval; the
   report then shows `AGY_COMMAND_APPROVED`).
@@ -86,7 +106,8 @@ records that availability signal; the launcher does not switch vendors.
   `SETTINGS_OVERRIDE`.
 - Preflight: porcelain baseline + `git diff HEAD` snapshot,
   `control-plane-hash.sh` snapshot (fail-closed).
-- Call: `agy --log-file … --effort … --output-format json
+- Call: `agy --log-file … --effort … [--model …] [--mode plan | --sandbox
+  --settings <this-run command grant>] --output-format json
   --print-timeout <t>s -p "$(cat prompt)"`, wrapped in GNU `timeout`
   when coreutils is first on PATH (`TIMEOUT_WRAPPER: none` otherwise).
 - Postflight: `CHANGED` / `CHANGED_CONTENT`, `SCOPE_WARNING`/`NEW_COMMIT`,
@@ -102,7 +123,8 @@ records that availability signal; the launcher does not switch vendors.
   attached — read that diff. `-x` proof uses nanosecond mtime on GNU
   stat; on macOS (`stat -f %m`, whole seconds) a same-second same-size
   rewrite still reads as MISSING.
-- Report: `STATUS` (agy exit, agy status, attempts, effort, turns),
+- Report: `STATUS` (agy exit, agy status, attempts, effort, turns, and
+  `mode=plan, sandbox=read-only` for `-r` or `mode=commands-sandbox` for `-c`),
   `TOKENS` (Google plan usage), `RESPONSE` capped at 60 lines (full text
   in `.claude/agy-logs/response-<ts>.txt`).
 
