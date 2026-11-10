@@ -253,7 +253,7 @@ class HostRoutes(unittest.TestCase):
             self.assertTrue(all(w['tier'] != 'S' for w in rows))
             self.assertTrue(all(self.data['bands']['order'].index(w['tier']) >=
                                 self.data['bands']['order'].index(band) for w in rows))
-        for host, model in [('codex', 'claude-fable-5-1'), ('claude', 'gpt-6-astra')]:
+        for host, model in [('codex', 'claude-fable-5-2'), ('claude', 'gpt-6-astra')]:
             for latency, effort in [('foreground', 'medium'), ('detached', 'medium')]:
                 result = routes.resolve(self.data, host, 'implement', tier='S', latency=latency)
                 self.assertEqual((result['model'], result['effort']), (model, effort))

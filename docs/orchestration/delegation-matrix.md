@@ -77,7 +77,7 @@ Implementation goes to the orchestrator's own vendor by default and crosses only
 authorship from review").
 Bands are capability labels independent of leaderboard index values, with one
 Claude cell and one OpenAI cell per band (`tier_cell`, user decision 2026-10-19):
-S Fable 5.1 medium / Astra medium (each vendor's top line at medium effort; the
+S Fable 5.2 medium / Astra medium (each vendor's top line at medium effort; the
 start tier for the hardest assessed tasks and the last escalation rung after A
 fails; defined by vendor line, not by index; S rows require an S floor); A strong
 judgment, Opus 5.5 high / GPT-6.1 Sol xhigh; B general implementation and its

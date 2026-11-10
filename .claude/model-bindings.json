@@ -2,7 +2,7 @@
   "schema_version": 3,
   "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-10-27",
+  "updated": "2026-11-10",
   "catalog_checked": "2026-10-19",
   "vendors": {
     "claude": {
@@ -15,11 +15,10 @@
           "opus alias (claude -p --model opus: resolves to claude-opus-5-5)",
           "claude-sonnet-5-5 (claude -p --model claude-sonnet-5-5: OK on Claude Code 2.1.283; the CLI logs unrecognized_model and disables the advisor for it)",
           "claude-haiku-5-5 (claude -p --model claude-haiku-5-5 on Claude Code 2.1.296: OK, modelUsage=claude-haiku-5-5)",
-          "haiku alias (claude -p --model haiku: resolves to claude-haiku-5-5)"
+          "haiku alias (claude -p --model haiku: resolves to claude-haiku-5-5)",
+          "claude-fable-5-2 (claude -p --model claude-fable-5-2 --effort medium|high|xhigh on Claude Code 2.1.321, 2026-11-10: OK, modelUsage=claude-fable-5-2; replaces claude-fable-5-1 on the S lane)"
         ],
-        "from_model_table": [
-          "claude-fable-5-1"
-        ],
+        "from_model_table": [],
         "source": "Claude Code 2.1.280; IDs not probed come from the claude-api skill model table (cached 2026-06-24)",
         "note": "In-process agents pin effort in frontmatter; claude-run.sh passes --effort explicitly. Opus 5.5 API default effort is medium; never rely on the default."
       }
@@ -299,7 +298,7 @@
         "provides": "long-horizon agentic SWE score (Mean@5), implementation/performance/research sub-scores, average cost and duration",
         "updated": "2026-09-30",
         "checked": "2026-10-06",
-        "note": "Collected by Epoch AI; one row per model at its top effort (max; Gemini Flash high), harness proximus. 2026-10-06: Astra 0.655, Opus 5.5 0.623, Sonnet 5.5 0.619, Fable 5.1 0.563, Gemini 3.8 Flash 0.196, Gemini 4 Argon 0.549 (high). No GPT-6.1 Sol, GPT-6 Luna or Haiku 4.5 row.",
+        "note": "Collected by Epoch AI; one row per model at its top effort (max; Gemini Flash high), harness proximus. 2026-10-06: Astra 0.655, Opus 5.5 0.623, Sonnet 5.5 0.619, Fable 5.1 0.563, Gemini 3.8 Flash 0.196, Gemini 4 Argon 0.549 (high). No GPT-6.1 Sol, GPT-6 Luna or Haiku 4.5 row. 2026-11-10 (frontierswe.com, Fable 5.2 only, read through an LLM summary): Fable 5.2 0.699 (±0.086), harness proximus, effort not stated; other rows not re-read.",
         "rationale": "Measures long-horizon agentic work and lists models within weeks of release. Scores are model-level evidence at the measured effort, not per-effort values. Excluded alternatives: policy.excluded."
       },
       "epoch_eci": {
@@ -310,7 +309,7 @@
         "provides": "composite capability index with confidence interval",
         "updated": "2026-10-05",
         "checked": "2026-10-06",
-        "note": "2026-10-06: Opus 5.5 167.4, Astra 166.5, Sonnet 5.5 165.2, Fable 5.1 164.8, Gemini 3.8 Flash 156.9; Haiku 4.5 listed (2025). No GPT-6.1 Sol or GPT-6 Luna. A composite like the primary, so it flags disagreement rather than filling slots."
+        "note": "2026-10-06: Opus 5.5 167.4, Astra 166.5, Sonnet 5.5 165.2, Fable 5.1 164.8, Gemini 3.8 Flash 156.9; Haiku 4.5 listed (2025). No GPT-6.1 Sol or GPT-6 Luna. A composite like the primary, so it flags disagreement rather than filling slots. 2026-11-10 (Fable rows only, read through an LLM summary): Fable 5.2 174.24 (CI 170.12-178.79, dated 2026-11-09); the same read shows Fable 5.1 at 167.04, so the scale has moved since 10-06 and the other rows' eci values are not comparable with it."
       },
       "llm_stats": {
         "rank": "cross-check",
@@ -530,7 +529,7 @@
   "workers": [
     {
       "id": "fable-medium",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "vendor": "claude",
       "effort": "medium",
       "tier": "S",
@@ -539,24 +538,24 @@
       "tier_cell": true,
       "tier_fixed": true,
       "metrics": {
-        "index": 49,
-        "cost": 2.98,
-        "ttft_s": 14.27,
+        "index": 56,
+        "cost": 3.8,
+        "ttft_s": 12.36,
         "tps": 56,
         "source": "artificial_analysis",
-        "read": "2026-10-19",
-        "secondary_pass1": 0.563,
+        "read": "2026-11-10",
+        "secondary_pass1": 0.699,
         "provisional": false,
-        "note": "AA leaderboard 2026-10-19, medium, 'with fallback' configuration",
-        "secondary_effort": "max",
+        "note": "AA leaderboard 2026-11-10, 'Claude Fable 5.2 (medium)': index 56, cost per task $3.80, First Answer Token 12.36s, read through an LLM summary. tps was not shown and is carried over from the Fable 5.1 read (2026-10-19). Fable 5.1 medium read 49 / $2.98 / 14.27s; the index scale may have moved since the other rows were read.",
+        "secondary_effort": "unstated",
         "secondary_source": "frontierswe",
-        "secondary_read": "2026-10-06",
-        "eci": 164.8
+        "secondary_read": "2026-11-10",
+        "eci": 174.2
       },
       "probe": {
-        "date": "2026-10-19",
+        "date": "2026-11-10",
         "result": "OK (one-word prompt, read-only)",
-        "cli": "Claude Code 2.1.303"
+        "cli": "Claude Code 2.1.321"
       },
       "roles": {
         "implement": 120,
@@ -566,7 +565,7 @@
         "review_gate": 120,
         "review_deep": 120
       },
-      "note": "Cross-check 10-06: agrees; FrontierSWE 0.563 is one step below Opus 5.5 and Astra on long-horizon work.",
+      "note": "Fable 5.2 since 2026-11-10 (was Fable 5.1). Cross-check 11-10: FrontierSWE 0.699 (±0.086, top row on the page, effort not stated) and ECI 174.2; the Fable 5.1 reads were 0.563 and 164.8 (2026-10-06).",
       "sources": [
         "artificial_analysis",
         "frontierswe",
@@ -575,7 +574,7 @@
     },
     {
       "id": "fable-high",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "vendor": "claude",
       "effort": "high",
       "tier": "S",
@@ -584,24 +583,24 @@
       "tier_cell": false,
       "tier_fixed": true,
       "metrics": {
-        "index": 51,
-        "cost": 3.91,
-        "ttft_s": 29.0,
+        "index": 62,
+        "cost": 9.08,
+        "ttft_s": 31.81,
         "tps": 51,
         "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": 0.563,
-        "secondary_effort": "max",
+        "read": "2026-11-10",
+        "secondary_pass1": 0.699,
+        "secondary_effort": "unstated",
         "secondary_source": "frontierswe",
-        "secondary_read": "2026-10-06",
-        "eci": 164.8,
+        "secondary_read": "2026-11-10",
+        "eci": 174.2,
         "provisional": false,
-        "note": "AA 'with fallback' configuration"
+        "note": "AA leaderboard 2026-11-10, 'Claude Fable 5.2 (high)': index 62, cost per task $9.08, First Answer Token 31.81s, read through an LLM summary. tps was not shown and is carried over from the Fable 5.1 read (2026-09-30). Fable 5.1 high read 51 / $3.91 / 29.0s."
       },
       "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "Claude Code 2.1.283"
+        "date": "2026-11-10",
+        "result": "OK (one-word prompt, read-only)",
+        "cli": "Claude Code 2.1.321"
       },
       "roles": {
         "implement": 112,
@@ -611,7 +610,7 @@
         "review_gate": 112,
         "review_deep": 112
       },
-      "note": "Cross-check 10-06: agrees; FrontierSWE 0.563 is one step below Opus 5.5 and Astra on long-horizon work.",
+      "note": "Fable 5.2 since 2026-11-10 (was Fable 5.1). Cross-check 11-10: FrontierSWE 0.699 (±0.086, top row on the page, effort not stated) and ECI 174.2; the Fable 5.1 reads were 0.563 and 164.8 (2026-10-06).",
       "sources": [
         "artificial_analysis",
         "frontierswe",
@@ -620,7 +619,7 @@
     },
     {
       "id": "fable-xhigh",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "vendor": "claude",
       "effort": "xhigh",
       "tier": "S",
@@ -629,24 +628,24 @@
       "tier_cell": false,
       "tier_fixed": true,
       "metrics": {
-        "index": 53,
-        "cost": 5.98,
-        "ttft_s": 108.0,
+        "index": 62,
+        "cost": 14.83,
+        "ttft_s": 75.87,
         "tps": 61,
         "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": 0.563,
-        "secondary_effort": "max",
+        "read": "2026-11-10",
+        "secondary_pass1": 0.699,
+        "secondary_effort": "unstated",
         "secondary_source": "frontierswe",
-        "secondary_read": "2026-10-06",
-        "eci": 164.8,
+        "secondary_read": "2026-11-10",
+        "eci": 174.2,
         "provisional": false,
-        "note": "AA 'with fallback' configuration"
+        "note": "AA leaderboard 2026-11-10, 'Claude Fable 5.2 (xhigh)': index 62, cost per task $14.83, First Answer Token 75.87s, read through an LLM summary. tps was not shown and is carried over from the Fable 5.1 read (2026-09-30). Fable 5.1 xhigh read 53 / $5.98 / 108.0s."
       },
       "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "Claude Code 2.1.283"
+        "date": "2026-11-10",
+        "result": "OK (one-word prompt, read-only)",
+        "cli": "Claude Code 2.1.321"
       },
       "roles": {
         "implement": 113,
@@ -1610,7 +1609,7 @@
       "name": "Vendor top line",
       "model_fixed": true,
       "lanes": {
-        "claude": "claude-fable-5-1",
+        "claude": "claude-fable-5-2",
         "openai": "gpt-6-astra"
       },
       "foreground_effort": "medium",
