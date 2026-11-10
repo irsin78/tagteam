@@ -14,7 +14,7 @@
       "S": {
         "model_fixed": true,
         "lanes": {
-          "claude": "claude-fable-5-1",
+          "claude": "claude-fable-5-2",
           "openai": "gpt-6-astra"
         },
         "foreground_effort": "high",
@@ -116,7 +116,7 @@
       },
       {
         "id": "fable-high",
-        "model": "claude-fable-5-1",
+        "model": "claude-fable-5-2",
         "vendor": "claude",
         "effort": "high",
         "tier": "S",
