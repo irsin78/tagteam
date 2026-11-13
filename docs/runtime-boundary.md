@@ -46,8 +46,13 @@ The following asymmetries and gaps remain:
 - Hook liveness: in a human-started Codex session a stale trust hash silently
   drops the hooks, and the compensation is the prose "run `start` when the
   PLATFORM line is missing". The launcher path refuses to run through
-  `check-codex-hooks`. A failing Claude hook is also fail-open, and neither host
-  detects a hook that never fired.
+  `check-codex-hooks`. Claude's two PreToolUse guard hooks set
+  `"onFailure": "block"` (Claude Code 2.1.295 or later), so a guard that crashes,
+  times out or whose interpreter is missing blocks the tool call instead of
+  allowing it. Other Claude hooks and Codex hooks remain fail-open; Claude Code
+  versions before 2.1.295 are not covered (their handling is unmeasured). A guard that catches its own error and exits 0
+  is not a failure and is not blocked. Neither host detects a hook that never
+  fired.
 - Credential reads: Claude's Read deny applies to the Read tool path only; shell
   reads are not inspected on either host. Only the optional WSL lane's denyRead
   applies to OS paths.

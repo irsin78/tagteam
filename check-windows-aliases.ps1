@@ -62,9 +62,10 @@ function Show-PythonAliasCheck {
         if ($RequiredForHooks) {
             $script:warningCount++
             Write-Host "WARN: $Name was not found on PATH."
-            Write-Host "      The PreToolUse guard hook is invoked as '$Name'; without it every"
+            Write-Host "      The PreToolUse guard hook is invoked as '$Name'; without it Claude"
+            Write-Host "      denies every guarded tool call (onFailure block), and on Codex each"
             Write-Host "      harness prohibition (bypass flags, force push, subagent commits) is"
-            Write-Host "      silently inert while this check would otherwise look green."
+            Write-Host "      silently inert."
             Write-Host "      Fix: install Python so '$Name' resolves on PATH, or change the hook"
             Write-Host "      command in .claude/settings.json to an interpreter that exists."
         }
@@ -170,7 +171,8 @@ foreach ($hookName in $hookNames) {
     }
 
     # A SyntaxWarning today is a SyntaxError in the next Python, and a hook
-    # that fails to compile is fail-open on both hosts (for example a
+    # that fails to compile stops working: deny_dangerous.py then blocks every guarded tool call on Claude
+    # (onFailure block) and is silently off on Codex (for example a
     # `\;` inside a docstring). `-W error` finds it now.
     $compileOk = $false
     try {
@@ -180,7 +182,7 @@ foreach ($hookName in $hookNames) {
     catch { $compileOk = $false }
     if (-not $compileOk) {
         $warningCount++
-        Write-Host "WARN: Hook $hookName does not compile under 'python -W error' -- a warning that will become a SyntaxError and silently disable the guard."
+        Write-Host "WARN: Hook $hookName does not compile under 'python -W error' -- a warning that will become a SyntaxError and break this hook (a broken deny_dangerous.py blocks guarded tools on Claude and leaves Codex unguarded)."
         Write-Host "      Run: python -W error -m py_compile $hookPath"
         continue
     }

@@ -140,6 +140,14 @@ demonstrated gains in failures, rework, or delay. Do not generalize one vendor's
 prompting advice to another, or assign procedural strength by vendor; use task risk and
 observations.
 
+Role example: the read-only native workers `haiku-scout` and `haiku-fetcher` set
+`omitClaudeMd: true` (Claude Code 2.1.271 or later), which leaves out CLAUDE.md,
+AGENTS.md and `.claude/rules/` while PreToolUse guards still run (measured
+2026-11-13). The worker rules they need are written in their own bodies, and the
+parent's prompt names any project-specific protected paths
+([scout brief](orchestration/scout-brief.md)). Writing workers and reviewers keep
+the entry instructions.
+
 ### Applying the GPT-6 Astra official guide
 
 The [official OpenAI guide](https://developers.openai.com/api/docs/guides/latest-model)
@@ -179,6 +187,22 @@ Business/Enterprise/API-key login is excluded at launch. Check project support
 before personal selection; never enable/generate shared config, and retain
 explicit cross-host handoff contracts.
 [Official context management guide](https://learn.chatgpt.com/docs/models#experimental-context-management).
+
+### Applying the Claude Fable 5.2 official guide
+
+The [official Anthropic guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-2)
+applies to Claude routes and to instructions a Claude session reads (entry
+instructions, always-loaded rules, native agent bodies); it does not change other
+vendors' procedures. Shared contracts stay in the same files as for the Astra
+guide above. The guide points below are paraphrased from the 2026-11-13 reading.
+
+| Category | Official point and template handling |
+|---|---|
+| Effort | Re-measure effort for this model instead of carrying over a previous model's setting. Binding effort is rechecked on representative tasks at adoption, and so is the `effort` in native agent definitions. Do not raise it to xhigh or above without a measurement |
+| Absolute words | The model follows instructions containing `never` as absolute rules, so rules should state their scope and reason, with exceptions written out. Prohibitions in shared rules name who they bind and what they cover; new rules do the same |
+| Accumulating caution | Stale notes and vague prohibitions produce needless approval requests; routine steps that need no approval should be named. Project policy names steps taken without asking (as its Git item does), and stale memory notes and mission state are corrected to the facts |
+| Subagents | When the model spawns more subagents than needed, the subagent tool description should state the cost and when delegation pays. Agent `description` fields already say when not to use the agent; whether to delegate follows the cost score in the delegation matrix |
+| Progress updates | The model can be asked for a one-line update every few tool calls. AGENTS.md's progress sentence carries this |
 
 ### Policy documents — pointers
 
@@ -241,6 +265,9 @@ removed procedures, and optional tools.
   still require asking first.
 - PreToolUse directly runs deny_dangerous.py. It performs limited checks on direct
   commands and structured writes; it does not interpret entire shell programs.
+  Its two Claude entries set `"onFailure": "block"`, so a guard that cannot run
+  denies the tool call instead of silently allowing it
+  ([installation](harness-install.md#installation), shared step 0).
 - SessionStart leaves only platform guidance and minimal records. It does not
   inspect usage, local servers, or all files. Diagnose installation issues with
   check-windows-aliases.ps1/check-posix.sh.

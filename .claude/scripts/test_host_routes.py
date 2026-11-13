@@ -826,6 +826,35 @@ for line in sys.stdin:
         self.assertTrue(wired, 'Missing Claude UserPromptSubmit -> stop_gate.py --new-prompt; '
                               'merge that hook into .claude/settings.json.')
 
+    def test_claude_guard_hooks_fail_closed_and_only_they(self):
+        settings = json.loads((ROOT / '.claude/settings.json').read_text(encoding='utf-8'))
+
+        def script_names(handler):
+            tokens = shlex.split(handler.get('command', ''), posix=False)
+            tokens += handler.get('args', [])
+            return {token.strip('\"\'').replace('\\', '/').rsplit('/', 1)[-1] for token in tokens}
+
+        guarded = set()
+        for event, entries in settings.get('hooks', {}).items():
+            for entry in entries:
+                for handler in entry.get('hooks', []):
+                    if handler.get('type') != 'command':
+                        continue
+                    names = script_names(handler)
+                    if event == 'PreToolUse' and 'deny_dangerous.py' in names:
+                        self.assertEqual(handler.get('onFailure'), 'block',
+                                         f'PreToolUse guard for {entry.get("matcher")!r} must set '
+                                         '"onFailure": "block" so a guard that cannot run denies '
+                                         'the call (docs/harness-install.md, shared step 0).')
+                        guarded.update(entry.get('matcher', '').split('|'))
+                    elif names & {'session_preflight.py', 'stop_gate.py', 'verify_delegation.py'}:
+                        # Harness hooks outside the guard stay fail-open: a broken
+                        # SessionStart, prompt or Stop hook must not lock the session.
+                        self.assertNotIn('onFailure', handler,
+                                         f'{event} hook {sorted(names)} must not set onFailure.')
+        for tool in ('Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
+            self.assertIn(tool, guarded, f'No fail-closed PreToolUse guard covers {tool}.')
+
     def test_orchestrator_policies_are_installed_at_their_referenced_paths(self):
         for name in ('delegation-matrix.md', 'retry-policy.md'):
             path = ROOT / 'docs' / 'orchestration' / name

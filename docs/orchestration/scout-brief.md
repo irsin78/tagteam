@@ -3,6 +3,9 @@
 Use the cheapest eligible `explore` worker before deep orchestration reading.
 The scout is read-only: inspect the smallest useful scope; never edit files,
 run model CLIs, delegate, or choose an implementation route.
+The native `haiku-scout` and `haiku-fetcher` workers load neither the entry
+instructions nor Project policy (`omitClaudeMd`), so the parent's prompt names
+any project-specific protected paths or material they must not read.
 
 Prompt contract: return these fields, with repository evidence:
 - Affected paths: project-relative files expected to change.

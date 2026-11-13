@@ -13,7 +13,7 @@ Run the platform check after installing anything below:
 
 | Component | Needed when | Used by | Without it | Check |
 |---|---|---|---|---|
-| Python 3, callable as `python` | Always | All Claude hooks (`.claude/settings.json` invokes `python`), routing, snapshots, launcher helpers | Hooks do not run, so every prohibition (bypass flags, force push, delegate commits, control-plane writes) is **silently inert** | WARN `python was not found on PATH`, skipped hook self-tests |
+| Python 3, callable as `python` | Always | All Claude hooks (`.claude/settings.json` invokes `python`), routing, snapshots, launcher helpers | Hooks do not run. Claude then denies every guarded tool call (Bash, PowerShell, Edit, Write; the guard entries set `onFailure: "block"`), while on Codex every prohibition (bypass flags, force push, delegate commits, control-plane writes) is **silently inert** | WARN `python was not found on PATH`, skipped hook self-tests |
 | bash >= 4 | Any process launcher (`codex-run.sh`, `claude-run.sh`, `agy-run.sh`) | Launchers, `run-state.sh`, stop-gate verifiers | Launchers exit 2 `*_UNAVAILABLE`, so every delegation falls back | WARN `bash on PATH is 3.x` when no standard-location bash >= 4 exists either |
 | GNU coreutils `timeout`, first on PATH as `timeout` | Codex or Claude launcher | Bounded foreground and detached runs | Launcher exits 4 `HARNESS_DENIED` before starting | WARN `GNU coreutils 'timeout' is not first on PATH` |
 | Git | Git workspaces only | Snapshots, HEAD checks, worktree workers | Non-Git mode is used; worktree-isolated native workers are unavailable | OK/INFO line for `git` |

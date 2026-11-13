@@ -72,7 +72,8 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/deny_dangerous.py"
             ],
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -85,7 +86,8 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/deny_dangerous.py"
             ],
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }

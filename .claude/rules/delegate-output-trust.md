@@ -14,7 +14,8 @@ Establish starting state, ownership and scope before writes; never revert unrela
 work to get a clean tree. Use a worktree/scratch copy for overlapping edits and
 supply intended uncommitted inputs (a HEAD-based worktree does not contain them).
 Scoped sequential writes may use a recorded baseline; no blanket clean-tree or
-extra-commit requirement. Never start competing writers; use launcher wait/status.
+extra-commit requirement. Never start two writers on the same tree or overlapping
+files; use launcher wait/status.
 Git is optional: non-Git work uses sequential scopes or isolated copies, not git init.
 Afterward inspect whole-tree changes. The parent integrates isolated output and
 handles authorized cleanup; workers report paths instead of forcing deletion.

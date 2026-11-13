@@ -172,13 +172,26 @@ operation on unverified platforms is not promised.
    `powershell -NoProfile -ExecutionPolicy Bypass -File check-windows-aliases.ps1`
    (Windows PS 5.1/7) or `bash check-posix.sh` (macOS/Linux, bash 3.2 compatible;
    accepts `--launchers`, `--template-dir`). Both are read-only: exit 0 healthy,
-   1 warning. Fix exit 1 first; a dead hook invalidates prohibitions. Checks cover
+   1 warning. Fix exit 1 first; a dead guard hook silently drops prohibitions on
+   Codex and blocks every guarded tool on Claude (below). Checks cover
    hook self-tests and agy grants; missing codex/agy binaries/write_file grants
    are INFO because fallbacks exist. Drift compares installed files and counts
    uninstalled ones separately, not installation completeness. See Windows-specific
    details for warning causes/replacement. Each session, codex-delegate repeats
    SANDBOX HEALTH PROBE / ALIAS CHECK, reporting only
    `CODEX_UNAVAILABLE: sandbox broken` or `ALIAS_WARNING`, never repairing.
+
+   **Claude guard hooks fail closed.** The two PreToolUse guard entries in
+   `settings.json` set `"onFailure": "block"`. When the guard cannot run (no
+   `python` on the PATH the app passes to hooks, missing or moved
+   `deny_dangerous.py`, a syntax error, a timeout), Claude Code denies every
+   Bash, PowerShell, Edit, Write, MultiEdit and NotebookEdit call and names the
+   hook failure as the reason; Read, Grep and Glob still work. Fix the cause
+   with the preflight above (its hook self-test runs the same file) rather
+   than removing the key. `onFailure` needs Claude Code 2.1.295 or later; how
+   older versions treat the key has not been measured, so update first. The
+   Codex hook definitions set no equivalent option and stay fail-open (see Hook
+   properties below).
 
 1. Prepare selected external CLIs (versions are minima; check only for symptoms
    such as rejected flags, not every run):
