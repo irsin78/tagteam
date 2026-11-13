@@ -94,6 +94,7 @@ for event, script, timeout, message, flags in (
     ('PreToolUse', 'deny_dangerous.py', 30, 'harness guard', []),
     ('UserPromptSubmit', 'stop_gate.py', 10, 'harness mission scope', ['--new-prompt']),
     ('Stop', 'stop_gate.py', 180, 'harness stop gate', []),
+    ('SubagentStop', 'verify_delegation.py', 30, 'harness delegation record', []),
 ):
     argv = [python, root + '/.claude/hooks/' + script, '--host', 'codex', *flags]
     entry = {'hooks': [{'type': 'command', 'command': shlex.join(argv),

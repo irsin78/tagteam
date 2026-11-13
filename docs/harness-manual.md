@@ -20,7 +20,7 @@ entire manual for onboarding.
 
 ```
 .claude/
-  agents/     Six subagent definitions (2 external CLI + 4 Claude)
+  agents/     Six subagent definitions (2 external CLI + 4 Claude); two Codex native workers live in .codex/agents/
   rules/      Shared policies: roles, verification, security boundaries (Claude auto-loads; Codex reads through AGENTS.md)
   skills/     Recipes loaded only when needed (codex delegation, agy delegation, safety guard verification, peer sessions — experimental)
   hooks/      Host-specific hooks and regression tests for dangerous commands, startup, stop, delegation results
@@ -28,7 +28,8 @@ entire manual for onboarding.
   settings.json · sandbox-sensitive.json · model-bindings.json (tier table) · model-bindings.local.json.example (local override skeleton; .local.json is gitignored)
 AGENTS.md.template          Single entry instructions for both hosts (install as AGENTS.md; Codex reads it directly, Claude Code through the import)
 CLAUDE.md.template          One-line `@AGENTS.md` import stub (install as CLAUDE.md)
-.codex/hooks.json           Codex SessionStart/PreToolUse/UserPromptSubmit/Stop wiring
+.codex/hooks.json           Codex SessionStart/PreToolUse/UserPromptSubmit/Stop/SubagentStop wiring
+.codex/agents/              Optional Codex native workers (implementer, scout) with explicit model/effort
 check-windows-aliases.ps1   Windows installation preflight (aliases + hook liveness + agy grant)
 check-posix.sh              macOS/Linux installation preflight (bash ≥ 4 · python · hook liveness · agy grant)
 tools/linux-probe.sh        Platform measurements (check unverified notes; no installation or credentials needed)
@@ -275,7 +276,8 @@ removed procedures, and optional tools.
 - SessionStart leaves only platform guidance and minimal records. It does not
   inspect usage, local servers, or all files. Diagnose installation issues with
   check-windows-aliases.ps1/check-posix.sh.
-- SubagentStop records only metadata such as delegate and work paths. The parent
+- SubagentStop records only metadata such as delegate and work paths, on Claude and,
+  through a trusted Codex hook, on Codex (each record names its `host`). The parent
   checks actual artifacts, reusing external launcher file-change evidence.
 - Stop requires successful verification only when the task has a .stop-gate.
   Registered multi-item missions separately get one early-stop recovery.

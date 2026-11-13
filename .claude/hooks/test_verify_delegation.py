@@ -41,6 +41,26 @@ class MetadataTests(unittest.TestCase):
             self.assertEqual(entry['verification'],'parent-required')
             self.assertNotIn('memory_hashes',entry)
             self.assertNotIn('status',entry)
+            self.assertEqual(entry['host'],'claude')
+
+    def test_codex_subagent_stop_records_host_and_agent(self):
+        # Keys observed from codex-cli 0.168.0 SubagentStop (2026-11-13); no stop_reason.
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp)/'.claude').mkdir()
+            payload={'agent_id':'019a-child','agent_type':'harness-scout','agent_transcript_path':'t.jsonl',
+                     'last_assistant_message':'done','stop_hook_active':False,'cwd':temp,
+                     'session_id':'s','turn_id':'t1','hook_event_name':'SubagentStop'}
+            log=Path(temp)/'.claude/.delegation-log.jsonl'
+            for argv,host in ((['--host','codex'],'codex'),(['--host=codex'],'codex'),([],'claude'),
+                              (['--host','other'],'claude')):
+                with self.subTest(argv=argv), patch.dict(os.environ,{'CLAUDE_PROJECT_DIR':temp}), \
+                     patch('sys.stdin',io.StringIO(json.dumps(payload))):
+                    self.assertEqual(hook.main(argv),0)
+                    entry=json.loads(log.read_text().splitlines()[-1])
+                    self.assertEqual(entry['host'],host)
+                    self.assertEqual((entry['agent_id'],entry['agent_type']),('019a-child','harness-scout'))
+                    self.assertIsNone(entry['stop_reason'])
+                    self.assertEqual(entry['verification'],'parent-required')
 
 if __name__ == '__main__':
     unittest.main()

@@ -23,6 +23,7 @@ handles authorized cleanup; workers report paths instead of forcing deletion.
 ## 3. Recovering from unexpected Git changes
 Unexpected HEAD changes require
 baseline/history inspection before recovery, never blind HEAD~1 or automatic reset.
-Codex native workers have no automatic Claude SubagentStop evidence; check files
-and verification explicitly. FINAL_MESSAGE cannot override failed checks, scope
-warnings or remaining .stop-gate markers on any launcher.
+Codex native workers leave the same who/where record only through a trusted
+SubagentStop hook; on either host check files and verification explicitly.
+FINAL_MESSAGE cannot override failed checks, scope warnings or remaining
+.stop-gate markers on any launcher.

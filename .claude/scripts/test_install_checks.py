@@ -88,6 +88,11 @@ class InstallChecks(unittest.TestCase):
         for name in wired:
             self.assertRegex(hooks_row, r'[`/]' + re.escape(name) + '`',
                              f'{name} is wired in settings.json but missing from the copy table')
+        # The optional Codex native worker bundle ships both definitions it names.
+        bundle = next(line for line in copy_table.splitlines() if line.startswith('| Codex native workers |'))
+        for name in ('harness-implementer.toml', 'harness-scout.toml'):
+            self.assertIn('`.codex/agents/' + name + '`', bundle)
+            self.assertTrue((ROOT / '.codex/agents' / name).is_file(), name)
         # Check cross-document and local links after moving installation/recipes.
         sources = [ROOT / 'README.md', *docs.rglob('*.md')]
         for source in sources:
@@ -153,7 +158,7 @@ class InstallChecks(unittest.TestCase):
         if not runners:
             self.skipTest('PowerShell or Bash is required for installer section tests')
         installed = json.loads((ROOT / '.codex/hooks.json').read_text(encoding='utf-8'))
-        expected = ['session_start', 'pre_tool_use', 'user_prompt_submit', 'stop']
+        expected = ['session_start', 'pre_tool_use', 'user_prompt_submit', 'stop', 'subagent_stop']
         extended = copy.deepcopy(installed)
         extended['hooks']['PostToolUse'] = copy.deepcopy(installed['hooks']['Stop'])
         cases = [('all registered', installed, expected, 0, None),

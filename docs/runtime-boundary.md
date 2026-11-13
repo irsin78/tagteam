@@ -9,7 +9,7 @@ Older measurements do not establish current performance or broader protection.
 | SessionStart | Per-platform guidance and minimal session metadata | Network, usage lookup, server status, whole-file survey |
 | UserPromptSubmit | Releasing this session's previous mission marker and announcing the current session ID | Classifying or refusing user requests, changing another session's state |
 | PreToolUse | Clearly dangerous options of direct commands, delegate role, structured write targets; on Claude, a notice of the orchestrator's launcher call arguments (not blocking) | General shell interpretation, detecting every bypass, proving arbitrary code safe |
-| SubagentStop (Claude) | Minimal record: delegate, working path, session | Output inspection, hashing all memory, completion verdict |
+| SubagentStop | Minimal record: host, delegate, working path, session (Codex only through its trusted hook) | Output inspection, hashing all memory, completion verdict |
 | Stop | Confirming the selected verification command; one continuation request for a registered incomplete mission | A mandatory closing ritual for every task, automatic proof of acceptance, endless resumption |
 | External delegation launchers | Passing the role, checking explicit options, run state, change evidence, requested verification | Inferring user intent, blocking or undoing every external side effect |
 
@@ -40,6 +40,10 @@ The following asymmetries and gaps remain:
 - Exhaustion signal: the launchers recognise whole CLI status lines only. Codex
   tool output in the merged log that exactly equals a recognised status line also
   matches when Codex exits non-zero; a known narrow false positive.
+- Agent definitions: `.claude/agents/`, `.agents/agents/` and `.codex/agents/` are
+  control plane on both hosts (guard pattern, launcher snapshot and hash), so a
+  delegate cannot rewrite its own model or instructions without the launcher's
+  authorized `HARNESS_ALLOW_CONTROL_PLANE=1` grant.
 - A worker relaunching a model CLI: Claude native workers are stopped by the tool
   list and spawn depth; for Codex launcher workers only `ultra` is refused and the
   `codex` invocation itself rests on the entry instructions' prose.

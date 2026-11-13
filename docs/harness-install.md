@@ -56,6 +56,7 @@ missions. Merge existing settings/instructions without overwriting.
 | Optional bundle | Additional files | When to use |
 |---|---|---|
 | Claude native workers | `claude-implementer.md`, `opus-architect.md`, `haiku-scout.md`, `haiku-fetcher.md`, `codex-delegate.md` in `.claude/agents/` | Native delegation/CLI controllers. Worktree roles require Git |
+| Codex native workers | `.codex/agents/harness-implementer.toml`, `.codex/agents/harness-scout.toml` | Native workers on the Codex host; model and effort are set in each file (implement and explore routes) |
 | Antigravity | `.claude/scripts/agy-run.sh`, `.claude/agents/antigravity-delegate.md`, `.claude/skills/delegate-agy/SKILL.md` | Configure CLI/permissions only when selecting agy. Shared launcher dependencies also required |
 | Local reads | `.claude/scripts/local-run.sh`, `local-read.py` | Declare only when using a local endpoint |
 | Enhanced WSL isolation | `.claude/scripts/lane-sensitive.sh`, `.claude/sandbox-sensitive.json` | When selecting a separate isolation lane |
@@ -244,12 +245,24 @@ generate or repair their own hooks, and preparation never writes trust state.
 
 Establish Codex guards through `.codex/hooks.json`, sharing Claude's decision
 files: SessionStart → `session_preflight.py`, PreToolUse →
-`deny_dangerous.py --host codex`, Stop → `stop_gate.py --host codex`.
-Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
+`deny_dangerous.py --host codex`, Stop → `stop_gate.py --host codex`,
+SubagentStop → `verify_delegation.py --host codex` (native worker record, as on
+Claude). Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
+Upgrading from the four-entry definitions: run `gen-codex-hooks.sh --force` and
+retrust through `/hooks`; until the new SubagentStop entry is trusted,
+`codex-run.sh`'s hook check refuses to run.
+Optional native workers: copy `.codex/agents/*.toml` and ask Codex for the worker
+by its role name (`harness-implementer`, `harness-scout`); this was measured with
+codex-cli 0.168.0 under default settings (Windows, 2026-11-13). The Codex subagents
+documentation (read 2026-11-13) says a definition's `model` and
+`model_reasoning_effort` take precedence; here Codex reported the definition's
+effort as applied, and the model is checked in the Codex host test. If a model is
+rejected, switch that file to another verified explicit model; with none, leave
+the definition out. Never delete the keys to inherit the session model.
 
 1. **Trust registration (once per machine, interactive)**: Start `codex` at the
-   repository root and trust all four entries (SessionStart, PreToolUse,
-   UserPromptSubmit, Stop) through `/hooks`. Registration is stored in
+   repository root and trust all five entries (SessionStart, PreToolUse,
+   UserPromptSubmit, Stop, SubagentStop) through `/hooks`. Registration is stored in
    `~/.codex/config.toml` as
    `[hooks.state.'<absolute hooks.json path>:<event>:0:0'] trusted_hash`.
 2. **Detect Python during installation**: Run
@@ -292,7 +305,9 @@ Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
 4. **Delegate identity**: `codex-run.sh` and `claude-run.sh` export
    `HARNESS_DELEGATE_RUN=1`; `codex exec`/`claude -p` are main sessions without
    `agent_id`, so this marker applies delegate commit/push/control-plane bans.
-   Manual sessions lack it and orchestrate. Authorized
+   Manual sessions lack it and orchestrate. Native Codex subagents carry
+   `agent_id`/`agent_type` in their PreToolUse input, so the same delegate bans
+   apply to their tool calls (codex-cli 0.168.0, Windows, one interactive session, 2026-11-13). Authorized
    `HARNESS_ALLOW_CONTROL_PLANE=1` lifts only control-plane protection, never
    commit/push bans; postflight cannot undo pushes.
    An outer project's `.claude/harness-config.json` may set

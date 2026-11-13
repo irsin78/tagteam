@@ -52,6 +52,19 @@
           }
         ]
       }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/verify_delegation.py --host codex",
+            "timeout": 30,
+            "statusMessage": "harness delegation record",
+            "commandWindows": "python .claude/hooks/verify_delegation.py --host codex"
+          }
+        ]
+      }
     ]
   }
 }

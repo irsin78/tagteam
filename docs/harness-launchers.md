@@ -195,7 +195,7 @@ permissions, not a general network sandbox.
 | Dangerous commands/delegate control plane | PreToolUse | Trusted PreToolUse |
 | Output management | Worker explicitly saves logs | Inspect exit code and needed output |
 | Configuration changes | Directly execute approved work, explicit delegation permissions | Check host permissions and change diff |
-| Delegation result evidence | SubagentStop + launcher | Launcher + explicit HEAD/status/diff checks |
+| Delegation result evidence | SubagentStop + launcher | SubagentStop + launcher (trusted hook) + explicit HEAD/status/diff checks |
 | Completion verification | Stop, explicit finish if marker remains | Stop, explicit finish if marker remains (failure persists after continuation limit) |
 
 For Codex AGENTS.md and SessionStart developer-context delivery, see

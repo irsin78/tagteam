@@ -121,7 +121,8 @@ and a band only available detached returns `needs_detached` instead of a lower b
 for structure/dependency reasoning; the E floor is not a recommendation for every
 exploration. Tiny lookups stay in the main session.
 Native workers need explicit supported model/effort; include inheritance cost
-when overrides are unavailable. Codex uses process launchers for Claude workers;
+when overrides are unavailable. On the Codex host the installed `.codex/agents/`
+definitions (`harness-implementer`, `harness-scout`) carry them. Codex uses process launchers for Claude workers;
 Claude may use installed native workers. Git worktree agents require Git; otherwise
 use a scoped sequential run or scratch copy, never automatic git init.
 

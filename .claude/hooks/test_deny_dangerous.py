@@ -40,10 +40,20 @@ class GuardTests(unittest.TestCase):
                     {'HARNESS_DELEGATE_RUN':'1','HARNESS_ALLOW_CONTROL_PLANE':'1'}))
                 self.assertIsNone(guard.evaluate_host(data,host,{}))
     def test_project_agent_definition_is_control_plane(self):
-        for host in ('claude', 'codex'):
-            data = {'tool_name': 'Write', 'tool_input': {'file_path': '.agents/agents/project-agent.md'}}
-            self.assertIsNotNone(guard.evaluate_host(data, host, {'HARNESS_DELEGATE_RUN': '1'}))
-            self.assertIsNone(guard.evaluate_host(data, host, {}))
+        # A neutral cwd: run from .claude/hooks, every relative path would also
+        # resolve under .claude/hooks/ and hide a missing pattern.
+        with tempfile.TemporaryDirectory() as neutral:
+            self._project_agent_paths(neutral)
+
+    def _project_agent_paths(self, neutral):
+        for path in ('.agents/agents/project-agent.md', '.codex/agents/harness-implementer.toml'):
+            for host in ('claude', 'codex'):
+                with self.subTest(path=path, host=host):
+                    data = {'tool_name': 'Write', 'tool_input': {'file_path': path}, 'cwd': neutral}
+                    self.assertIsNotNone(guard.evaluate_host(data, host, {'HARNESS_DELEGATE_RUN': '1'}))
+                    self.assertIsNone(guard.evaluate_host(data, host, {}))
+                    self.assertIsNone(guard.evaluate_host(data, host,
+                        {'HARNESS_DELEGATE_RUN': '1', 'HARNESS_ALLOW_CONTROL_PLANE': '1'}))
 
     def test_patch_rename(self):
         data={'tool_name':'apply_patch','tool_input':{'command':'*** Update File: x\n*** Move to: .codex/hooks.json\n'}}

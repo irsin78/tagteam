@@ -1233,7 +1233,7 @@ for line in sys.stdin:
         if not (ROOT / '.codex/hooks.json').exists():
             self.skipTest('Codex hooks are not installed on this project')
         hooks = json.loads((ROOT / '.codex/hooks.json').read_text())['hooks']
-        self.assertEqual(set(hooks), {'SessionStart', 'PreToolUse', 'UserPromptSubmit', 'Stop'})
+        self.assertEqual(set(hooks), {'SessionStart', 'PreToolUse', 'UserPromptSubmit', 'Stop', 'SubagentStop'})
         self.assertIn('session_preflight.py', hooks['SessionStart'][0]['hooks'][0]['command'])
         self.assertIn('stop_gate.py', hooks['UserPromptSubmit'][0]['hooks'][0]['command'])
         self.assertIn('--new-prompt', hooks['UserPromptSubmit'][0]['hooks'][0]['command'])
@@ -1250,6 +1250,10 @@ for line in sys.stdin:
             generated = json.loads(output.read_text())['hooks']
             self.assertEqual(set(generated), set(hooks))
             self.assertIn('--new-prompt', generated['UserPromptSubmit'][0]['hooks'][0]['command'])
+            for record in (hooks, generated):
+                command = record['SubagentStop'][0]['hooks'][0]['command']
+                self.assertIn('verify_delegation.py', command)
+                self.assertTrue(command.endswith('--host codex'), command)
             for event in hooks:
                 self.assertEqual(generated[event][0]['hooks'][0]['timeout'],
                                  hooks[event][0]['hooks'][0]['timeout'])
@@ -1310,7 +1314,7 @@ for line in sys.stdin:
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((project / '.git').exists())
             hooks = json.loads(output.read_text())['hooks']
-            self.assertEqual(set(hooks), {'SessionStart', 'PreToolUse', 'UserPromptSubmit', 'Stop'})
+            self.assertEqual(set(hooks), {'SessionStart', 'PreToolUse', 'UserPromptSubmit', 'Stop', 'SubagentStop'})
             prompt_hook = hooks['UserPromptSubmit'][0]['hooks'][0]
             self.assertIn('--new-prompt', prompt_hook['commandWindows'])
             for entries in hooks.values():

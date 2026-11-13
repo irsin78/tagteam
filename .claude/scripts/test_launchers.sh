@@ -143,6 +143,7 @@ printf '%s\n' "stub final message" > "${out:-$FIXTURE_ROOT/codex-last-message.lo
 case "${STUB_ACTION:-none}" in
     status-line) printf '%s\n' "$STUB_STATUS_LINE"; exit "${STUB_STATUS_EXIT:-1}" ;;
     touch-project-agent) mkdir -p .agents/agents; echo 'changed project agent' > .agents/agents/project-agent.md ;;
+    touch-codex-agent) mkdir -p .codex/agents; echo 'model = "changed"' > .codex/agents/harness-implementer.toml ;;
     needs-input) printf '%s\n' 'NEEDS_INPUT: which config file should carry the flag?' 'I made no file changes.' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
     refused) printf '%s\n' 'REFUSED: the task asks for hidden reasoning, which I cannot provide.' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
     label-midbody) printf '%s\n' 'CHANGED: none' 'NOTES: the spec says to return NEEDS_INPUT: when a file is missing; nothing was missing.' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
@@ -2264,6 +2265,15 @@ if selected evidence; then
             [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
         fi
         expect_case "project agent control-plane approval=$approval" "$ok" "exit=$LAST_RC"
+        fresh_case
+        run_capture codex-agent-control-plane env STUB_ACTION=touch-codex-agent HARNESS_ALLOW_CONTROL_PLANE="$approval" bash "$CODEX_RUN" -p prompt.txt
+        ok=0
+        if [ "$approval" = 0 ]; then
+            [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'CONTROL_PLANE_WARNING.*[.]codex/agents/harness-implementer.toml' && has "$LAST_OUT" '^STATUS: BLOCKED' && ok=1
+        else
+            [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+        fi
+        expect_case "codex agent control-plane approval=$approval" "$ok" "exit=$LAST_RC"
     done
 fi
 
