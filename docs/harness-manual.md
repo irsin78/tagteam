@@ -122,6 +122,10 @@ launcher anyway, say which change unit this launch covers and pass `-P`
 (delegation-matrix.md, "Assign a worker").
 Capability bands S–E differ from verification risk Tiers 0–2. Announce model changes and
 reasons; this message requires no renewed approval.
+On the Claude host the `announce_delegation.py` hook additionally shows each launcher
+call's announce line and actual `-m`/`-e` as a notice (folded in the desktop app); it
+does not replace this sentence
+([delegation matrix](orchestration/delegation-matrix.md#user-facing-delegation-announcement)).
 
 ### Separating shared contracts, host mechanisms, model traits, and roles
 

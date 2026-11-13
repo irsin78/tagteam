@@ -79,6 +79,15 @@ class InstallChecks(unittest.TestCase):
         self.assertIn('`.claude/scripts/test_fixtures/*.json`', copy_table)
         for name in fixtures:
             self.assertTrue((ROOT / '.claude/scripts/test_fixtures' / name).is_file(), name)
+        # Every hook script wired in settings.json is listed in the shared hooks row.
+        settings = (ROOT / '.claude/settings.json').read_text(encoding='utf-8')
+        wired = set(re.findall(r'\.claude/hooks/([\w.-]+\.py)', settings))
+        hooks_row = next(line for line in copy_table.splitlines()
+                         if line.startswith('| `.claude/hooks/'))
+        self.assertTrue(wired)
+        for name in wired:
+            self.assertRegex(hooks_row, r'[`/]' + re.escape(name) + '`',
+                             f'{name} is wired in settings.json but missing from the copy table')
         # Check cross-document and local links after moving installation/recipes.
         sources = [ROOT / 'README.md', *docs.rglob('*.md')]
         for source in sources:

@@ -177,6 +177,9 @@
       "openai"
     ],
     "separation_satisfied": true,
-    "announce": "band B (implement role floor) -> claude-opus-5-5/medium via claude-run.sh: cheapest of 2 eligible in foreground; vendor differs from author (openai)"
+    "announce": "band B (implement role floor) -> claude-opus-5-5/medium via claude-run.sh: cheapest of 2 eligible in foreground; vendor differs from author (openai)",
+    "launch_env": {
+      "HARNESS_ANNOUNCE": "band B (implement role floor) -> claude-opus-5-5/medium via claude-run.sh: cheapest of 2 eligible in foreground; vendor differs from author (openai)"
+    }
   }
 }

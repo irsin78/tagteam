@@ -847,13 +847,43 @@ for line in sys.stdin:
                                          '"onFailure": "block" so a guard that cannot run denies '
                                          'the call (docs/harness-install.md, shared step 0).')
                         guarded.update(entry.get('matcher', '').split('|'))
-                    elif names & {'session_preflight.py', 'stop_gate.py', 'verify_delegation.py'}:
+                    elif names & {'session_preflight.py', 'stop_gate.py', 'verify_delegation.py',
+                                  'announce_delegation.py'}:
                         # Harness hooks outside the guard stay fail-open: a broken
                         # SessionStart, prompt or Stop hook must not lock the session.
                         self.assertNotIn('onFailure', handler,
                                          f'{event} hook {sorted(names)} must not set onFailure.')
         for tool in ('Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
             self.assertIn(tool, guarded, f'No fail-closed PreToolUse guard covers {tool}.')
+
+    def test_claude_delegation_notice_hook_is_a_separate_fail_open_entry(self):
+        settings = json.loads((ROOT / '.claude/settings.json').read_text(encoding='utf-8'))
+        notice, guards = [], []
+        for position, entry in enumerate(settings.get('hooks', {}).get('PreToolUse', [])):
+            names = [{token.strip('\"\'').replace('\\', '/').rsplit('/', 1)[-1]
+                      for token in shlex.split(handler.get('command', ''), posix=False) + handler.get('args', [])}
+                     for handler in entry.get('hooks', [])]
+            if any('deny_dangerous.py' in found for found in names):
+                guards.append(position)
+            if any('announce_delegation.py' in found for found in names):
+                # Its own entry: never inside a guard entry, so a notice failure cannot block.
+                self.assertFalse(any('deny_dangerous.py' in found for found in names))
+                notice.append((position, entry))
+        self.assertEqual(len(notice), 1, 'Missing Claude PreToolUse -> announce_delegation.py; '
+                                         'merge that hook into .claude/settings.json.')
+        position, entry = notice[0]
+        self.assertEqual(set(entry.get('matcher', '').split('|')), {'Bash', 'PowerShell'})
+        # After both guard entries, one short python handler with only the hook as argument.
+        self.assertTrue(guards and position > max(guards), 'the notice entry must follow the guard entries')
+        self.assertEqual(len(entry['hooks']), 1)
+        handler = entry['hooks'][0]
+        # A project may point hooks at another interpreter name (python3, py, an absolute path).
+        self.assertRegex(str(handler.get('command')).replace('\\', '/').rsplit('/', 1)[-1].lower(),
+                         r'^(python[0-9.]*|py)(\.exe)?$')
+        self.assertEqual(handler.get('timeout'), 5)
+        args = handler.get('args', [])
+        self.assertEqual(len(args), 1)
+        self.assertEqual(args[0].replace('\\', '/').rsplit('/', 1)[-1], 'announce_delegation.py')
 
     def test_orchestrator_policies_are_installed_at_their_referenced_paths(self):
         for name in ('delegation-matrix.md', 'retry-policy.md'):
@@ -2017,7 +2047,8 @@ class ScoredRoutes(unittest.TestCase):
                     canonical = ','.join(f'{key}={assessment[key]}' for key in records.ASSESSMENT_KEYS
                                          if key in assessment)
                     self.assertEqual(route['launch_env'], dict(HARNESS_BAND=route['band'],
-                                     HARNESS_ASSESS=canonical, HARNESS_ROLE='implement'))
+                                     HARNESS_ASSESS=canonical, HARNESS_ROLE='implement',
+                                     HARNESS_ANNOUNCE=route['announce']))
 
     def test_timeout_covers_the_worker_only_even_when_direct_wins(self):
         data = json.loads(json.dumps(self.data))
@@ -2085,8 +2116,25 @@ class ScoredRoutes(unittest.TestCase):
 
     def test_launch_environment_omits_unknown_assessment(self):
         route = self.route(assess=None)
-        self.assertNotIn('launch_env', route)
+        # Only the announce line travels without an assessment (announce_delegation.py).
+        self.assertEqual(route['launch_env'], {'HARNESS_ANNOUNCE': route['announce']})
         self.assertNotIn('suggested_timeout_s', route)
+
+    def test_launch_environment_carries_the_final_announce_line(self):
+        routes_seen = [self.route(), self.route(assess=None), self.route(role='review_gate', author_vendors=['claude']),
+                       self.route(worker='fast')]
+        for route in routes_seen:
+            with self.subTest(announce=route['announce']):
+                self.assertEqual(route['launch_env']['HARNESS_ANNOUNCE'], route['announce'])
+        # main() rewrites the announce line when no Bash exists; the env copy follows it.
+        stream = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
+                routes, 'find_bash', return_value=None), patch.object(routes, 'budget_for', return_value='normal'), patch.object(
+                sys, 'argv', ['harness-route.py', '--host', 'claude', '--role', 'implement']), contextlib.redirect_stdout(stream):
+            routes.main()
+        output = json.loads(stream.getvalue())
+        self.assertTrue(output['announce'].startswith('unavailable: no usable Bash'))
+        self.assertEqual(output['launch_env']['HARNESS_ANNOUNCE'], output['announce'])
 
     def test_defect_cli_retry_keeps_worker_model_effort_and_sandbox(self):
         stream = io.StringIO()

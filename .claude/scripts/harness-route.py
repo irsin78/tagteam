@@ -1017,7 +1017,17 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
     route['announce'] = announce_line(route, assessment, role, tier, latency, len(ordered),
                                       scoring, fallback, retry_reason, refused_vendor, keep,
                                       bool(worker), authors, cross_lane_s, ranked_scores)
+    set_announce_env(route)
     return route
+
+
+def set_announce_env(route):
+    """Carry the announce line in launch_env for the announce_delegation.py hook.
+
+    The hook reads it from the launcher command it sees; launchers ignore it.
+    Routes without an assessment get a launch_env holding only this key.
+    """
+    route.setdefault('launch_env', {})['HARNESS_ANNOUNCE'] = route['announce']
 
 
 def announce_line(route, assessment, role, tier, latency, eligible_count, scoring, fallback,
@@ -1205,6 +1215,7 @@ def main():
                 if args.role in REVIEW_ROLES
                 else 'no usable Bash for process launchers; follow native fallback')
             route['announce'] = 'unavailable: no usable Bash for process launchers; ' + route['announce']
+            set_announce_env(route)
     except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
         print('HARNESS_DENIED: route configuration: ' + str(error), file=sys.stderr)
         return 4

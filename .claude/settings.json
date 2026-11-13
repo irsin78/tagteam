@@ -90,6 +90,19 @@
             "onFailure": "block"
           }
         ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/announce_delegation.py"
+            ],
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionStart": [

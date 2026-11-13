@@ -8,7 +8,7 @@ Older measurements do not establish current performance or broader protection.
 |---|---|---|
 | SessionStart | Per-platform guidance and minimal session metadata | Network, usage lookup, server status, whole-file survey |
 | UserPromptSubmit | Releasing this session's previous mission marker and announcing the current session ID | Classifying or refusing user requests, changing another session's state |
-| PreToolUse | Clearly dangerous options of direct commands, delegate role, structured write targets | General shell interpretation, detecting every bypass, proving arbitrary code safe |
+| PreToolUse | Clearly dangerous options of direct commands, delegate role, structured write targets; on Claude, a notice of the orchestrator's launcher call arguments (not blocking) | General shell interpretation, detecting every bypass, proving arbitrary code safe |
 | SubagentStop (Claude) | Minimal record: delegate, working path, session | Output inspection, hashing all memory, completion verdict |
 | Stop | Confirming the selected verification command; one continuation request for a registered incomplete mission | A mandatory closing ritual for every task, automatic proof of acceptance, endless resumption |
 | External delegation launchers | Passing the role, checking explicit options, run state, change evidence, requested verification | Inferring user intent, blocking or undoing every external side effect |

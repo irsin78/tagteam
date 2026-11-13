@@ -38,7 +38,10 @@ the needed behavior; identify uncovered input, output and validation paths.
 Export the router's `launch_env` and pass `-t suggested_timeout_s` to the launcher
 (detached `-b` for `max` and whenever `needs_detached` is true; a suggestion above
 570 s is detached because foreground `-t` is capped there), so band, assessment and
-role are recorded without hand-typing. Assessed routes without volume use the small-task estimate for timeout.
+role are recorded without hand-typing. `launch_env` also carries `HARNESS_ANNOUNCE`
+(the announce line, present on every route); put it in the same command as the
+launcher call, as an assignment prefix or `export`/`$env:` statement, so the
+delegation notice hook can show it. Assessed routes without volume use the small-task estimate for timeout.
 `long_run: true` (implement/write routes with assessed volume 2; timeout and
 latency class do not set it) flags work whose rollback is expensive if the
 worker drifts: the announce line ends with `long run (volume 2): implementation session in its own worktree, not a launcher unit`. The default handling
@@ -250,6 +253,16 @@ Announce material changes before retry/fallback or direct takeover, including lo
 independence. Unchanged retries may reference the first notice; polling needs none.
 Continue authorized work immediately: this is a progress update, not an approval gate.
 Examples and launch recipes: docs/harness-launchers.md (read only the needed section).
+On the Claude host a PreToolUse hook (`announce_delegation.py`) also records each
+orchestrator launcher call as a notice: the router's announce line from
+`HARNESS_ANNOUNCE` (or `announce line not passed`) plus the actual launcher, `-m` and
+`-e` (`not given` when absent). The CLI shows it at once; the desktop app folds it into
+the tool call. It carries no task and only the first launcher call of a command, so it
+is a floor under the sentence announcement, never a replacement. When unsure it says
+less (`-m unparsed`, or no notice for heredoc bodies, `bash -n`/`-c` and read-back
+calls); an `export` inside a subshell, function or conditional is read as if it
+applied. Child sessions started with `start_session`, native subagents and calls on
+the Codex host are not seen by this hook.
 
 ## Availability and fallback
 An exhausted vendor is unavailable without a probe. Only a launcher's

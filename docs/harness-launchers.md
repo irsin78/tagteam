@@ -62,6 +62,9 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
    the `-m`/`-e` you pass differ from the route, replace that part with the
    actual values and the reason. Repeat before every launch (an unchanged retry
    may reference the first notice); it is a progress notice, not an approval gate.
+   On the Claude host the delegation notice hook also shows the passed
+   `HARNESS_ANNOUNCE` line and the call's actual `-m`/`-e`; it does not replace
+   this sentence (delegation-matrix.md, same section).
    Write goal, scope, existing-change preservation, constraints, verification, and
    output contract to a prompt file; write any launcher verifier separately first.
    Use routed JSON values for MODEL/EFFORT. Run `.sh` with Git Bash even from
