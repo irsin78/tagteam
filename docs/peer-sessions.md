@@ -30,6 +30,11 @@ rules. Status: experimental; see the skill's header for what was and was not mea
    `Baton: design · phase 0 · since <ISO> · based_on <HEAD 7>`, then
    `Unattended-default: off`, then the "sends" table header and an empty observations
    section.
+2-1. Commit the mission documents (`intent.md`, `spec.md`, `state.md`, and each phase's
+   `plan.md` section as it is written). A worktree cut before a file exists does not
+   contain it, and a session in a worktree cannot edit the base checkout, so an
+   uncommitted `plan.md` leaves the implementation session unable to write its result
+   rows (measured 2026-11-13; the host refuses the edit, not the harness guard).
 3. Open the **design** session in the main checkout and paste its bootstrap prompt.
 4. The design session starts the **implementation** session (`start_session` with
    `initiation: "user_asked"`, `use_worktree: true`, `model` and `effort` from the

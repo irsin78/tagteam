@@ -67,6 +67,16 @@ delivers messages nor proves delivery merely by reporting no anomalies.
   also what a `long_run` route asks for). Opening both sessions by hand still works (trial
   shape); then open the implementation session first so the design session sees it in
   ListAgents.
+- **Mission documents must reach the worktree through a commit.** A session in a worktree
+  cannot edit the base checkout: the host refuses it ("Edits there do not land on this
+  session's branch", measured 2026-11-13) and the harness guard is not what stops it. So
+  the implementation session can only write the `plan.md` result rows and its `state.md`
+  evidence lines when those files exist in ITS worktree. Commit each phase's mission
+  documents before the design goes out, and fast-forward the implementation worktree
+  (`git -C <worktree> merge --ff-only <branch>`); the responsible orchestrator merges the
+  result rows back with the declared files. A document created after the worktree was cut
+  is not there: the implementation session then reports its result text in `[PEER DONE]`
+  and the orchestrator writes it, and neither side edits the other checkout.
 - The child session's model and effort come from the router, not from the parent.
   `start_session` inherits the parent's model when `model` is omitted, so a design session
   on the S band would hand B-band implementation to an S-band model (observed 2026-10-22).
@@ -101,7 +111,7 @@ delivers messages nor proves delivery merely by reporting no anomalies.
 | | design/judgment session | implementation session |
 |---|---|---|
 | does | phase design, decision replies, acceptance review, next phase | implement and check to the design, raise `[PEER ASK]` when blocked, report done |
-| owns | `intent.md`, `spec.md`, design sections of `plan.md`, first line of `state.md`, acceptance checks | the deliverables, the "result" rows of `plan.md`, its own evidence lines in `state.md` |
+| owns | `intent.md`, `spec.md`, design sections of `plan.md`, first line of `state.md`, acceptance checks | the deliverables, and the "result" rows of `plan.md` plus its own evidence lines in `state.md` **in its own worktree copy** (see below) |
 | with the user | the only session that confirms the spec and reports stops | treats `spec.md` as confirmed input, never asks the user to confirm it |
 | commits | yes, declared files only | never |
 
