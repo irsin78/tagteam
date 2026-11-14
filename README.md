@@ -1,24 +1,23 @@
 # tagteam
 
 A **harness template for solo developers** pairing Claude Code and Codex:
-whichever you start orchestrates; the other implements and cross-checks. Copy
+the user's session orchestrates; workers implement and cross-check. Copy
 it into your projects to divide work, choose models and verify results.
 
 The goal is to complete work that meets the required quality and safety bar
 with less cost, time and user intervention. Models are chosen for the tier of
-the task by performance, speed and cost, and work whose delegation gain is small
-is handled directly.
+the task by performance, speed and cost, with implementation routed to workers.
 
 ## How it works
 
-**The app you start the conversation in becomes the orchestrator.** Whether it
+Roles follow [session-role.md](.claude/rules/session-role.md). Whether the host
 is opened from a terminal, a desktop app or an IDE is not a routing criterion.
 Projects that do not use Git run the same way.
 
 | App you start | Orchestrates | Default implementation delegate |
 |---|---|---|
-| Claude Code | Claude Code | Codex |
-| Codex | Codex | Claude Code |
+| Claude Code | Claude Code | Claude worker (or the design author's vendor) |
+| Codex | Codex | Codex worker (or the design author's vendor) |
 
 Optional workers are declared in the bindings' `workers` list or local `workers_local` overrides and selected only when their requirements are met.
 
@@ -28,13 +27,10 @@ The orchestrator adjusts this default route to actual authorship and task risk,
 and judges completion by outputs and verification. Reviews use a vendor other
 than the author's; vendor separation alone does not guarantee correctness.
 
-Direct handling is chosen when the actual target code and interfaces have been
-read, the change closes locally and the way to verify it is known. A request
-that looks short or touches one file is not evidence. When the behaviour is
-unclear, several modules' contracts are involved, or several new behaviours
-interact, cross-vendor delegation is used. A change is not "small" because it
-fits in one file, and a directly started change that grows is not extended on
-the spot: the remaining implementation is delegated.
+Implementation follows [Sessions and workers](docs/orchestration/delegation-matrix.md#sessions-and-workers).
+Direct work is an opt-in project setting, off by default; its scope and
+grounding requirements are in
+[Direct work (off by default)](docs/orchestration/delegation-matrix.md#direct-work-off-by-default).
 
 Work proceeds with its purpose and spec recorded under
 `docs/missions/<purpose>/`. Once the user confirms the spec, implementation,

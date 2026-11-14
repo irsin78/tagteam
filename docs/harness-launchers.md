@@ -6,8 +6,9 @@
 
 ## Host-specific execution
 
-The starting app orchestrates, regardless of terminal/desktop/IDE (including
-VS Code). Install entry files per [Method A](harness-install.md#installation); template names do
+The orchestrator session is pinned for the mission per
+[session-role.md](../.claude/rules/session-role.md), regardless of terminal/desktop/IDE
+(including VS Code). Install entry files per [Method A](harness-install.md#installation); template names do
 not auto-load. Claude Code falls back to AGENTS.md only when no CLAUDE.md exists
 (v2.1.277+); any parent CLAUDE.md disables it, so retain the import stub.
 SessionStart/explicit `start` reports `host:` and `(ORCHESTRATOR|DELEGATE)` on `HARNESS PLATFORM:`.
@@ -31,11 +32,14 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
      not exhaustion: route it as the `refusal` retry class (retry-policy.md), the
      same band on another vendor, and do not record `--exhausted`.
 
-2. Read `docs/orchestration/delegation-matrix.md` in stages: before choosing
-   direct work or delegation, only "Direct work or delegation"; after deciding
-   to delegate and before the first launch, also "Assign a worker", "Separate
-   authorship from review" and "User-facing delegation announcement". Small
-   direct work needs no launcher. Get routes with
+2. Read `docs/orchestration/delegation-matrix.md` in stages: before any
+   implementation, "Sessions and workers" (which worker per host, creating an
+   implementation session, design escalation), with the scout brief first
+   (Thin orchestration). Before the first launch or session, read "Assign a
+   worker", "Separate authorship from review" and "User-facing delegation
+   announcement". Read "Availability and fallback" when a vendor is unavailable
+   or exhausted (no probe needed), and `docs/orchestration/retry-policy.md` when
+   a run fails. Get routes with
    `python .claude/scripts/harness-route.py --host codex --role implement`
    (`--host claude` on Claude). Use JSON launcher/model/effort/sandbox/shell paths;
    lookup skips WindowsApps for Git Bash without executing work/changing settings.
@@ -56,12 +60,13 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
    `--author-vendor claude` selects OpenAI. Mandatory dual reviews must also use
    different vendors. No suitable route means unavailable, never self-review.
 
-3. Before calling the launcher, announce the launch to the user: the task in one
-   clause, then the router output's `announce` line verbatim ("User-facing
-   delegation announcement" in `docs/orchestration/delegation-matrix.md`). If
+3. Before every launch, review and session creation, follow session-role.md
+   rule 5: one sentence in the user's language saying which model/effort does
+   what and why, followed by the router output's `announce` line verbatim
+   ("User-facing delegation announcement" in `docs/orchestration/delegation-matrix.md`). If
    the `-m`/`-e` you pass differ from the route, replace that part with the
-   actual values and the reason. Repeat before every launch (an unchanged retry
-   may reference the first notice); it is a progress notice, not an approval gate.
+   actual values and the reason. For a design session without `announce`, state
+   the model/effort and reason yourself. This is a progress notice, not an approval gate.
    Write goal, scope, existing-change preservation, constraints, verification, and
    output contract to a prompt file; write any launcher verifier separately first.
    Use routed JSON values for MODEL/EFFORT. Run `.sh` with Git Bash even from
@@ -134,7 +139,9 @@ permissions, not a general network sandbox.
    Exit 2 is availability failure, exit 4 policy denial, exit 1 task/verification
    failure. Claude corrective retries are new calls inlining the original spec
    and failure; `-r` is unsupported. On availability failure, fall back once to
-   the current host's built-in worker, or direct implementation if unavailable.
+   the current host's native subagent. If none is available, report the unit
+   incomplete and ask the user; direct implementation applies only where direct
+   work is enabled, within its stated scope.
    Detailed limits and unavailable independent review handling are authoritative
    in delegation-matrix/retry-policy.
 5. Read STATUS and VERIFY; inspect actual HEAD, full status, relevant diff, and
@@ -150,7 +157,7 @@ permissions, not a general network sandbox.
 | Preflight | SessionStart | SessionStart + explicit start if output is absent |
 | Dangerous commands/delegate control plane | PreToolUse | Trusted PreToolUse |
 | Output management | Worker explicitly saves logs | Inspect exit code and needed output |
-| Configuration changes | Directly execute approved work, explicit delegation permissions | Check host permissions and change diff |
+| Configuration changes | Live control plane: orchestrator directly; other configuration: worker (session-role.md rule 2) | Check host permissions and change diff |
 | Delegation result evidence | SubagentStop + launcher | Launcher + explicit HEAD/status/diff checks |
 | Completion verification | Stop, explicit finish if marker remains | Stop, explicit finish if marker remains (failure persists after continuation limit) |
 
@@ -168,6 +175,51 @@ redelegation; parent `verify.sh`, re-verification, and `finish` passed despite
 untrusted child Bash denial. It does not prove VS Code hooks. Run model smoke
 tests outside sensitive `.claude/` in independent temporary repositories;
 never auto-register trust or add bypass flags.
+
+## Worker verification commands
+
+In `.claude/harness-config.json`, `worker_verify_commands` is a project-owned
+list of exact command prefixes, empty by default. `claude-run.sh` grants them
+through `--allowedTools` only with `-s workspace-write -a implement`: each entry
+becomes `Bash(<entry>:*)`. Read-only and web workers receive no such grant.
+The validator `.claude/scripts/worker_verify.py` applies these entry rules;
+any invalid entry yields `HARNESS_DENIED` (exit 4) before the CLI is called:
+
+1. An entry is a string of at least two tokens separated by one ASCII space,
+   without leading, trailing or repeated spaces or other whitespace.
+2. Every token matches `[A-Za-z0-9._/\\:=+@,-]+`; shell metacharacters, quotes,
+   `*` and newlines are forbidden.
+3. The executable name is the first token's last path component (split on `/`
+   or `\`), lowercased, with `.exe` and trailing version digits removed
+   (`python3.12` becomes `python`).
+4. Wrappers and arbitrary runners are always refused: `cmd`, `env`, `xargs`,
+   `sudo`, `doas`, `nohup`, `timeout`, `time`, `nice`, `busybox`, `wsl`, `npx`,
+   `pnpx`, `bunx`, `uvx`, `pipx`.
+5. For `sh`, `bash`, `zsh`, `dash`, `ksh`, token 2 is a script path ending in
+   `.sh` and does not start with `-`. For `pwsh` and `powershell`, token 2 is
+   exactly `-File` and token 3 is a script path ending in `.ps1`.
+6. For `python`, `py`, `pypy`, `node`, `ruby`, `perl`, `php`, `lua`, `rscript`,
+   token 2 is a script path that does not start with `-` and whose last path
+   component has an extension; alternatively, only `python`, `py`, `pypy`
+   accept token 2 `-m` with token 3 a module name matching
+   `[A-Za-z_][A-Za-z0-9_.]*`. For `deno` and `bun`, token 2 is exactly `test`.
+   Thus `python`, `python -m`, `python -c x`, `python --version`, `python -`
+   and `bash -s` are all refused.
+7. Other executables (`cargo`, `npm`, `pytest`, `go`, `dotnet`, etc.) follow
+   only rules 1–2.
+
+Examples: `cargo test`, `.venv/Scripts/python.exe -m pytest`,
+`bash scripts/check.sh`. A `-v` script also receives the exact grant
+`Bash(bash <path>)` only when its path matches `[A-Za-z0-9._/\\:-]+`; it is
+not a command string and the worker must never edit it. The report's
+`WORKER_VERIFY:` line gives the number of command rules and whether the verify
+script is allowed (`, verify script`), or `none` when neither is granted.
+
+A Claude launcher worker runs assigned verification itself when allowlisted and
+reports actual command output under VERIFY. A command outside the list is
+denied and reported, never worked around. The launcher's post-run `-v` execution
+and verifier integrity check remain the verdict. Codex workers run commands
+inside their sandbox as before. Exposure limits: [Runtime boundary](runtime-boundary.md).
 
 ## Local endpoint connection procedure (optional)
 

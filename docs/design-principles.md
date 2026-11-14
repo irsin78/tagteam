@@ -1,8 +1,8 @@
 # Design principles and the scope of the template
 
-Keep the user-started app as orchestrator and meet the project's quality and
-safety bar with less cost, time and user intervention. For installation and
-execution, see [Installation](harness-install.md) and [Launchers](harness-launchers.md).
+Follow [session-role.md](../.claude/rules/session-role.md) and meet the project's
+quality and safety bar with less cost, time and user intervention. For installation
+and execution, see [Installation](harness-install.md) and [Launchers](harness-launchers.md).
 
 ## Premises and the responsibility boundary
 
@@ -33,26 +33,27 @@ by itself is no guarantee against information leakage or prompt injection.
 
 ## Cross-verification and role selection
 
-By default, cross-vendor implementation and split review roles challenge a
+By default, worker implementation and cross-vendor review challenge a
 model's own assumptions. Vendor separation does not guarantee correctness: actual output and
 project acceptance checks determine completion.
 
-The app that was started decides the orchestrator. Concrete roles are adjusted
-by who actually authored what. If an external model produced the design,
-distinguish that designer from the implementer; after direct implementation or a
-fallback, request a review from a vendor other than the actual implementer.
+Roles follow [session-role.md](../.claude/rules/session-role.md). Authorship is
+determined by who actually authored what. If an external model produced the
+design, distinguish that designer from the implementer; after a worker fallback,
+request a review from a vendor other than the actual implementer.
 Design review and code review examine different targets, so name the author of
 each target. If several vendors co-authored, include them all. The router
 selects from the declared authorship and does not itself prove the actual
 authoring history.
 
-Direct implementation applies to local changes whose actual target code,
-interfaces and verification method have been confirmed. It is not decided by the
-length of the request or the expected file count; when the scope grows, preserve
-the existing change and switch to delegation. Verification proportional to risk
-is kept. For work that needs review, the author's self-assessment does not count
-as an independent review. If the required independence cannot be obtained, state
-that limitation, and if the review is mandatory leave the work incomplete.
+Implementation follows
+[Sessions and workers](orchestration/delegation-matrix.md#sessions-and-workers).
+Direct work is an opt-in project setting, off by default; grounding, scope
+and reclassification follow that section's "Direct work (off by default)".
+Verification proportional to risk is kept. For work that needs review, the
+author's self-assessment does not count as an independent review. If the required
+independence cannot be obtained, state that limitation, and if the review is
+mandatory leave the work incomplete.
 
 ## Executing against purpose and spec
 
@@ -99,7 +100,7 @@ better deal.
 | Capability, price and speed across models | Default evidence; check the measurement conditions and sources with it |
 | Band floors and measured ordering (cost, TTFT) of candidates | Basis for the initial choice |
 | Actual success rate in a specific project | Not guaranteed directly |
-| Whether delegation or direct handling is better | Needs a separate judgment: spec writing, waiting and review cost are not included |
+| Which worker route is better (or direct work, only when enabled) | Needs a separate judgment: spec writing, waiting and review cost are not included |
 
 Set the default bindings from benchmarks and correct only what repeatedly
 diverges in real use. When a model that looks suitable keeps failing, or the
@@ -171,7 +172,7 @@ adoption work, not installation failures.
 | Area | Adoption success criterion |
 |---|---|
 | Installation | Usable through the documented copy and configuration procedure, with no modifications required beyond what is documented |
-| Role selection | The app that was started orchestrates, and an invoked worker does not become an orchestrator again |
+| Role selection | Sessions and workers retain their roles under session-role.md |
 | Task completion | A representative task is delegated and the parent confirms the actual output and verification results |
 | Continuous execution | No implementation before spec confirmation; after it, progress to completion without per-step re-approval |
 | Resume | The same mission's purpose, spec and confirmation record are preserved and compared with the actual code state |
@@ -184,11 +185,11 @@ a numeric target for installation time up front, look for the steps that
 repeatedly block real adoption and for intervention outside the documentation.
 
 Adoption success and efficiency gain are separate. When the harness's effect
-needs confirming, compare with direct handling of a similar representative task
+needs confirming, compare with a baseline run of a similar representative task
 on completion time, quota consumption, user intervention and rework. It does not
 have to win on every task: identify the range of work where it is favourable and
-reflect it in the direct-handling exceptions. That does not make extra
-measurement or review mandatory for every task.
+reflect it in worker routing or a project's explicit opt-in direct-work scope.
+That does not make extra measurement or review mandatory for every task.
 
 ## Change and re-review
 

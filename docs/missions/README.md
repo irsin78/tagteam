@@ -20,8 +20,9 @@ at its original location. Both hosts follow the authoritative rules in
    was already confirmed in conversation, record that decision instead of
    asking for approval again. An agent review's PASS, a status value in a
    document, and time elapsed without a reply are not user confirmation.
-4. **Continuous execution**: plan, implement, verify and fix within the confirmed
-   spec. Check each step, delegation or review and proceed to the next item; a
+4. **Continuous execution**: plan, route implementation, verify and send fixes
+   back to workers within the confirmed spec. Check each step, delegation or
+   review and proceed to the next item; a
    progress report is no reason to end the turn or wait for "continue".
 5. **Completion**: confirm the confirmed completion criteria with the actual
    changes and verification evidence. Record the result and important
@@ -139,8 +140,9 @@ the user's request when it falls within the existing purpose and spec.
 Large work may add `design.md`, `roadmap.md`, per-phase sub-folders and so on.
 The number of documents is not limited, and a fixed document set is not forced.
 Per-phase material references the parent `intent.md` and `spec.md` and does not
-require separate approval, a stop or a session restart. The same fact is not
-duplicated across documents; choose a reference document and link to it.
+require separate approval, a stop or a restart of the orchestrator session.
+The same fact is not duplicated across documents; choose a reference document
+and link to it.
 
 Starting formats for `intent.md` and `spec.md` follow. The project decides detail
 and completion checks; record short work briefly.
@@ -187,9 +189,14 @@ is enough.
 
 ## Delegation, review and resume
 
-The app that was started stays the orchestrator and hands the relevant
-`intent.md`, the confirmed `spec.md`, the plan that is needed and the actual
-verification evidence to implementers and reviewers. The principles of
+Follow [session-role.md](../../.claude/rules/session-role.md) for the pinned
+orchestrator session and worker roles. The orchestrator session stays the
+orchestrator and does not implement; each implementation unit gets a new
+implementation session (or launcher worker), with the procedure in
+[Sessions and workers](../orchestration/delegation-matrix.md#sessions-and-workers).
+The orchestrator session itself is not restarted at a phase boundary. Hand the
+relevant `intent.md`, the confirmed `spec.md`, the plan that is needed and the
+actual verification evidence to implementers and reviewers. The principles of
 cross-verification by author and of checks proportional to risk still apply.
 Confirm not only that the implementation plan was followed but that the
 original purpose and spec were met. An agent review is not mandated for every

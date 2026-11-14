@@ -1,6 +1,7 @@
 # Retry / escalation policy (implementation)
 
-Orchestrator only, not auto-loaded; the starting host stays in charge (session-role.md).
+Orchestrator only, not auto-loaded; roles follow
+[session-role.md](../../.claude/rules/session-role.md).
 
 1. Diagnose before rerunning. A timeout reports a deadline, not its cause:
    inspect onboarding reads, API/tool waits and task progress first.
@@ -62,12 +63,14 @@ Orchestrator only, not auto-loaded; the starting host stays in charge (session-r
    slowness. `max` is detached only; Codex worker `ultra` is a policy refusal,
    not an availability fallback. Tight budget disables optional promotions;
    risk floors still apply.
-4. After the second reasoning failure, before any orchestrator takeover, ask
+4. After the second reasoning failure, before deciding the next step, ask
    the other vendor once, read-only: resolve `python .claude/scripts/harness-route.py
    --host <host> --role decide --tier S --author-vendor <failed worker's vendor>`, then
    run the returned launcher with `-s read-only` and the question "why did this fail?". A spec or scope answer returns to that class's response; confirmed
-   reasoning means the orchestrator implements directly with the same
-   verification, or reports instead when it is below the failed band.
+   reasoning means report the diagnosis to the user and ask how to proceed.
+   Only where direct work is enabled, within its stated scope and at or above
+   the failed band, may the orchestrator implement with the same verification
+   (delegation-matrix.md, "Direct work (off by default)").
 5. At most 3 attempts within a lane (first + 2 retries), plus the single cross-lane
    S attempt: `--attempt` counts retries, so `--attempt 3` is accepted only for
    that final cross-lane S route; later attempts are refused and 4 applies. Each
@@ -94,11 +97,11 @@ The router's `--assess` uses these ratings to choose the automatic start band
 and records them in JSON; see delegation-matrix.md, "Assess before routing".
 After diagnosis, use `python .claude/scripts/harness-session.py outcome --run <id>
 --class <class> [--accepted yes|no] [--note TEXT]` to record or replace the outcome.
-For direct work, use `python .claude/scripts/harness-session.py direct --task <slug>
+Only where direct work is enabled, use `python .claude/scripts/harness-session.py direct --task <slug>
 --result done|failed --elapsed-s N [--assess STR]` with optional model, tokens,
 rework, interventions, verify and note fields. Records share the launcher's tree
 state directory; `harness-stats.sh` summarizes them alongside delegated reports.
-For machine timing, use `direct start --task <slug> [--assess STR] [--model TEXT]`
+For machine timing of enabled direct work, use `direct start --task <slug> [--assess STR] [--model TEXT]`
 before work and `direct finish --task <slug> --result done|failed [--tokens N]
 [--rework N] [--interventions N] [--verify passed|failed|none] [--note TEXT]`
 afterward. Start writes a UTC stamp in `direct-start-<slug>.json` in that tree's

@@ -48,7 +48,7 @@ means automatic recovery is unavailable; do not invent an id or claim enforcemen
 This guard gives one recovery, not completion proof; details: docs/missions/README.md.
 
 Add plan/state, designs, roadmaps or phase detail only when useful, without new
-approval or session boundaries. Record work order, ownership, current/next/blockers
+approval or orchestrator session boundaries. Record work order, ownership, current/next/blockers
 and evidence (also based_on HEAD and dirty files in Git projects). Keep one current
 record per fact; link rather than duplicate. Bookkeeping alone needs no worker.
 
@@ -57,8 +57,10 @@ and needed plan/state. Compare with actual files and checks (also HEAD/dirty cha
 in Git); history is not filesystem evidence. Preserve the mission and consent,
 refresh stale facts and give workers relevant intent/spec and evidence. Read only
 the active mission and referenced dependencies. Conditional plan review follows
-plan-check-gate.md. Compact or start a fresh session only for stale/noisy/near-full
-context or at the user's request, never merely for a phase boundary.
+plan-check-gate.md. The orchestrator session compacts or starts fresh only for
+stale/noisy/near-full context or at the user's request, never merely for a phase
+boundary. Implementation sessions are the opposite: one per implementation unit
+(session-role.md rule 3).
 
 Complete with acceptance evidence under verification-tiering.md. Record outcome,
 deviations and material limitations in state.md or a short spec completion note;

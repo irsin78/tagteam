@@ -34,10 +34,10 @@ missions. Merge existing settings/instructions without overwriting.
 | Shared required files | Required when | Reason |
 |---|---|---|
 | `AGENTS.md.template` → `AGENTS.md`, `CLAUDE.md.template` → `CLAUDE.md` | Shared | One entry instruction file for both hosts plus the `@AGENTS.md` import stub for Claude Code. Fill Project policy in AGENTS.md only |
-| `.claude/settings.json`, `.claude/model-bindings.json`, `.claude/model-bindings.local.json.example`, `.claude/rules/*.md` | Shared | Hook wiring, permissions, shared contracts; model-bindings.json uses schema v2. Create personal settings in the target project from the example |
+| `.claude/settings.json`, `.claude/harness-config.json`, `.claude/model-bindings.json`, `.claude/model-bindings.local.json.example`, `.claude/rules/*.md` | Shared | Hook wiring, permissions, project content/verification configuration, shared contracts; model-bindings.json uses schema v2. Create personal settings in the target project from the example |
 | `docs/orchestration/delegation-matrix.md`, `docs/orchestration/retry-policy.md`, `docs/orchestration/scout-brief.md` | Shared | Orchestrator reads only needed documents when selecting delegation/diagnosing failures. Separate from Claude's automatic rules loading |
 | `.claude/hooks/deny_dangerous.py`, `session_preflight.py`, `stop_gate.py`, `verify_delegation.py`, `evidence.py` | Shared (all in the same hooks folder) | Shared dependencies of default hooks and delegation records |
-| `.claude/scripts/harness-route.py`, `harness-session.py`, `harness_records.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py` | Shared (all in the same scripts folder) | Routing, run records, stop checks, configuration/change evidence, execution tracking. Keep with each launcher |
+| `.claude/scripts/harness-route.py`, `harness-session.py`, `harness_records.py`, `worker_verify.py`, `test_worker_verify.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py` | Shared (all in the same scripts folder) | Routing, run records, stop checks, configuration/change evidence, execution tracking, Claude verification-prefix validation and its regressions. Keep with each launcher |
 | `.claude/scripts/codex-run.sh`, `claude-run.sh`, `codex-report.schema.json`, `.claude/skills/delegate-codex/SKILL.md` | Bidirectional delegation | Per-app execution and Codex results/recipes |
 | `.codex/hooks.json`, `.claude/scripts/gen-codex-hooks.sh` | Using Codex | Hook wiring and installation-path generation. Machine-specific `/hooks` trust registration required. Installation checks also use the generator |
 | `.claude/scripts/test_host_routes.py`, `.claude/scripts/test_fixtures/*.json` | Using installation checks | Current dependency of both platform installation checks; its score/baseline scenarios read the fixtures. Unlike other `test_*` files, copy these too |
@@ -63,7 +63,7 @@ missions. Merge existing settings/instructions without overwriting.
 
 | Maintenance only | Application in consuming projects |
 |---|---|
-| `.claude/hooks/test_*`, `.claude/scripts/test_*`, excluding `test_host_routes.py` and `test_fixtures/` | Regression checks in the template repository. No general obligation to copy/run for project work |
+| `.claude/hooks/test_*`, `.claude/scripts/test_*`, excluding `test_host_routes.py`, `test_worker_verify.py` and `test_fixtures/` | Regression checks in the template repository. No general obligation to copy/run for project work |
 | `.claude/skills/verify-safety-guard/`, `tools/`, `docs/harness-maintenance.md`, individual missions in this repository | Consult in the template repository for harness changes, platform measurements, and historical evidence |
 
 For Windows process delegation, only shared requirements and the Windows check are
@@ -72,6 +72,84 @@ for unused CLIs are not requirements. Before trimming a copy, check selected
 hooks/agents/recipes; do not arbitrarily delete shared files. Consult absent maintenance
 files in the original template. See Installation for key merging, TODOs, and trust
 dialogs.
+
+## Updating from 8873d17 (orchestrator pinning)
+
+Contracts changed in this update (rules:
+[session-role.md](../.claude/rules/session-role.md); procedure:
+[Sessions and workers](orchestration/delegation-matrix.md#sessions-and-workers)):
+
+- The orchestrator never implements by default; direct work is off by default
+  and `--direct-band` is refused with exit 4. Corrections always return to a
+  worker, except within an explicitly enabled direct-work scope.
+- Each implementation unit gets a new implementation session, or the routed
+  launcher worker/native subagent where host sessions are unavailable. Model
+  and effort are explicit; implementation sessions do not inherit them.
+- Design escalation requires a notice of the decision and proposed model/effort.
+  Every launch, review and session creation has an announcement sentence in the
+  user's language, followed by the router's `announce` line when present.
+- Claude launcher workers can run allowlisted verification commands. The
+  launcher's post-run `-v` and integrity checks remain the verdict.
+- When no worker is available, report the unit incomplete and ask the user;
+  a direct fallback exists only within enabled direct work's stated scope.
+
+Contracts unchanged: delegates never commit/push or edit the live control plane
+(except through an already authorized `HARNESS_ALLOW_CONTROL_PLANE=1` launcher);
+reviews cross vendors; plan review precedes implementation; implementation
+defaults to the design author's vendor; the user confirms the spec. Budget and
+exhaustion handling and launcher exit codes are unchanged.
+
+To update an adopting project:
+
+1. Copy/merge these changed files at their existing relative paths. Install
+   `AGENTS.md.template` as `AGENTS.md`; preserve the project's own policy:
+
+   ```text
+   AGENTS.md.template
+   .claude/rules/session-role.md
+   .claude/rules/mission-artifacts.md
+   .claude/model-bindings.json
+   .claude/scripts/harness-route.py
+   .claude/scripts/claude-run.sh
+   .claude/scripts/worker_verify.py
+   .claude/scripts/test_worker_verify.py
+   .claude/scripts/test_host_routes.py
+   .claude/scripts/test_fixtures/route-score-v1.json
+   README.md
+   docs/orchestration/delegation-matrix.md
+   docs/orchestration/retry-policy.md
+   docs/orchestration/scout-brief.md
+   docs/missions/README.md
+   docs/harness-launchers.md
+   docs/harness-manual.md
+   docs/harness-install.md
+   docs/dependencies.md
+   docs/design-principles.md
+   docs/runtime-boundary.md
+   ```
+
+   `README.md` describes the harness; merge relevant guidance into the project's
+   own README. A template-maintenance copy also updates
+   `.claude/scripts/test_launchers.sh`; consuming projects need not install it.
+2. Merge `.claude/harness-config.json`: add `worker_verify_commands: []` and
+   keep the project's own `content_dirs`. List the project's exact verification
+   command prefixes there using the
+   [entry grammar](harness-launchers.md#worker-verification-commands).
+3. Add these two lines to Project policy in `AGENTS.md`, replacing `none` when
+   verification commands are configured:
+
+   ```markdown
+   - Direct work by the orchestrator: disabled (default; see session-role.md rule 2).
+   - Worker verification commands: none (list exact commands in .claude/harness-config.json worker_verify_commands).
+   ```
+
+4. Resolve local conflicts. A Project policy or
+   `.claude/model-bindings.local.json` that relies on orchestrator direct work
+   must either set `selection_policy.direct_work.enabled: true` and state the
+   allowed scope in Project policy, or drop that reliance. Scripts passing
+   `--direct-band` now exit 4 unless direct work is enabled. Local rules saying
+   "small fixes are done by the orchestrator" conflict with session-role rule 2;
+   remove them or turn them into the explicit direct-work scope.
 
 ## Installation
 

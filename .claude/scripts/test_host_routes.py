@@ -4,6 +4,7 @@ import importlib.util
 import contextlib
 from datetime import datetime, timedelta, timezone
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -35,21 +36,29 @@ LEGACY_CROSS = {'vendor_precedence': {'implementation_default': 'other'}}
 
 class HostRoutes(unittest.TestCase):
     @unittest.skipUnless((ROOT / 'AGENTS.md.template').exists(), 'template source only')
-    def test_direct_delegation_instructions_point_to_score_and_scout(self):
+    def test_orchestrator_routes_implementation_to_sessions_and_workers(self):
         instructions = (ROOT / 'AGENTS.md.template').read_text(encoding='utf-8')
-        paragraph = ('Read `docs/orchestration/delegation-matrix.md` in stages. Before choosing '
-                     'direct implementation or delegation, read only "Direct work or delegation": '
-                     'the decision is its cost score, with the scout brief first (Thin '
-                     'orchestration). After deciding to delegate and before the first launch, read '
+        paragraph = ('Read `docs/orchestration/delegation-matrix.md` in stages. The orchestrator does '
+                     'not implement: before any implementation, read "Sessions and workers" (which '
+                     'worker per host, creating an implementation session, design escalation), with '
+                     'the scout brief first (Thin orchestration). Before the first launch or session, read '
                      '"Assign a worker", "Separate authorship from review" and "User-facing '
-                     'delegation announcement"; the announcement is repeated before every launch. '
+                     'delegation announcement"; the announcement is repeated before every launch, '
+                     'review and session. '
                      'Read "Availability and fallback" when a vendor is unavailable or exhausted '
                      '(no probe needed), and `docs/orchestration/retry-policy.md` when a run fails.')
         self.assertIn(paragraph, ' '.join(instructions.split()))
-        for path in [ROOT / 'AGENTS.md.template', *sorted((ROOT / '.claude/rules').glob('*.md'))]:
+        role = (ROOT / '.claude/rules/session-role.md').read_text(encoding='utf-8')
+        self.assertIn('The orchestrator does not edit code or tests, whatever the size.',
+                      ' '.join(role.split()))
+        for path in [ROOT / 'AGENTS.md.template', *sorted((ROOT / '.claude/rules').glob('*.md')),
+                     ROOT / 'docs/harness-launchers.md', ROOT / 'docs/orchestration/delegation-matrix.md']:
             with self.subTest(path=path):
+                text = ' '.join(path.read_text(encoding='utf-8').split())
                 self.assertNotIn('Interacting new behaviors take the cross-vendor route even inside one file.',
-                                 ' '.join(path.read_text(encoding='utf-8').split()))
+                                 text)
+                self.assertNotIn('Small direct work needs no launcher', text)
+                self.assertNotIn('unless they are only a few lines', text)
 
     def test_local_example_keeps_public_time_defaults_and_points_to_session_declaration(self):
         example = json.loads((ROOT / '.claude/model-bindings.local.json.example').read_text(encoding='utf-8'))
@@ -450,6 +459,12 @@ class HostRoutes(unittest.TestCase):
             self.assertFalse(result['separation_satisfied'])
             self.assertFalse(result['available'])
             self.assertIn('no configured route is independent', result['reason'])
+
+    def test_schema_rejects_reserved_direct_worker_id(self):
+        worker = dict(self.data['workers'][0], id='direct')
+        data = dict(self.data, workers=[worker, *self.data['workers'][1:]])
+        with self.assertRaisesRegex(ValueError, 'reserved worker id: direct'):
+            routes.validate_bindings(data)
 
     def test_schema_rejects_invalid_workers(self):
         for invalid in (None, [], {'schema_version': 3, 'workers': {}},
@@ -1566,6 +1581,121 @@ class AssessmentRoutes(unittest.TestCase):
         self.assertEqual(routes.resolve(data, 'claude', 'implement', tier='A')['worker_id'], 'sol61-high')
 
 
+class OrchestratorMetadata(unittest.TestCase):
+    def setUp(self):
+        self.data = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
+
+    def assess(self, **values):
+        return dict(dict(open=0, tangle=0, precedent=0, verifier=0, consequence=0), **values)
+
+    def test_shipped_and_missing_direct_policy_refuse_direct_band(self):
+        for missing in (False, True):
+            data = json.loads(json.dumps(self.data))
+            if missing:
+                data['selection_policy'].pop('direct_work')
+            for role, band in itertools.product(('implement', 'write'), 'SABCDE'):
+                with self.subTest(missing=missing, role=role, band=band):
+                    with self.assertRaisesRegex(ValueError, 'selection_policy.direct_work.enabled.*routes a worker instead'):
+                        routes.resolve(data, 'claude', role, direct_band=band)
+                    with patch.dict(os.environ, {}, clear=True), patch.object(routes, 'load_bindings', return_value=data), patch.object(
+                            sys, 'argv', ['harness-route.py', '--host', 'claude', '--role', role,
+                                          '--direct-band', band]), contextlib.redirect_stderr(io.StringIO()) as errors:
+                        self.assertEqual(routes.main(), 4)
+                    self.assertIn('HARNESS_DENIED: route configuration: selection_policy.direct_work.enabled', errors.getvalue())
+
+    def test_shipped_all_assessments_delegate_without_direct_option(self):
+        with patch.object(records, 'recent_reports', return_value=[]):
+            for ratings in itertools.product(range(3), repeat=6):
+                assessment = dict(zip(('open', 'tangle', 'precedent', 'verifier', 'consequence', 'volume'), ratings))
+                route = routes.resolve(self.data, 'claude', 'implement', env={}, assess=assessment)
+                self.assertEqual(route['decision'], 'delegate', assessment)
+                self.assertNotIn('direct', [score['option'] for score in route['scores']], assessment)
+
+    def test_direct_policy_requires_object_and_boolean(self):
+        for value in (None, [], True, {}, {'enabled': 1}, {'enabled': 'true'}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'selection_policy.direct_work'):
+                routes.validate_score_policy(dict(self.data['selection_policy'], direct_work=value))
+
+    def test_design_escalation_open_two_and_s_cells(self):
+        for band, ratings, required, design, session in [
+                ('B', self.assess(open=2), True, 'A', {'model': 'claude-opus-5-5', 'effort': 'high'}),
+                ('A', self.assess(open=2), False, 'A', None),
+                ('S', self.assess(open=2), False, 'A', None),
+                ('A', self.assess(tangle=2, verifier=2), True, 'S', {'model': 'claude-fable-5-1', 'effort': 'medium'})]:
+            with self.subTest(band=band, ratings=ratings):
+                plain = routes.resolve(self.data, 'claude', 'implement', env={}, assess=ratings)
+                route = routes.resolve(self.data, 'claude', 'implement', env={}, assess=ratings, orchestrator_band=band)
+                escalation = route.pop('design_escalation')
+                self.assertEqual(route, plain)
+                self.assertEqual({key: escalation[key] for key in ('required', 'design_band', 'orchestrator_band', 'session')},
+                                 dict(required=required, design_band=design, orchestrator_band=band, session=session))
+                self.assertNotIn('unresolved', escalation)
+                self.assertTrue(escalation['reason'])
+
+    def test_design_escalation_missing_host_cell_is_unresolved(self):
+        for change in ('remove', 'inactive', 'not-cell'):
+            data = json.loads(json.dumps(self.data))
+            cell = next(w for w in data['workers'] if w['vendor'] == 'claude' and w['tier'] == 'A' and w.get('tier_cell'))
+            if change == 'remove':
+                data['workers'].remove(cell)
+            elif change == 'inactive':
+                cell['status'] = 'conditional'
+            else:
+                cell['tier_cell'] = False
+            escalation = routes.resolve(data, 'claude', 'implement', assess=self.assess(open=2),
+                                        orchestrator_band='B')['design_escalation']
+            self.assertEqual(escalation['design_band'], 'A')
+            self.assertTrue(escalation['required'])
+            self.assertIsNone(escalation['session'])
+            self.assertTrue(escalation['unresolved'])
+
+    def test_design_metadata_preserves_scores_and_requires_the_exact_s_cell(self):
+        ratings = self.assess(tangle=2, verifier=2, volume=1)
+        with patch.object(records, 'recent_reports', return_value=[]):
+            plain = routes.resolve(self.data, 'claude', 'implement', env={}, assess=ratings)
+            route = routes.resolve(self.data, 'claude', 'implement', env={}, assess=ratings, orchestrator_band='A')
+        route.pop('design_escalation')
+        self.assertEqual(route, plain)
+        for changes in ({'model': 'other-top-model'}, {'effort': 'high'}):
+            data = json.loads(json.dumps(self.data))
+            cell = next(w for w in data['workers'] if w['vendor'] == 'claude' and w['tier'] == 'S' and w.get('tier_cell'))
+            cell.update(changes)
+            escalation = routes.design_escalation(data, 'claude', self.assess(tangle=2, verifier=2), False, 'A')
+            self.assertTrue(escalation['required'])
+            self.assertIsNone(escalation['session'])
+            self.assertTrue(escalation['unresolved'])
+
+    def test_design_band_uses_decide_floor_and_recent_failure_for_every_role(self):
+        for role in routes.ROLES:
+            options = {'author_vendors': ['openai']} if role in routes.REVIEW_ROLES else {}
+            plain = routes.resolve(self.data, 'codex', role, assess=self.assess(tangle=1, verifier=1),
+                                   recent_failure=True, **options)
+            route = routes.resolve(self.data, 'codex', role, assess=self.assess(tangle=1, verifier=1),
+                                   recent_failure=True, orchestrator_band='B', **options)
+            escalation = route.pop('design_escalation')
+            self.assertEqual(route, plain)
+            self.assertEqual(escalation['design_band'], 'A')
+            self.assertEqual(escalation['session'], {'model': 'gpt-6.1-sol', 'effort': 'xhigh'})
+        data = routes.merge_bindings(self.data, {'roles': {'decide': {'band_floor': 'A'}}})
+        route = routes.resolve(data, 'claude', 'write', assess=self.assess(), orchestrator_band='B')
+        self.assertEqual(route['design_escalation']['design_band'], 'A')
+
+    def test_orchestrator_band_cli_requires_assess_and_preserves_announcement(self):
+        for assessed in (False, True):
+            args = ['harness-route.py', '--host', 'claude', '--role', 'implement', '--orchestrator-band', 'B']
+            if assessed:
+                args += ['--assess', 'open=2,tangle=0,precedent=0,verifier=0,consequence=0']
+            with patch.dict(os.environ, {}, clear=True), patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
+                    routes, 'find_bash', return_value='bash'), patch.object(sys, 'argv', args), contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(routes.main(), 0 if assessed else 4)
+            if assessed:
+                self.assertTrue(json.loads(output.getvalue())['design_escalation']['required'])
+            else:
+                self.assertIn('HARNESS_DENIED: route configuration: --orchestrator-band requires --assess', errors.getvalue())
+        with self.assertRaisesRegex(ValueError, '--orchestrator-band requires --assess'):
+            routes.resolve(self.data, 'claude', 'implement', orchestrator_band='B')
+
+
 class ScoredRoutes(unittest.TestCase):
     def setUp(self):
         self.data = json.loads((HERE / 'test_fixtures/route-score-v1.json').read_text(encoding='utf-8'))
@@ -1929,6 +2059,7 @@ class ScoredRoutes(unittest.TestCase):
 
     def test_public_volume_two_seed_slower_cheaper_worker_wins_after_switch(self):
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
+        public = routes.merge_bindings(public, {'selection_policy': {'direct_work': {'enabled': True}}})
         public['workers'] = [dict(row, status='active') for row in public['workers'] if row['id'] == 'sol61-max']
         options = dict(assess=self.assess(tangle=2, verifier=1, volume=2), direct_band='A')
         route = self.route(public, **options)
@@ -2030,6 +2161,7 @@ class ScoredRoutes(unittest.TestCase):
         self.assertNotIn('value rule', self.route(assess=no_volume)['reason'])
         public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
         options = dict(retry_from='sol61-medium', retry_reason='reasoning', attempt=1)
+        public = routes.merge_bindings(public, {'selection_policy': {'direct_work': {'enabled': True}}})
         plain = routes.resolve(public, 'claude', 'implement', env={}, **options)
         self.assertEqual(routes.resolve(public, 'claude', 'implement', env={}, assess=assessment,
             paths='src/a.py', direct_band='S', time_mode='unattended', **options), plain)

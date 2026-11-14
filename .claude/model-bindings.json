@@ -328,7 +328,11 @@
     "basis": "Benchmarks (capability, cost, latency, source, date) set initial bindings. Preserve measured scores and distinguish unmeasured cells.",
     "objective": "Sufficient task capability at efficient total completion cost/time, including handoff, verification and retries.",
     "adjust_when": "Repeated real-task mismatch; inspect existing run evidence and use local overrides for project-specific differences.",
-    "scope": "Automatic assessment with volume compares USD plus declared waiting-time cost for workers and eligible direct work. Availability and trust precede the score; latency does not filter scored rows. Other paths retain measured-cost ordering with cost_tie_pct ties broken by TTFT. Bands are independent of metrics.index; S is fixed by vendor line.",
+    "scope": "Automatic assessment with volume compares USD plus declared waiting-time cost for workers and, only when direct_work is enabled, eligible direct work. Availability and trust precede the score; latency does not filter scored rows. Other paths retain measured-cost ordering with cost_tie_pct ties broken by TTFT. Bands are independent of metrics.index; S is fixed by vendor line.",
+    "direct_work": {
+      "enabled": false,
+      "note": "The orchestrator does not implement (rules/session-role.md rule 2). Set enabled to true in model-bindings.local.json and state the allowed scope in Project policy to restore --direct-band/--grounded and the direct cost comparison."
+    },
     "cross_review": "Host chooses the orchestrator; actual artifact authors choose eligible reviewers. Implementation shares the design author's vendor by default (vendor_precedence.implementation_default); only reviews require a different vendor. Pass all authors using --author-vendor. Reviews require explicit provenance and a fresh worker; different vendors do not guarantee correctness.",
     "cost_tie_pct": 15,
     "attempt_cap": 3,

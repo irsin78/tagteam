@@ -6,16 +6,19 @@
      instead of duplicating them. Fill Project policy. -->
 
 ## Resolve this session's role first
-HARNESS_DELEGATE_RUN=1, a parent-assigned task, or `(DELEGATE)` on the
-SessionStart `HARNESS PLATFORM:` line means DELEGATE: the role is already
-resolved. Skip the Orchestrator workflow and all its linked reading/setup.
+HARNESS_DELEGATE_RUN=1, a parent-assigned task, a brief whose first line is
+`HARNESS ROLE: DELEGATE`, or `(DELEGATE)` on the SessionStart `HARNESS PLATFORM:`
+line means DELEGATE: the role is already resolved. The brief's first line wins
+over a SessionStart `(ORCHESTRATOR)` line.
+Skip the Orchestrator workflow and all its linked reading/setup.
 Do not run harness-route.py or load harness rules/manuals for onboarding.
 Follow the assignment, applicable project/security/verification rules and
 Every role below. Read only missing task guidance and the required platform
 subsection; do not reread unchanged material already supplied by the parent.
-Otherwise the app the human started is the ORCHESTRATOR, regardless of
-terminal, desktop or IDE. The `host:` value on the same line (`claude` or
-`codex`) is the `<host>` for every command below.
+Otherwise the session in which the human gave the command is the ORCHESTRATOR,
+regardless of terminal, desktop or IDE, and stays it for the whole mission
+(`.claude/rules/session-role.md`). The `host:` value on the same line (`claude`
+or `codex`) is the `<host>` for every command below.
 
 Only the orchestrator performs authorized git commit/push/merge; delegates
 never commit, push, destroy history or revert existing work. Delegates cannot
@@ -33,14 +36,15 @@ change the host; non-Git projects use the process launchers from the root.
 Resolve delegated work with
 `python .claude/scripts/harness-route.py --host <host> --role implement`.
 
-Read `docs/orchestration/delegation-matrix.md` in stages. Before choosing
-direct implementation or delegation, read only "Direct work or delegation":
-the decision is its cost score, with the scout brief first (Thin
-orchestration). After deciding to delegate and before the first launch, read
-"Assign a worker", "Separate authorship from review" and "User-facing
-delegation announcement"; the announcement is repeated before every launch.
-Read "Availability and fallback" when a vendor is unavailable or exhausted
-(no probe needed), and `docs/orchestration/retry-policy.md` when a run fails.
+Read `docs/orchestration/delegation-matrix.md` in stages. The orchestrator does
+not implement: before any implementation, read "Sessions and workers" (which
+worker per host, creating an implementation session, design escalation), with
+the scout brief first (Thin orchestration). Before the first launch or session,
+read "Assign a worker", "Separate authorship from review" and "User-facing
+delegation announcement"; the announcement is repeated before every launch,
+review and session. Read "Availability and fallback" when a vendor is
+unavailable or exhausted (no probe needed), and
+`docs/orchestration/retry-policy.md` when a run fails.
 Verification depth and inspection of actual worker output follow
 `.claude/rules/verification-tiering.md` and `delegate-output-trust.md`.
 Required checks that cannot pass are incomplete, not a reason to loop.
@@ -52,9 +56,9 @@ or keep cycling through workers.
 
 For implementation, first read `.claude/rules/mission-artifacts.md` (mission
 files, the user-confirmed spec, the small conversational-spec exception, the
-session continuation guard). Keep implementing, verifying and fixing until
-acceptance; announcing the next step is not performing it. `plan-check-gate.md`
-covers the conditional external plan review, not routine approval.
+session continuation guard). Keep routing, verifying and sending fixes back to
+workers until acceptance; announcing the next step is not performing it.
+`plan-check-gate.md` covers the conditional external plan review, not routine approval.
 Give workers the confirmed goal/spec, file scope and current inputs, constraints,
 verification and output contract; let them decide reversible details. Use the
 selected launcher directly and read only its recipe in docs/harness-launchers.md.
@@ -68,7 +72,8 @@ and read the indicated platform note. This does not prove hook trust or
 replace PreToolUse guards.
 
 ## Every role
-Workers implement the assignment, never spawn agents or launch model CLIs, and
+Workers implement the assignment, run the assigned verification commands
+themselves before returning, never spawn agents or launch model CLIs, and
 return CHANGED / VERIFY / NOTES, NEEDS_INPUT for a missing requirement, or a
 first-line REFUSED: when the task cannot be done on policy or safety grounds.
 If the environment blocks verification, return the changes and the exact failed
@@ -90,6 +95,8 @@ launchers (PowerShell: `& <shell> <launcher> ...`), not a WindowsApps alias.
 - Conventions: TODO (path to existing project guidance).
 - Protected files/data and permitted worker scope: TODO (project-specific paths).
 - Consequential risks and required reviews: TODO (effects, not keyword lists).
+- Direct work by the orchestrator: disabled (default; see session-role.md rule 2).
+- Worker verification commands: none (list exact commands in .claude/harness-config.json worker_verify_commands).
 - Git commit/push (default; replace to tighten): within a confirmed task the
   orchestrator commits verified checkpoints, staging explicit paths, without
   asking. When the task is complete, ask once and push on a yes. Push earlier

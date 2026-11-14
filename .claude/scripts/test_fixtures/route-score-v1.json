@@ -16,6 +16,7 @@
     "image_verify": {"band_floor": "D"}
   },
   "selection_policy": {
+    "direct_work": {"enabled": true},
     "cost_tie_pct": 15, "attempt_cap": 3,
     "assessment": {
       "dimensions": {"open": [], "tangle": [], "precedent": [], "verifier": [], "consequence": []},

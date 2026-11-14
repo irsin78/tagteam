@@ -87,6 +87,10 @@ def validate_volume_estimates(value, name, complete=True):
 def validate_score_policy(policy):
     if not isinstance(policy, dict):
         raise ValueError('selection_policy must be an object')
+    if 'direct_work' in policy:
+        direct = policy['direct_work']
+        if not isinstance(direct, dict) or type(direct.get('enabled')) is not bool:
+            raise ValueError('selection_policy.direct_work must be an object with boolean enabled')
     if 'time_cost' in policy:
         time = policy['time_cost']
         if not isinstance(time, dict):
@@ -154,6 +158,8 @@ def validate_bindings(data):
         if not isinstance(w, dict):
             raise ValueError('worker must be an object')
         ident = w.get('id')
+        if ident == 'direct':
+            raise ValueError('reserved worker id: direct')
         if not isinstance(ident, str) or not re.fullmatch(r'[a-z0-9-]+', ident) or ident in ids:
             raise ValueError('invalid or duplicate worker id')
         ids.add(ident)
@@ -406,6 +412,33 @@ def assessment_floor(data, role, assess, recent_failure):
                 applied=applied, recent_failure=recent_failure or False), reason
 
 
+def design_escalation(data, host, assess, recent_failure, orchestrator_band):
+    assessment, _ = assessment_floor(data, 'decide', assess, recent_failure)
+    order = data['bands']['order']
+    design_band = max((assessment['computed'], data['roles']['decide']['band_floor'],
+                       'A' if assess['open'] == 2 else order[0]), key=order.index)
+    required = order.index(design_band) > order.index(orchestrator_band)
+    session = None
+    if required:
+        vendor = {'claude': 'claude', 'codex': 'openai'}[host]
+        lane = data['bands']['S']
+        row = next((w for w in data['workers']
+                    if w['vendor'] == vendor and w['status'] == 'active'
+                    and w.get('tier_cell') is True and w['tier'] == design_band
+                    and (design_band != 'S' or (w['model'] == lane['lanes'].get(vendor)
+                         and w.get('effort') == lane['foreground_effort']))), None)
+        if row is not None:
+            session = dict(model=row['model'], effort=row.get('effort'))
+    need = ('open=2 needs at least band A for design' if assess['open'] == 2 and design_band == 'A'
+            else f'design needs band {design_band}')
+    relation = 'is below it' if required else 'meets it'
+    result = dict(required=required, design_band=design_band, orchestrator_band=orchestrator_band,
+                  session=session, reason=f'{need}; orchestrator band {orchestrator_band} {relation}.')
+    if required and session is None:
+        result['unresolved'] = True
+    return result
+
+
 def worker_estimate(row, estimates, volume, reports, read_only=False):
     """Minutes a worker run takes: per-row seed, else matching DONE records, else formula.
 
@@ -530,12 +563,20 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             retry_reason=None, attempt=0, allow_ultra=False, assess=None,
             recent_failure=False, direct_band=None, time_mode=None,
             time_tolerance_min=None, time_cost=None, paths=None, time_refocus=None,
-            time_slope=None, grounded=False, author_tier=None, vendor=None):
+            time_slope=None, grounded=False, author_tier=None, vendor=None,
+            orchestrator_band=None):
     validate_bindings(data)
     root = Path.cwd() if root is None else Path(root)
     env = os.environ if env is None else env
     if host not in HOSTS or role not in ROLES:
         raise ValueError('invalid host or role')
+    if direct_band is not None and data['selection_policy'].get('direct_work', {}).get('enabled') is not True:
+        raise ValueError('selection_policy.direct_work.enabled is not true; the orchestrator routes a worker instead')
+    if orchestrator_band is not None:
+        if assess is None:
+            raise ValueError('--orchestrator-band requires --assess')
+        if orchestrator_band not in data['bands']['order']:
+            raise ValueError('invalid orchestrator band')
     if role in REVIEW_ROLES and not author_vendors:
         raise ValueError('review requires --author-vendor for the actual artifact author(s)')
     if author_vendors and role not in SEPARATED_ROLES:
@@ -604,6 +645,8 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         assessment, assessment_reason = assessment_floor(data, role, assess, recent_failure)
         floor = assessment['applied']
     scoring = assessment is not None and 'volume' in assess
+    escalation = (design_escalation(data, host, assess, recent_failure, orchestrator_band)
+                  if orchestrator_band is not None else None)
     if direct_band is not None and direct_band not in data['bands']['order']:
         raise ValueError('invalid direct band')
     latency = latency or data['roles'][role].get('latency_default', 'foreground')
@@ -858,6 +901,8 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
     if author_tier is not None:
         route['author_tier'] = author_tier
         route['reason'] = f'author band {author_tier} -> review floor {floor}; ' + route['reason']
+    if escalation is not None:
+        route['design_escalation'] = escalation
     if scoring:
         route['decision'] = 'direct' if ranked_scores and ranked_scores[0]['option'] == 'direct' else 'delegate'
         route['time_cost'] = {key: round(value, 2) if type(value) in (int, float) else value
@@ -1005,6 +1050,8 @@ def main():
     parser.add_argument('--retry-reason', choices=RETRY_REASONS)
     parser.add_argument('--attempt', type=int, default=0)
     parser.add_argument('--assess', help='five required 0|1|2 ratings and optional volume=0|1|2')
+    parser.add_argument('--orchestrator-band', choices=tuple('SABCDE'),
+                        help='current orchestrator band; report design escalation metadata with --assess')
     parser.add_argument('--recent-failure', action='store_true', help='recent reasoning failure in the same area; raises assessed band once')
     parser.add_argument('--paths', help='comma-separated project-relative affected paths for recent failure history')
     parser.add_argument('--direct-band', choices=tuple('SABCDE'), help='orchestrator capability band; offer direct implement/write')
@@ -1070,7 +1117,8 @@ def main():
                         direct_band=args.direct_band, grounded=args.grounded, time_mode=args.time_mode,
                         time_tolerance_min=args.time_tolerance_min, time_cost=args.time_cost,
                         time_refocus=args.time_refocus, time_slope=args.time_slope,
-                        author_tier=args.author_tier, vendor=args.vendor)
+                        author_tier=args.author_tier, vendor=args.vendor,
+                        orchestrator_band=args.orchestrator_band)
         route['shell'] = find_bash()
         if route['shell'] is None:
             native_review = (args.role in REVIEW_ROLES and route['available'] and route['separation_satisfied'] and

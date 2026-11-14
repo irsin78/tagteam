@@ -25,6 +25,9 @@ entire manual for onboarding.
   skills/     Recipes loaded only when needed (codex delegation, agy delegation, safety guard verification)
   hooks/      Host-specific hooks and regression tests for dangerous commands, startup, stop, delegation results
   scripts/    codex·agy·claude·local delegation launchers (preflight/invocation/postflight), control-plane hashes, WSL isolation lane helpers
+    harness-route.py · harness-session.py · harness_records.py
+    worker_verify.py · test_worker_verify.py (Claude verification-prefix validator and regressions)
+  harness-config.json       Project content_dirs and worker_verify_commands
   settings.json · sandbox-sensitive.json · model-bindings.json (tier table) · model-bindings.local.json.example (local override skeleton; .local.json is gitignored)
 AGENTS.md.template          Single entry instructions for both hosts (install as AGENTS.md; Codex reads it directly, Claude Code through the import)
 CLAUDE.md.template          One-line `@AGENTS.md` import stub (install as CLAUDE.md)
@@ -44,7 +47,15 @@ The [bindings JSON](../.claude/model-bindings.json) defines models, effort, benc
 sources, and measurement dates. The router (`harness-route.py`) selects among `workers`
 by band floor, latency class and measured cost (docs/orchestration/delegation-matrix.md,
 "Assign a worker"); use the [host-specific execution recipes](harness-launchers.md#host-specific-execution).
-With assessment volume, automatic selection compares worker and eligible direct work by USD plus declared waiting-time cost; session and CLI time values override bindings defaults.
+With assessment volume, automatic selection compares workers by USD plus declared
+waiting-time cost; direct work is scored only when enabled. Session and CLI time
+values override bindings defaults. `selection_policy.direct_work.enabled` is
+false by default; opt-in scope and procedure are in
+[Sessions and workers](orchestration/delegation-matrix.md#sessions-and-workers).
+With `--assess`, `--orchestrator-band <S..E>` adds `design_escalation` metadata
+(`required`, `design_band`, `orchestrator_band`, `session`, `reason`, and
+`unresolved: true` when required but no usable session row exists); see that
+section's "Design escalation" procedure.
 
 Schema v3 gives each worker (one row per model/effort) an `id`, `vendor`, `model`,
 `effort`, `tier` (band `S|A|B|C|D|E`), `roles`, `status`, `probe` and `launcher` (or
@@ -57,7 +68,8 @@ drive selection. Reviews take the author's band on the other vendor (`--author-t
 defaults to GPT-6.1 Sol/medium; Opus 5.5/high remains the second image worker.
 Role priorities are positive integers or per-host maps and remain for host eligibility
 and `--worker`; a role can also contain `priority`, `hosts` and `requires`. `tier_cell`
-is kept as documentation only. Status is `active`, `optional`, `conditional` (explicit
+identifies the host-vendor cell used for `design_escalation.session`; ordinary
+worker selection still uses the floor and score. Status is `active`, `optional`, `conditional` (explicit
 `--worker <id>`) or `unverified` (excluded from automatic selection, e.g. a model not yet
 rolled out to the account). `workers_local` recursively merges
 matching IDs and appends new ones; a local `workers` array replaces the public list. For
@@ -86,8 +98,8 @@ another delegation. Reader inputs and local model `auto` behavior are defined in
 
 | Role | Default route and selection criteria |
 |---|---|
-| Orchestration and decisions | Keep the host the user started. Choose a tier matching the judgment required |
-| Implementation | Stays on the orchestrator's own vendor by default (Claude: Opus 5.5 medium; Codex: GPT-6.1 Sol high) with `same_vendor: true`; the review then goes to the other vendor. `--vendor <other>` crosses implementation on purpose (Claude host → Sol high, Codex host → Opus medium), and a declared-exhausted default vendor crosses automatically. The router picks the cheapest row meeting band floor B in the latency class. Explicitly lower the floor for mechanical work |
+| Orchestration and decisions | Follow session-role.md and the delegation matrix's "Design escalation" procedure |
+| Implementation | Uses a worker on the design author's vendor by default (the orchestrator's when it designed; Claude: Opus 5.5 medium; OpenAI: GPT-6.1 Sol high) with `same_vendor: true`; the review then goes to the other vendor. `--vendor <other>` crosses implementation on purpose, and a declared-exhausted default vendor crosses automatically. The router picks the cheapest row meeting band floor B in the latency class. Explicitly lower the floor for mechanical work |
 | Writing, HTML, experimental code | Match the tier to the audience and task. Apply binding exceptions for specialties such as HTML |
 | Review | Verify according to risk. Pass `--author-tier` with the author's band: the same band on the other vendor (gate floor C, deep review floor B) |
 | Image verification | Explicit binding in `roles.image_verify`. Does not always match the orchestrator/implementer's vendor |
@@ -106,18 +118,13 @@ revoked-token call.
 
 Follow the
 [delegation matrix](orchestration/delegation-matrix.md#user-facing-delegation-announcement)
-and AGENTS.md on both hosts. Immediately before implementation, review, or exploration
-delegation, state the task in one clause and quote the router output's `announce`
-line verbatim. For example:
+and [session-role.md rule 5](../.claude/rules/session-role.md) on both hosts.
+Example for an English-speaking user:
 
-> Cache invalidation fix: band B (assessed difficulty 1, exposure 1) ->
-> gpt-6.1-sol/medium via codex-run.sh: cheapest of 2 eligible in foreground;
-> vendor differs from author (claude)
+> GPT-6.1 Sol high will fix cache invalidation because band B fits this bounded implementation at lower cost.
+> band B (assessed difficulty 1, exposure 1) -> gpt-6.1-sol/high via codex-run.sh: best cost score of 2 eligible; same vendor as the author; the review must cross vendors
 
-When the launcher call's model/effort differ from the route, replace that part
-with the actual values and the reason.
-Capability bands S–E differ from verification risk Tiers 0–2. Announce model changes and
-reasons; this message requires no renewed approval.
+Capability bands S–E differ from verification risk Tiers 0–2.
 
 ### Separating shared contracts, host mechanisms, model traits, and roles
 
@@ -232,6 +239,12 @@ removed procedures, and optional tools.
   requires adding that allow rule. Force push, history rewrite, tag/release/publish,
   branch or remote deletion, a new remote/upstream, and other external services
   still require asking first.
+- `harness-config.json` holds `content_dirs` (content exempt from live control-plane
+  protection) and `worker_verify_commands` (exact Claude launcher verification
+  prefixes, default `[]`). Entry grammar, `-v` grants and `WORKER_VERIFY:` are in
+  [Worker verification commands](harness-launchers.md#worker-verification-commands).
+  The list is project-owned control plane; exposure is described in
+  [Runtime boundary](runtime-boundary.md#what-the-guards-do-not-cover).
 - PreToolUse directly runs deny_dangerous.py. It performs limited checks on direct
   commands and structured writes; it does not interpret entire shell programs.
 - SessionStart leaves only platform guidance and minimal records. It does not
@@ -261,7 +274,8 @@ probe/compression measurements do not show current cost.
 
 ## Git/non-Git workspaces
 
-Git is optional: the starting app orchestrates the confirmed Mission either way.
+Git is optional; roles follow [session-role.md](../.claude/rules/session-role.md)
+for the confirmed mission either way.
 Distinguish session operation from CLI requirements; do not change hosts or
 automatically run `git init` for a non-Git workspace.
 
@@ -358,9 +372,11 @@ acceptance scripts. This is a procedure, not a script included in the template.
 
 ## Operation
 
-- The user selects the main model/effort. Within a confirmed Mission, continue
-  implementation, verification, and fixes; stage transitions alone do not require
-  model changes or session restarts.
+- The user selects the main model/effort. Within a confirmed mission, follow
+  [session-role.md](../.claude/rules/session-role.md) and
+  [Sessions and workers](orchestration/delegation-matrix.md#sessions-and-workers)
+  through implementation, verification and fixes; stage transitions alone do not
+  require a restart of the orchestrator session.
 - Use local bindings for per-account model access, subscriptions, and budget
   declarations. Do not automatically query usage at startup or economize by
   skipping mandatory verification.
@@ -377,7 +393,9 @@ and check support in the current CLI.
 
 ## Time value (waiting cost)
 
-With assessment `volume`, the router scores eligible direct work and delegates as `total = usd + time_cost`: estimated money plus a dollar value for waiting.
+With assessment `volume`, the router scores workers as `total = usd + time_cost`:
+estimated money plus a dollar value for waiting. Direct work is an opt-in project
+setting, off by default; only with direct work enabled is it also scored.
 A cheaper agent can cost more overall if its delay blocks you or makes you switch projects. Capability, author separation, availability and trust still constrain selection.
 
 For estimated minutes `m`, let `T = tolerance_min`, `s = switch_after_min`, `P = refocus_usd`, and `slope = slope_usd_per_tolerance`. The default exponent is 2:
@@ -399,15 +417,16 @@ and refocus effort after interruption ([developer interruption studies](https://
 Transport economics values waiting roughly 1.5–2 times in-vehicle time as a [directional analogy](https://trid.trb.org/View/2680681) for active time, not an AI-task calibration.
 None of these sources measures the shipped dollar values or three-minute threshold.
 
-Example: a Claude host with eligible A-band direct work and B-floor implementation, using shipped seeds, normal availability/trust, and no matching history. The best
+Example (only with direct work enabled): a Claude host with eligible A-band
+direct work and B-floor implementation, using shipped seeds, normal availability/trust, and no matching history. The best
 worker is `sol61-high`: worker money is `0.32 * task_units[volume]`; minutes are
 `base_minutes[volume] * clamp(sqrt(58/58), 0.5, 3)`; add delegate overhead to both.
 
 | Task/option | Money; minutes | Attended total | Unattended total |
 |---|---|---|---|
-| Small (volume 0), direct | $3.80; 6.5 | $8.98 | $3.85 |
+| Small (volume 0), direct (only with direct work enabled) | $3.80; 6.5 | $8.98 | $3.85 |
 | Small, delegate | $2.81; 9.6 | $8.14 | $2.89 |
-| Large (volume 2), direct | $13.60; 30.4 | $19.97 | $13.85 |
+| Large (volume 2), direct (only with direct work enabled) | $13.60; 30.4 | $19.97 | $13.85 |
 | Large, delegate | $7.23; 23.2 | $13.24 | $7.42 |
 
 Delegation wins both states: small-task savings exceed the extra delay; the large delegate is cheaper and faster. Small attended direct is `3.8 + 5 + 1.5*(6.5-3)/30`.

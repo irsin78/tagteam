@@ -245,6 +245,7 @@ cat > "$STUB_BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 set -u
 echo "$*" >> "$FIXTURE_ROOT/claude-args.log"
+printf '%s\n' "$@" > "$FIXTURE_ROOT/claude-argv.log"
 echo "${HARNESS_DELEGATE_RUN:-unset}" > "$FIXTURE_ROOT/claude-role.log"
 cat > "$FIXTURE_ROOT/claude-stdin.log"
 case "${STUB_ACTION:-none}" in
@@ -759,6 +760,50 @@ expect_case "agy unsatisfied stop-gate is not DONE" "$ok" "exit=$LAST_RC"
 fi
 
 if selected claude; then
+for verify_config in missing no-key empty; do
+    fresh_case
+    case "$verify_config" in
+        no-key) printf '%s\n' '{}' > "$CASE_REPO/.claude/harness-config.json" ;;
+        empty) printf '%s\n' '{"worker_verify_commands":[]}' > "$CASE_REPO/.claude/harness-config.json" ;;
+    esac
+    run_capture "claude-worker-verify-$verify_config" env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt
+    ok=0
+    [ "$LAST_RC" -eq 0 ] && ! has "$TEST_ROOT/claude-argv.log" '^--allowedTools$' \
+        && has "$LAST_OUT" '^WORKER_VERIFY: none$' && ok=1
+    expect_case "claude worker verification $verify_config grants no tools" "$ok" "exit=$LAST_RC"
+done
+
+fresh_case
+printf '%s\n' '{"worker_verify_commands":["cargo test",".venv/Scripts/python.exe -m pytest","bash scripts/check.sh"]}' > "$CASE_REPO/.claude/harness-config.json"
+printf 'exit 0\n' > "$CASE_REPO/verify.sh"
+run_capture claude-worker-verify-rules env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -v verify.sh
+ok=0
+if [ "$LAST_RC" -eq 0 ] \
+    && [ "$(grep -A4 -- '^--allowedTools$' "$TEST_ROOT/claude-argv.log")" = $'--allowedTools\nBash(cargo test:*)\nBash(.venv/Scripts/python.exe -m pytest:*)\nBash(bash scripts/check.sh:*)\nBash(bash verify.sh)' ] \
+    && has "$LAST_OUT" '^WORKER_VERIFY: 3 command rule\(s\), verify script$' \
+    && has "$TEST_ROOT/claude-argv.log" '^cargo test$' \
+    && has "$TEST_ROOT/claude-argv.log" '^bash verify.sh$' \
+    && has "$TEST_ROOT/claude-argv.log" 'Report the actual command output under VERIFY'; then ok=1; fi
+expect_case "claude worker verification grants separate validated argv rules and prompt" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf '%s\n' '{"worker_verify_commands":["python"]}' > "$CASE_REPO/.claude/harness-config.json"
+rm -f -- "$TEST_ROOT/claude-argv.log"
+run_capture claude-worker-verify-refused env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" '^HARNESS_DENIED: worker_verify_commands:' \
+    && [ ! -e "$TEST_ROOT/claude-argv.log" ] && ok=1
+expect_case "claude invalid worker verification refuses before CLI invocation" "$ok" "exit=$LAST_RC"
+
+for verify_role in implement web; do
+    fresh_case
+    printf '%s\n' '{"worker_verify_commands":["cargo test"]}' > "$CASE_REPO/.claude/harness-config.json"
+    run_capture "claude-worker-verify-readonly-$verify_role" env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -a "$verify_role" -s read-only
+    ok=0
+    [ "$LAST_RC" -eq 0 ] && ! has "$TEST_ROOT/claude-argv.log" '^--allowedTools$' && ok=1
+    expect_case "claude read-only $verify_role grants no verification tools" "$ok" "exit=$LAST_RC"
+done
+
 fresh_case
 run_capture claude-availability-quota-status env STUB_ACTION=quota-status bash "$CLAUDE_RUN" -p prompt.txt
 ok=0
@@ -990,7 +1035,7 @@ for evidence_stage in before after; do
         fresh_case
         driver="$TEST_ROOT/driver-$CASE_NO"
         mkdir -p "$driver"
-        cp "$CLAUDE_RUN" "$SCRIPT_DIR/run-state.sh" "$SCRIPT_DIR/workspace-snapshot.py" "$SCRIPT_DIR/workspace-evidence.sh" "$SCRIPT_DIR/launcher-common.sh" "$driver/"
+        cp "$CLAUDE_RUN" "$SCRIPT_DIR/run-state.sh" "$SCRIPT_DIR/workspace-snapshot.py" "$SCRIPT_DIR/workspace-evidence.sh" "$SCRIPT_DIR/launcher-common.sh" "$SCRIPT_DIR/worker_verify.py" "$driver/"
         if [ "$evidence_stage" = after ]; then
             cat > "$driver/control-plane-hash.sh" <<'CP_STUB'
 #!/usr/bin/env bash

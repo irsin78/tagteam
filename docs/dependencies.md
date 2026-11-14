@@ -37,6 +37,14 @@ so Codex does not need the unversioned name, but Claude does.
 Any Python 3 works for the hooks. Observed: the hook, routing and snapshot
 suites pass on macOS system Python 3.9.6 and on Homebrew Python 3.14.
 
+Keep `.claude/scripts/worker_verify.py` and `test_worker_verify.py` with the
+shared Python scripts (`harness-route.py`, `harness-session.py`,
+`harness_records.py`). The Claude launcher uses `worker_verify.py` to validate
+`worker_verify_commands` before granting commands; `test_worker_verify.py`
+contains its focused regressions. Copy targets and entry grammar are in
+[Installation](harness-install.md#copy-targets) and
+[Worker verification commands](harness-launchers.md#worker-verification-commands).
+
 | Platform | Provide `python` |
 |---|---|
 | Windows | Install from python.org and use `python`/`py`. Never rely on `python3`: it is often a Microsoft Store alias. See [Windows-specific details](harness-install.md#windows-specific-details) |

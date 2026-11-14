@@ -178,6 +178,70 @@ if [ "$VERIFY_GIVEN" -eq 1 ]; then
     [ -f "$VERIFY_CMD" ] || { echo "HARNESS_DENIED: verify script not found: $VERIFY_CMD" >&2; exit 4; }
 fi
 
+# Validate command grants before availability checks, run admission or any CLI call.
+WORKER_VERIFY_RULES=()
+WORKER_VERIFY_ARGS=()
+WORKER_VERIFY_LINE='WORKER_VERIFY: none'
+if [ "$WORKER_ROLE" = implement ] && [ "$SANDBOX" = workspace-write ]; then
+    VERIFY_PY=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
+    VERIFY_PATH_ARGS=()
+    [ "$VERIFY_GIVEN" -ne 1 ] || VERIFY_PATH_ARGS=(--verify "$VERIFY_CMD")
+    if [ -n "$VERIFY_PY" ]; then
+        VERIFY_OUT=$("$VERIFY_PY" "$SCRIPT_DIR/worker_verify.py" "${VERIFY_PATH_ARGS[@]}" 2>&1)
+        VERIFY_RC=$?
+        if [ "$VERIFY_RC" -ne 0 ] || [[ "$VERIFY_OUT" == ERR* ]]; then
+            echo "HARNESS_DENIED: worker_verify_commands: ${VERIFY_OUT#ERR }" >&2
+            exit 4
+        fi
+        if [ -n "$VERIFY_OUT" ]; then
+            while IFS= read -r rule; do
+                rule=${rule%$'\r'}
+                case "$rule" in
+                    Bash\(*\)) WORKER_VERIFY_RULES+=("$rule") ;;
+                    *) echo 'HARNESS_DENIED: worker_verify_commands: invalid validator output' >&2; exit 4 ;;
+                esac
+            done <<< "$VERIFY_OUT"
+        fi
+    else
+        # Without a parser, refuse a declared list unless it is visibly empty.
+        # Never interpret config text as shell code or guess command grants.
+        if [ -e .claude/harness-config.json ]; then
+            VERIFY_CONFIG=$(tr -d '[:space:]' < .claude/harness-config.json) || {
+                echo 'HARNESS_DENIED: worker_verify_commands: cannot read harness-config.json without python' >&2
+                exit 4
+            }
+            # Only tolerate a unique, visibly empty declaration without Python.
+            VERIFY_CONFIG_KEYS=$(printf '%s' "$VERIFY_CONFIG" | grep -o '"worker_verify_commands"' | wc -l)
+            if [ "$VERIFY_CONFIG_KEYS" -gt 1 ]; then
+                echo 'HARNESS_DENIED: worker_verify_commands: python not found; cannot validate duplicate keys' >&2
+                exit 4
+            fi
+            case "$VERIFY_CONFIG" in
+                *'"worker_verify_commands":[]'*) ;;
+                *'"worker_verify_commands"'*)
+                    echo 'HARNESS_DENIED: worker_verify_commands: python not found; cannot validate configured commands' >&2
+                    exit 4 ;;
+            esac
+        fi
+        VERIFY_PATH_PATTERN='^[A-Za-z0-9._/\\:-]+$'
+        if [ "$VERIFY_GIVEN" -eq 1 ] && [[ "$VERIFY_CMD" =~ $VERIFY_PATH_PATTERN ]]; then
+            WORKER_VERIFY_RULES+=("Bash(bash $VERIFY_CMD)")
+        fi
+    fi
+    if [ "${#WORKER_VERIFY_RULES[@]}" -gt 0 ]; then
+        WORKER_VERIFY_ARGS=(--allowedTools "${WORKER_VERIFY_RULES[@]}")
+        VERIFY_RULE_COUNT=${#WORKER_VERIFY_RULES[@]}
+        VERIFY_SCRIPT_NOTE=
+        for rule in "${WORKER_VERIFY_RULES[@]}"; do
+            if [ "$VERIFY_GIVEN" -eq 1 ] && [ "$rule" = "Bash(bash $VERIFY_CMD)" ]; then
+                VERIFY_RULE_COUNT=$((VERIFY_RULE_COUNT - 1))
+                VERIFY_SCRIPT_NOTE=', verify script'
+            fi
+        done
+        WORKER_VERIFY_LINE="WORKER_VERIFY: $VERIFY_RULE_COUNT command rule(s)$VERIFY_SCRIPT_NOTE"
+    fi
+fi
+
 # ---- availability (exit 2 = *_UNAVAILABLE, the fallback trigger) ----
 command -v claude >/dev/null 2>&1 || {
     echo "CLAUDE_UNAVAILABLE: claude is not on PATH (delegation falls back per delegation-matrix.md)" >&2
@@ -311,6 +375,15 @@ WEB_INSTRUCTION=' WEB READER ROLE (process-mode twin of .claude/agents/haiku-fet
 # is runtime metadata (permission_denials), never a self-report.
 WEB_SCHEMA='{"type":"object","additionalProperties":false,"required":["status","summary","sources"],"properties":{"status":{"type":"string","enum":["ok","unavailable"]},"summary":{"type":"string"},"sources":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["url","fetched"],"properties":{"url":{"type":"string"},"fetched":{"type":"boolean"}}}}}}'
 SYSTEM_PROMPT=$DELEGATE_INSTRUCTION
+if [ "${#WORKER_VERIFY_RULES[@]}" -gt 0 ]; then
+    SYSTEM_PROMPT+=$'\nRun the assigned verification yourself with exactly these allowed command prefixes. Report the actual command output under VERIFY. Do not rephrase or work around a denied command. Never edit the -v verification script.\n'
+    for rule in "${WORKER_VERIFY_RULES[@]}"; do
+        verify_command=${rule#'Bash('}
+        verify_command=${verify_command%')'}
+        verify_command=${verify_command%':*'}
+        SYSTEM_PROMPT+="$verify_command"$'\n'
+    done
+fi
 WEB_ARGS=()
 if [ "$WORKER_ROLE" = web ]; then
     SYSTEM_PROMPT="$DELEGATE_INSTRUCTION$WEB_INSTRUCTION"
@@ -322,7 +395,7 @@ EFFORT_ARGS=()
 set -m
 "${RUNNER[@]}" claude -p --output-format json --model "$MODEL" "${EFFORT_ARGS[@]}" \
     --permission-mode "$PERMISSION_MODE" --permission-prompts none \
-    --tools "$WORKER_TOOLS" "${WEB_ARGS[@]}" \
+    --tools "$WORKER_TOOLS" "${WEB_ARGS[@]}" "${WORKER_VERIFY_ARGS[@]}" \
     --append-system-prompt "$SYSTEM_PROMPT" \
     < "$PROMPT_FILE" > "$RUN_JSON" 2> "$RUN_LOG" &
 CHILD_PID=$!
@@ -572,6 +645,7 @@ report() {
     [ -z "$AVAILABILITY" ] || echo "$AVAILABILITY"
     [ -z "$REFUSAL" ] || echo "$REFUSAL"
     echo "$BINDINGS_LINE"
+    [ "$WORKER_ROLE" != implement ] || echo "$WORKER_VERIFY_LINE"
     echo "RUN_ID: $RUN_ID (state: $(state_file "$RUN_ID"), report: $REPORT_FILE)"
     if [ "$CLAUDE_EXIT" -eq 124 ]; then
         echo "TIMEOUT: claude reached the ${TIMEOUT}s execution limit — inspect onboarding reads, API/tool waits and task progress before choosing a retry"

@@ -2,9 +2,81 @@
 
 Orchestrator only, not auto-loaded; resolve session-role.md first. Workers skip this workflow.
 
-## Direct work or delegation
-Compare direct work and eligible workers using the single score for money and waiting time
-below. Offer direct implementation/writing with `--direct-band <S|A|B|C|D|E>`;
+## Sessions and workers
+Terms and the five orchestrator rules are in `.claude/rules/session-role.md`; this section is
+the procedure. The orchestrator routes every implementation unit; it does not implement
+(only exception: "Direct work (off by default)" below, inside its stated scope).
+
+### Which worker, per host
+| Host | Implementation unit | Design escalation | Reviews |
+|---|---|---|---|
+| Claude desktop app (host sessions available) | New implementation session per unit when the route's vendor is Claude and the routed model is not above the orchestrator's; otherwise the routed launcher worker | Design session, after the notice | Launcher worker of another vendor |
+| Claude Code terminal / IDE (no host sessions) | Routed launcher worker, or the installed native subagent of that band | Notice, then hand the user a design brief for a session they start at the proposed model/effort | Launcher worker of another vendor |
+| Codex (no host sessions) | Routed launcher worker (Claude workers through `claude-run.sh`), or a Codex native worker | Same as terminal | Launcher worker of another vendor |
+
+A host has sessions only when a session-creation tool is actually available to the orchestrator;
+otherwise use the next row's replacement. Never open a session to hold orchestration.
+
+### Creating an implementation session
+1. Route the unit: `harness-route.py --host <host> --role implement --assess ...`. Take `model`
+   and `effort` from the result.
+2. Announce (session-role rule 5).
+3. Create the session with fresh context and pass model and effort explicitly. An omitted value
+   inherits the orchestrator's model, so omission is a defect. After creation, confirm the
+   session's actual model/effort; if it differs from the route or cannot be read, stop that
+   session and use the launcher worker instead.
+4. The brief starts with the line `HARNESS ROLE: DELEGATE (implementation session)` and carries
+   goal, file scope, current state to preserve, constraints, the verification commands to run,
+   and the CHANGED / VERIFY / NOTES contract. One writing worker per set of files at a time.
+5. When it returns, compare its report with the actual files and run the required checks
+   (delegate-output-trust.md). Corrections go back to that session or a new worker.
+6. The next unit gets a new implementation session; a finished unit's session is not reused.
+
+Example (Claude desktop app, orchestrator on Fable; the example user speaks Korean):
+> Opus 5.5 medium이 Phase 2(자막 병합 모듈)를 구현합니다. 닫힌 스펙의 일반 구현이라 B 등급이면 충분하고 Fable보다 저렴합니다.
+> band B (assessed difficulty 1, exposure 1) -> claude-opus-5-5/medium via claude-run.sh: best cost score of 2 eligible; same vendor as the author; the review must cross vendors
+
+then the session is created with `model: claude-opus-5-5`, `effort: medium`, fresh context, and
+the brief's first line `HARNESS ROLE: DELEGATE (implementation session)`.
+
+### Design escalation
+Check before designing whenever the assessment has `open=2`, and whenever a design decision looks
+harder than the session's band. Run
+`harness-route.py --host <host> --role decide --assess ... --orchestrator-band <this session's band>`.
+The result's `design_escalation` gives `design_band` (the assessed band, at least A when `open=2`)
+and `required`. `required: true` means `design_band` is above the orchestrator's band; then:
+1. Tell the user, in their language: the design decision, why it needs the higher band, and the
+   proposed model/effort (`design_escalation.session`).
+2. Open a design session at that model/effort. Where the host cannot create a session above the
+   orchestrator's own level, create it idle and request the higher setting through the host (the
+   user approves), or hand the user the design brief to start it themselves. Send the design
+   brief only after the session's actual model/effort is confirmed to match the notice; a
+   refused or unconfirmed setting means no design session, so report it and ask the user.
+3. The design session writes the spec or plan only, and records its own model/effort at the head
+   of the document. That model's vendor is the design author: pass it as `--author-vendor`
+   (with `--author-tier <design_band>`) to the plan review (plan-check-gate.md) and to the
+   implementation route, which then follows the usual author-separation rules.
+`design_escalation.session: null` (`unresolved: true`) means no usable row of that band exists on
+this host: stop the design and ask the user; do not design at the lower band.
+`required: false`: the orchestrator designs in this session, including when `open=2` and the
+session already meets `design_band`. The session's band comes from its
+model and effort in the band table; when its effort is unknown, say so in the notice and ask.
+
+Example (the example user speaks Korean):
+> 저장 포맷을 바꾸는 구조 결정(open=2)이 있어 설계에는 A 등급이 필요합니다. 이 세션은 Opus 5.5 medium(B)이므로 Opus 5.5 high로 설계 세션을 열겠습니다. 설계 세션은 스펙과 플랜만 작성하고 코드는 건드리지 않습니다.
+
+Batch related changes into verifiable units; parallelize only independent scopes
+whose saved work exceeds coordination cost. Code locality alone does not establish
+closed behavior. Related helpers count as precedent only where they actually cover
+the needed behavior; identify uncovered input, output and validation paths.
+
+### Direct work (off by default)
+`selection_policy.direct_work.enabled` is false in the shipped bindings, and the router refuses
+`--direct-band` (exit 4). A project that wants the orchestrator to make small grounded changes
+itself sets it to true in `.claude/model-bindings.local.json` and states the allowed scope in
+Project policy; only then do `--direct-band`, `--grounded` and the direct cost comparison apply.
+
+With direct work enabled, offer the direct option with `--direct-band <S|A|B|C|D|E>`;
 the orchestrator's band must meet the assessed floor. Add `--grounded` when the
 affected code, interfaces and checks are already inspected (a scout brief or a
 preceding review): the direct estimate is scaled by the provisional
@@ -16,18 +88,14 @@ past the grounded scope, stop expanding it, preserve the dirty state, announce
 the reclassification and delegate the remaining coherent implementation without
 waiting for a new user turn. Accept a grounded change that is already complete after
 verification, recording the actual authorship.
-Batch related changes into verifiable units; parallelize only independent scopes
-whose saved work exceeds coordination cost. Code locality alone does not establish
-closed behavior. Related helpers count as precedent only where they actually cover
-the needed behavior; identify uncovered input, output and validation paths.
 
 ## Thin orchestration
 
 1. Decide the route before deep reading: obtain a read-only brief from the cheapest
    eligible `explore` worker using [scout-brief.md](scout-brief.md), then assess it.
-2. When the score says delegate, delegate diagnosis together with implementation.
-3. Accept on the launcher verifier result and change summary. Send corrections to
-   the worker with `-r` unless they are only a few lines.
+2. For a worker route, delegate diagnosis together with implementation.
+3. Send corrections to the worker (Codex `-r`; a new brief for Claude
+   workers and implementation sessions), whatever their size.
 4. Review at the lowest band allowed by the risk tier. Give the confirmed spec,
    acceptance questions and relevant hunks only, with necessary interface context.
 5. Change the session time value when the user's words or an evident situation
@@ -44,8 +112,9 @@ and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
 measured index/cost/TTFT and per-host role priorities; declare optional workers
 with `status: optional` and `requires`.
-Implementation goes to the orchestrator's own vendor by default and crosses only on
-`--vendor` or exhaustion; reviews always cross (see "Separate authorship from review").
+Implementation goes to the design author's vendor by default (the orchestrator's
+when it designed) and crosses only on `--vendor` or exhaustion; reviews always
+cross (see "Separate authorship from review").
 Bands are capability labels independent of leaderboard index values, with one
 Claude cell and one OpenAI cell per band (`tier_cell`, user decision 2026-10-19):
 S Fable 5.1 medium / Astra medium (each vendor's top line at medium effort; the
@@ -88,9 +157,9 @@ author_tier_rule`), never below the role floor; an explicit `--tier` overrides i
 and a band only available detached returns `needs_detached` instead of a lower band. Explore also needs task grading: raise it with --tier C/B
 for structure/dependency reasoning; the E floor is not a recommendation for every
 exploration. Tiny lookups stay in the main session.
-Native workers need explicit supported model/effort; include inheritance cost
+Native subagents need explicit supported model/effort; include inheritance cost
 when overrides are unavailable. Codex uses process launchers for Claude workers;
-Claude may use installed native workers. Git worktree agents require Git; otherwise
+Claude may use installed native subagents. Git worktree agents require Git; otherwise
 use a scoped sequential run or scratch copy, never automatic git init.
 
 ## Assess before routing
@@ -156,12 +225,13 @@ are overhead plus `base_minutes[volume] * clamp(sqrt(ttft_s / reference_ttft_s))
 (factor 1 when TTFT is missing). Per-row `estimates` can replace this formula.
 Otherwise enough matching DONE reports (same model, effort and volume) within
 `history_days` replace worker minutes with median launcher ELAPSED; the score marks
-`minutes_source: records`. Direct uses `estimates.direct[volume]`. These are
+`minutes_source: records`. The direct option is scored only when direct work is
+enabled and uses `estimates.direct[volume]`. These are
 provisional seeds from one run per cell with an A-band orchestrator, not promises.
 Unreadable/malformed records are skipped; only headers before FINAL_MESSAGE count.
-The result's `decision` and sorted `scores` compare all options; existing launcher
-fields still describe the best worker when direct wins. S rows need an S floor,
-and OpenAI worker ultra remains refused.
+The result's `decision` and sorted `scores` compare eligible options; with direct
+work enabled, existing launcher fields still describe the best worker when
+direct wins. S rows need an S floor, and OpenAI worker ultra remains refused.
 
 ## Separate authorship from review
 Identify actual designers before implementation and authors before review,
@@ -190,15 +260,21 @@ Follow the [packet contract](../../.claude/rules/verification-tiering.md) for
 controlling instructions, omitted inputs and follow-up context.
 
 ## User-facing delegation announcement
-Before each launch, briefly state task, capability band with task-specific reason,
-actual resolved model/effort and why it fits (capability, cost/latency, specialty
-or author separation). The router's `announce` line carries all of it except the
-task: state the task in one clause and quote that line verbatim, replacing
-model/effort only when the launcher call differs (say why). Capability band S-E
-differs from verification Tier 0-2.
+Follow session-role.md rule 5 before every launch, review and session creation:
+
+```text
+<one sentence in the user's language: which model/effort does what, and why>
+<the router's announce line verbatim>
+```
+
+If no `announce` line exists (a design session), state the model/effort and reason
+yourself. When the launcher call differs from the route, replace model/effort
+with the actual values and say why. Capability band S-E differs from
+verification Tier 0-2.
 Unknown/inherited settings stay explicit; a planned route is not a running worker.
-Announce material changes before retry/fallback or direct takeover, including lost
-independence. Unchanged retries may reference the first notice; polling needs none.
+Announce material changes before retry/fallback, including lost independence;
+where direct work is enabled, this also applies to a direct takeover.
+Polling needs no notice.
 Continue authorized work immediately: this is a progress update, not an approval gate.
 Examples and launch recipes: docs/harness-launchers.md (read only the needed section).
 
@@ -207,10 +283,12 @@ An exhausted vendor is unavailable without a probe. Only a launcher's
 `AVAILABILITY: exhausted:<vendor>` line triggers exhaustion recording by the
 orchestrator with `harness-session.py budget`; the router then ranks that vendor
 last, with one re-selection per failed run, never cycling vendors.
-CODEX_UNAVAILABLE -> Claude
-native implementation; CLAUDE_UNAVAILABLE -> Codex native implementation; if native
-workers are unavailable, the host handles it directly at the same risk floor.
-AGY_UNAVAILABLE -> the host's implementation route, then its one native fallback.
+CODEX_UNAVAILABLE -> Claude native subagent; CLAUDE_UNAVAILABLE -> Codex native
+subagent; if native subagents are unavailable, report the implementation unit
+incomplete and ask the user.
+Only where direct work is enabled may the orchestrator implement within its
+stated scope, at the same risk floor.
+AGY_UNAVAILABLE -> the host's implementation route, then its one native subagent fallback.
 Preserve scope, intended dirty inputs and verification; no CLI fallback loops.
 If the main host is exhausted, report it; never switch the user's host/model.
 Exit 4 is policy/configuration refusal, not availability. Exit 6 means wait on the

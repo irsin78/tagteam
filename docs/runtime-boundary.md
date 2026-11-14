@@ -78,6 +78,11 @@ isolation.
 
 The harness is an accident guard and evidence layer, not a universal sandbox.
 
+Allowlisted verification commands execute worker-written code, and hooks do not
+see subprocesses. This gives Claude launcher workers the same exposure as Codex
+workers running checks in their sandbox. The `worker_verify_commands` list is
+project-owned control plane; workers cannot edit it.
+
 - Host permission rules and the guard cover their documented tool interfaces,
   not every read a subprocess makes. A script the agent runs can read a file
   that a `Read` deny rule protects.
