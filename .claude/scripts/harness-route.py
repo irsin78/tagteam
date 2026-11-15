@@ -207,8 +207,11 @@ def validate_bindings(data):
             raise ValueError('optional worker needs requires')
         for role in w['roles']:
             cfg = role_config(w, role)
-            if set(cfg) - {'priority', 'hosts', 'requires'}:
+            if set(cfg) - {'priority', 'hosts', 'requires', 'fallback', 'explicit_only'}:
                 raise ValueError('unknown role configuration')
+            for flag in ('fallback', 'explicit_only'):
+                if flag in cfg and cfg[flag] is not True:
+                    raise ValueError(flag + ' must be true when present')
             prio = cfg['priority']
             if isinstance(prio, dict):
                 if not prio or set(prio) - set(HOSTS):
@@ -528,13 +531,16 @@ def score_order(scores, priorities):
     return ordered
 
 
-def cost_order(rows, data, exhausted):
+def cost_order(rows, data, exhausted, role=None):
     if not rows:
         return []
     c0 = min(metric(w, 'cost') for w in rows)
     ceiling = c0 * (1 + data['selection_policy']['cost_tie_pct'] / 100)
-    # trust 'low' (a user call on a new model) ranks after every other row in the pool.
+    # trust 'low' (a user call on a new model) ranks after every other row in the pool;
+    # a role marked fallback (a user call for that role only) ranks after the other rows
+    # of a non-exhausted vendor, so it takes over when they are exhausted.
     return sorted(rows, key=lambda w: (w['vendor'] in exhausted, w.get('trust') == 'low',
+                  role is not None and role_config(w, role).get('fallback') is True,
                   w.get('metrics', {}).get('provisional', True),
                   0 if metric(w, 'cost') <= ceiling else metric(w, 'cost'),
                   metric(w, 'ttft_s')))
@@ -558,12 +564,35 @@ def launcher_default(data, vendor, role):
     return next(w for w in scoped['workers'] if w['id'] == route['worker_id'])
 
 
+def default_implementation_vendor(data, host, role, authors, retry_from, budget, root, env):
+    """The vendor preference an implement/write route applies without --vendor
+    or --worker under implementation_default = same: the previous worker's
+    vendor on a retry, else the single author's, else the host's. None when the
+    route crosses on its own (that vendor is declared exhausted or has no active
+    automatic row) or when the project crosses by default."""
+    if role not in ('implement', 'write') or \
+            data.get('vendor_precedence', {}).get('implementation_default', 'other') != 'same':
+        return None
+    by_id = {w['id']: w for w in data['workers']}
+    if retry_from in by_id:
+        vendor = by_id[retry_from]['vendor']
+    else:
+        vendor = next(iter(authors)) if len(authors) == 1 else {'codex': 'openai', 'claude': 'claude'}[host]
+    if vendor in (set(budget[10:].split(',')) if budget.startswith('exhausted:') else set()):
+        return None
+    if not any(w['vendor'] == vendor and role in w['roles'] and w['status'] == 'active'
+               and not role_config(w, role).get('explicit_only')
+               and not exclusion(w, role, host, False, data, root, env) for w in data['workers']):
+        return None  # no automatic row on the own vendor: cross instead of failing
+    return vendor
+
+
 def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             worker=None, root=None, env=None, latency=None, retry_from=None,
             retry_reason=None, attempt=0, allow_ultra=False, assess=None,
             recent_failure=False, direct_band=None, time_mode=None,
             time_tolerance_min=None, time_cost=None, paths=None, time_refocus=None,
-            time_slope=None, grounded=False, author_tier=None, vendor=None,
+            time_slope=None, grounded=False, author_tier=None, vendor=None, vendor_reason=None,
             orchestrator_band=None):
     validate_bindings(data)
     root = Path.cwd() if root is None else Path(root)
@@ -588,6 +617,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('--worker cannot be combined with --tier')
     same_vendor = False
     vendor_default = None
+    vendor_explicit = vendor is not None
     if vendor is not None:
         if vendor not in VENDORS:
             raise ValueError('invalid vendor')
@@ -595,25 +625,27 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             raise ValueError('--vendor is only for implement/write; reviews keep author separation')
         if worker is not None:
             raise ValueError('--worker cannot be combined with --vendor')
-    elif role in ('implement', 'write') and worker is None and \
-            data.get('vendor_precedence', {}).get('implementation_default', 'other') == 'same':
+    elif role in ('implement', 'write') and worker is not None:
+        # An explicit implementation/writing worker chooses its own vendor.
+        # Reviews and advice still require separation from every author.
+        # Unknown IDs continue to the existing no-candidate validation.
+        vendor = next((w['vendor'] for w in data['workers'] if w['id'] == worker), None)
+    elif role in ('implement', 'write') and worker is None:
         # Design and implementation stay on one vendor; only reviews cross vendors
         # (user decision 2026-10-20). A retry stays in the previous worker's lane,
         # and a declared-exhausted default vendor hands the route to another vendor.
-        by_id_default = {w['id']: w for w in data['workers']}
-        if retry_from in by_id_default:
-            vendor_default = by_id_default[retry_from]['vendor']
-        else:
-            vendor_default = next(iter(authors)) if len(authors) == 1 else {'codex': 'openai', 'claude': 'claude'}[host]
-        exhausted_default = set(budget[10:].split(',')) if budget.startswith('exhausted:') else set()
-        if vendor_default in exhausted_default:
-            vendor_default = None
-        elif vendor_default is not None and not any(
-                w['vendor'] == vendor_default and role in w['roles'] and w['status'] == 'active'
-                and not exclusion(w, role, host, False, data, root, env) for w in data['workers']):
-            vendor_default = None  # no automatic row on the own vendor: cross instead of failing
+        vendor_default = default_implementation_vendor(data, host, role, authors, retry_from, budget, root, env)
         vendor = vendor_default
     vendor_pick = vendor
+    # An explicit --vendor or --worker that moves implementation off its default
+    # vendor is an override: the CLI requires a stated reason for it, and the
+    # announce line shows it. Internal callers (launcher_default) are not refused.
+    vendor_override = None
+    if vendor_default is None and vendor_pick is not None and role in ('implement', 'write'):
+        preferred = default_implementation_vendor(data, host, role, authors, retry_from, budget, root, env)
+        if preferred is not None and preferred != vendor_pick:
+            vendor_override = {'default': preferred, 'vendor': vendor_pick,
+                               'by': '--worker' if worker is not None else '--vendor', 'reason': vendor_reason}
     if vendor_pick is not None:
         same_vendor = vendor_pick in authors
     derived_tier = None
@@ -649,6 +681,7 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                   if orchestrator_band is not None else None)
     if direct_band is not None and direct_band not in data['bands']['order']:
         raise ValueError('invalid direct band')
+    latency_requested = latency is not None
     latency = latency or data['roles'][role].get('latency_default', 'foreground')
     if floor not in data['bands']['order'] or latency not in ('interactive', 'foreground', 'detached'):
         raise ValueError('invalid band or latency')
@@ -698,6 +731,9 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             reason = 'missing metrics.cost for score'
         if not reason and vendor_pick is not None and w['vendor'] != vendor_pick:
             reason = f'vendor {vendor_pick} selected for this route'
+        if (not reason and role_config(w, role).get('explicit_only') and explicit is None
+                and not vendor_explicit):
+            reason = 'role is explicit-only (--worker or --vendor)'
         if not reason:
             diagnostic.append(w)
             if role in SEPARATED_ROLES and w['vendor'] in authors and not same_vendor:
@@ -756,6 +792,10 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         raise ValueError('Codex worker ultra enables re-delegation; select a single-agent effort')
     if explicit:
         chosen = [w for w in pool if within_latency(w, data, latency) or keep]
+        if not chosen and pool and not latency_requested:
+            # A named worker whose TTFT is unknown or slow still runs; it runs detached.
+            chosen = list(pool)
+            needs_detached = True
     elif promoting:
         chosen = pool
     else:
@@ -777,7 +817,9 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                 chosen.append(w)
     assessed_detached = False
     derived_detached = False
-    if not chosen and (assessment is not None or derived_tier is not None):
+    exhausted_detached = False
+    if not chosen and (assessment is not None or derived_tier is not None
+                       or (vendor_explicit and not latency_requested)):
         # An assessed or author-derived band is a requirement, not a preference:
         # prefer a detached row of that band over a lower band in this class.
         chosen = [w for w in pool if (within_band(w, data, floor, latency) or
@@ -796,7 +838,32 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
         chosen = [w for w in pool if w['tier'] != 'S' and w.get('scored') is not False and
                   within_latency(w, data, latency)]
         fallback = True
-    ordered = cost_order(chosen, data, exhausted)
+    ordered = cost_order(chosen, data, exhausted, role)
+    if ((not ordered or ordered[0]['vendor'] in exhausted) and separation_ok and not explicit
+            and not promoting and not scoring and role not in ('implement', 'write') and not latency_requested):
+        # Review and advice: when no row of this latency class is eligible, or every one
+        # belongs to a declared-exhausted vendor, a detached row of the same band from a
+        # vendor that is not exhausted keeps the independent route available (same rule
+        # as an author-derived band above).
+        spare = [w for w in pool if w['vendor'] not in exhausted and w.get('scored') is not False and
+                 within_band(w, data, floor, 'detached') and
+                 (allow_ultra or w['vendor'] != 'openai' or w.get('effort') != 'ultra')]
+        ordered_before = bool(ordered)
+        if not spare and not ordered:
+            # Every independent row is exhausted too: report that row (unavailable,
+            # review incomplete) instead of failing as if none were configured.
+            spare = [w for w in pool if w.get('scored') is not False and
+                     within_band(w, data, floor, 'detached') and
+                     (allow_ultra or w['vendor'] != 'openai' or w.get('effort') != 'ultra')]
+        if spare:
+            chosen = spare
+            ordered = cost_order(chosen, data, exhausted, role)
+            needs_detached = True
+            exhausted_detached = 'exhausted' if ordered_before else 'none'
+            fallback = False
+            floor_met = True
+            eligible_ids = {w['id'] for w in ordered}
+            skipped = [item for item in skipped if item['id'] not in eligible_ids]
     if fallback:
         ordered.sort(key=lambda w: (w['vendor'] in exhausted, w.get('trust') == 'low',
                      -data['bands']['order'].index(w['tier']), metric(w, 'cost'), metric(w, 'ttft_s')))
@@ -898,6 +965,15 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                  floor_met=floor_met, reason=reason, needs_detached=needs_detached,
                  eligible=[w['id'] for w in ordered], worker_id=selected['id'], skipped=skipped,
                  tier_fallback=not floor_met, available=(separation_ok or cross_lane_s) and vendor not in exhausted)
+    if Path(route['launcher'] or '').name == 'agy-run.sh' and role not in ('implement', 'write'):
+        # agy has no per-run sandbox class; -r runs it in plan mode and fails a run that
+        # changed the workspace (docs/harness-launchers.md).
+        route['launcher_flags'] = ['-r']
+    if exhausted_detached:
+        route['exhausted_detached'] = exhausted_detached
+        why_detached = ('belong to declared-exhausted vendors' if exhausted_detached == 'exhausted'
+                        else 'are not eligible')
+        route['reason'] = f'{latency} rows {why_detached}; detached row of the same band; ' + route['reason']
     if author_tier is not None:
         route['author_tier'] = author_tier
         route['reason'] = f'author band {author_tier} -> review floor {floor}; ' + route['reason']
@@ -928,6 +1004,10 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
                            f'the review must come from another vendor (--author-vendor {vendor_pick}); ') + route['reason']
     elif vendor_pick is not None and role in ('implement', 'write'):
         route['reason'] = f'vendor {vendor_pick} selected: implementation crosses to another vendor; ' + route['reason']
+    if vendor_override is not None:
+        route['vendor_override'] = vendor_override
+        route['reason'] = (f"vendor {vendor_override['vendor']} instead of the default {vendor_override['default']} "
+                           f"({vendor_override['by']}): {vendor_override['reason'] or 'no reason given'}; ") + route['reason']
     if cross_lane_s:
         route['cross_lane_s'] = True
         route['separation_satisfied'] = False
@@ -967,10 +1047,36 @@ def resolve(data, host, role, budget='normal', tier=None, author_vendors=None,
             if route['suggested_timeout_s'] > FOREGROUND_TIMEOUT_CAP_S:
                 route['needs_detached'] = True
                 route['reason'] += f' (exceeds the {FOREGROUND_TIMEOUT_CAP_S} s foreground cap; run with -b --wait)'
+        # Long run (writing roles only): assessed volume 2 means a drifting worker
+        # accumulates changes that are expensive to roll back. The flag asks the
+        # parent to run the work as an implementation session in its own worktree
+        # (visible, steerable, discarded by dropping the branch; peer-sessions
+        # skill). Every implementation unit that the per-host table in
+        # delegation-matrix.md sends to a session uses a new implementation
+        # session; a unit routed to another vendor, or to a model above the
+        # orchestrator's, goes to the routed launcher worker. Other session
+        # units share the parent's checkout.
+        # A host without sessions splits launcher work into foreground-budget units with -P.
+        # Timeout and latency do not set it: the volume-0 seed already suggests
+        # more than the foreground cap, and a detached-only effort row is worker
+        # speed, not work volume. `reason` is unchanged: the flag and the announce
+        # suffix carry it.
+        if role in ('implement', 'write') and str(assess.get('volume', '')) == '2':
+            route['long_run'] = True
     route['announce'] = announce_line(route, assessment, role, tier, latency, len(ordered),
                                       scoring, fallback, retry_reason, refused_vendor, keep,
                                       bool(worker), authors, cross_lane_s, ranked_scores)
+    set_announce_env(route)
     return route
+
+
+def set_announce_env(route):
+    """Carry the announce line in launch_env for the announce_delegation.py hook.
+
+    The hook reads it from the launcher command it sees; launchers ignore it.
+    Routes without an assessment get a launch_env holding only this key.
+    """
+    route.setdefault('launch_env', {})['HARNESS_ANNOUNCE'] = route['announce']
 
 
 def announce_line(route, assessment, role, tier, latency, eligible_count, scoring, fallback,
@@ -1011,20 +1117,32 @@ def announce_line(route, assessment, role, tier, latency, eligible_count, scorin
         why.append(f'other vendor after {refused_vendor} refused')
     elif retry_reason == 'reasoning':
         why.append('promoted after a reasoning failure')
+    elif route.get('exhausted_detached'):
+        why.append(f'cheapest of {eligible_count} eligible detached; {latency} rows '
+                   + ('are of a declared-exhausted vendor' if route['exhausted_detached'] == 'exhausted'
+                      else 'are not eligible'))
     elif scoring:
         why.append(f'best cost score of {eligible_count} eligible')
     elif fallback:
         why.append(f'best lower band available in {latency}')
     else:
         why.append(f'cheapest of {eligible_count} eligible in {latency}')
+    override = route.get('vendor_override')
+    if override:
+        why.append(f"implementation on {override['vendor']} instead of the default {override['default']} "
+                   f"({override['by']}): {override['reason'] or 'no reason given'}")
     if cross_lane_s:
         why.append('cross-lane S, author separation waived once')
     elif route.get('same_vendor'):
         why.append('same vendor as the author; the review must cross vendors')
     elif role in SEPARATED_ROLES and route['vendor'] not in authors:
         why.append(f"vendor differs from author ({'/'.join(sorted(authors))})")
+    if route.get('launcher_flags'):
+        why.append('read-only plan mode (-r)')
     if route.get('needs_detached'):
         why.append('detached run (-b --wait)')
+    if route.get('long_run'):
+        why.append('long run (volume 2): implementation session in its own worktree')
     line = f"{head} -> {route['model']}/{effort} via {launcher}: " + '; '.join(why)
     if scoring and route.get('decision') == 'direct' and len(ranked_scores) > 1:
         winner, runner = ranked_scores[0], ranked_scores[1]
@@ -1043,7 +1161,12 @@ def main():
     parser.add_argument('--launcher-default', action='store_true')
     parser.add_argument('--vendor', choices=VENDORS,
                         help='launcher default: the vendor to resolve; routing: the vendor for implement/write '
-                             '(default: the design author\'s own vendor; pass another vendor to cross; reviews always cross)')
+                             '(default: the design author\'s own vendor; another vendor crosses and needs --vendor-reason; '
+                             'reviews always cross)')
+    parser.add_argument('--vendor-reason',
+                        help='implement/write: why implementation leaves its default vendor (--vendor, or a --worker '
+                             'of another vendor): the user\'s request or a stated task reason, shown in the announce '
+                             'line; separating implementer from reviewer is not one (reviews already cross)')
     parser.add_argument('--tier', choices=tuple('SABCDE'), help='capability band floor')
     parser.add_argument('--latency', choices=('interactive', 'foreground', 'detached'))
     parser.add_argument('--retry-from')
@@ -1109,6 +1232,13 @@ def main():
         print('HARNESS_DENIED: delegates execute their assignment, not another route', file=sys.stderr)
         return 4
     try:
+        vendor_reason = None
+        if args.vendor_reason is not None:
+            if args.role not in ('implement', 'write'):
+                raise ValueError('--vendor-reason is only for implement/write')
+            vendor_reason = ' '.join(re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', args.vendor_reason).split())
+            if not vendor_reason or len(vendor_reason) > 200:
+                raise ValueError('--vendor-reason must be 1-200 characters')
         data = load_bindings()
         route = resolve(data, args.host, args.role, budget_for(data, os.environ),
                         args.tier, args.author_vendor, args.worker, latency=args.latency,
@@ -1117,8 +1247,14 @@ def main():
                         direct_band=args.direct_band, grounded=args.grounded, time_mode=args.time_mode,
                         time_tolerance_min=args.time_tolerance_min, time_cost=args.time_cost,
                         time_refocus=args.time_refocus, time_slope=args.time_slope,
-                        author_tier=args.author_tier, vendor=args.vendor,
+                        author_tier=args.author_tier, vendor=args.vendor, vendor_reason=vendor_reason,
                         orchestrator_band=args.orchestrator_band)
+        override = route.get('vendor_override')
+        if override and not vendor_reason:
+            raise ValueError(
+                f"implementation on {override['vendor']} instead of the default {override['default']} "
+                f"({override['by']}) needs --vendor-reason with the user's request or a stated task reason; "
+                'separating implementer from reviewer is not one (reviews already cross vendors)')
         route['shell'] = find_bash()
         if route['shell'] is None:
             native_review = (args.role in REVIEW_ROLES and route['available'] and route['separation_satisfied'] and
@@ -1131,6 +1267,7 @@ def main():
                 if args.role in REVIEW_ROLES
                 else 'no usable Bash for process launchers; follow native fallback')
             route['announce'] = 'unavailable: no usable Bash for process launchers; ' + route['announce']
+            set_announce_env(route)
     except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
         print('HARNESS_DENIED: route configuration: ' + str(error), file=sys.stderr)
         return 4

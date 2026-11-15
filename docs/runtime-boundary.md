@@ -8,8 +8,8 @@ Older measurements do not establish current performance or broader protection.
 |---|---|---|
 | SessionStart | Per-platform guidance and minimal session metadata | Network, usage lookup, server status, whole-file survey |
 | UserPromptSubmit | Releasing this session's previous mission marker and announcing the current session ID | Classifying or refusing user requests, changing another session's state |
-| PreToolUse | Clearly dangerous options of direct commands, delegate role, structured write targets | General shell interpretation, detecting every bypass, proving arbitrary code safe |
-| SubagentStop (Claude) | Minimal record: delegate, working path, session | Output inspection, hashing all memory, completion verdict |
+| PreToolUse | Clearly dangerous options of direct commands, delegate role, structured write targets; on Claude, a notice of the orchestrator's launcher call arguments (not blocking) | General shell interpretation, detecting every bypass, proving arbitrary code safe |
+| SubagentStop | Minimal record: host, delegate, working path, session (Codex only through its trusted hook) | Output inspection, hashing all memory, completion verdict |
 | Stop | Confirming the selected verification command; one continuation request for a registered incomplete mission | A mandatory closing ritual for every task, automatic proof of acceptance, endless resumption |
 | External delegation launchers | Passing the role, checking explicit options, run state, change evidence, requested verification | Inferring user intent, blocking or undoing every external side effect |
 
@@ -40,14 +40,23 @@ The following asymmetries and gaps remain:
 - Exhaustion signal: the launchers recognise whole CLI status lines only. Codex
   tool output in the merged log that exactly equals a recognised status line also
   matches when Codex exits non-zero; a known narrow false positive.
+- Agent definitions: `.claude/agents/`, `.agents/agents/` and `.codex/agents/` are
+  control plane on both hosts (guard pattern, launcher snapshot and hash), so a
+  delegate cannot rewrite its own model or instructions without the launcher's
+  authorized `HARNESS_ALLOW_CONTROL_PLANE=1` grant.
 - A worker relaunching a model CLI: Claude native workers are stopped by the tool
   list and spawn depth; for Codex launcher workers only `ultra` is refused and the
   `codex` invocation itself rests on the entry instructions' prose.
 - Hook liveness: in a human-started Codex session a stale trust hash silently
   drops the hooks, and the compensation is the prose "run `start` when the
   PLATFORM line is missing". The launcher path refuses to run through
-  `check-codex-hooks`. A failing Claude hook is also fail-open, and neither host
-  detects a hook that never fired.
+  `check-codex-hooks`. Claude's two PreToolUse guard hooks set
+  `"onFailure": "block"` (Claude Code 2.1.295 or later), so a guard that crashes,
+  times out or whose interpreter is missing blocks the tool call instead of
+  allowing it. Other Claude hooks and Codex hooks remain fail-open; Claude Code
+  versions before 2.1.295 are not covered (their handling is unmeasured). A guard that catches its own error and exits 0
+  is not a failure and is not blocked. Neither host detects a hook that never
+  fired.
 - Credential reads: Claude's Read deny applies to the Read tool path only; shell
   reads are not inspected on either host. Only the optional WSL lane's denyRead
   applies to OS paths.
@@ -249,7 +258,10 @@ to the input character limit and flagged with INPUT_TRUNCATED.
 
 Codex hook admission uses the installed engine's effective `hooks/list` trust
 and enabled state for all configured project handlers; missing or unknown evidence
-refuses the run. Codex/Claude require GNU timeout before foreground or detached
+refuses the run. In a linked git worktree the accepted source is the main
+working tree's `.codex/hooks.json`, because that is what Codex loads there; the
+worktree runs under those hook definitions, and every source Codex lists for the
+worktree must be trusted. Codex/Claude require GNU timeout before foreground or detached
 admission. A native Claude child still holds the active-writer slot if its parent
 exits, subject to the existing PID/start-time identity check.
 
@@ -262,6 +274,13 @@ runs from the project root with its own stdin at EOF; use root-relative paths, n
 isolation, nor does it freeze files/dependencies the verifier reads.
 The agy task prompt, unlike Claude's stdin prompt, travels as the `-p` argument (agy reads
 stdin only in stream-json mode), so it is visible in the process list; keep secrets out of it.
+`agy-run.sh -r` relies on agy's plan mode to make no edits and on the workspace
+snapshot to fail a run that did; it does not see writes outside the workspace.
+`agy-run.sh -c` passes a command grant for that run only (`--settings`, never
+saved) with agy's `--sandbox`. Measured on macOS (agy 1.5.3, 2026-11-08, inside a
+Claude Code session) the sandbox blocked network access but a command still
+wrote to the home directory, and postflight cannot see or undo that. Treat `-c`
+as command execution by the model, not containment.
 
 The local read path does not take a workspace snapshot. A report's
 `CHANGED: not measured` is not an observation of no change. When change

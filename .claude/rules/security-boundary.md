@@ -16,10 +16,11 @@ pushes. Authorized orchestrator maintenance needs no extra approval file/ritual.
 Codex hook trust is the user's step; agents never synthesize it. Inspect changed
 control-plane files before further delegation.
 
-AGY is granted write_file only; shell access needs existing explicit authorization. Route
-unsupported work to a capable worker instead of widening
-permissions. Local endpoints may be LAN hosts: confirm the project's data
-boundary on use. local-run.sh accepts project-file manifests only, no commands
+AGY's saved global grant is write_file only. Commands run only through the
+launcher's per-run `-c` grant (agy `--sandbox`, never saved), chosen by the
+orchestrator for the task; never with untrusted external content in the prompt.
+Route unsupported work to a capable worker instead of widening permissions.
+Local endpoints may be LAN hosts: confirm the project's data boundary on use. local-run.sh accepts project-file manifests only, no commands
 or web content.
 
 What these guards do not cover (not a sandbox, subprocess reads, postflight

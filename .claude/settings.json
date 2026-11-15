@@ -72,7 +72,8 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/deny_dangerous.py"
             ],
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       },
@@ -85,7 +86,21 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/deny_dangerous.py"
             ],
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/announce_delegation.py"
+            ],
+            "timeout": 5
           }
         ]
       }

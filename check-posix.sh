@@ -97,9 +97,9 @@ else
     else
         warn "python was not found on PATH."
     fi
-    note "Every hook in .claude/settings.json is invoked as 'python'; without it each harness"
-    note "prohibition (bypass flags, force push, subagent commits) is silently inert while"
-    note "this check would otherwise look green."
+    note "Every hook in .claude/settings.json is invoked as 'python'; without it Claude denies"
+    note "every guarded tool call (onFailure block), and on Codex each harness prohibition"
+    note "(bypass flags, force push, subagent commits) is silently inert."
     note "Fix (Ubuntu/Debian): sudo apt install python-is-python3"
     note "Fix (macOS):         brew install python, then add \$(brew --prefix)/opt/python/libexec/bin to PATH"
     note "                     (it provides the unversioned 'python')."
@@ -138,10 +138,11 @@ for hook in deny_dangerous.py stop_gate.py; do
         continue
     fi
     # A SyntaxWarning today is a SyntaxError in the next Python, and a hook
-    # that fails to compile is fail-open on both hosts (for example a
+    # that fails to compile stops working: deny_dangerous.py then blocks every guarded tool call on Claude
+    # (onFailure block) and is silently off on Codex (for example a
     # `\;` inside a docstring). `-W error` finds it now.
     if ! "$PY" -W error -m py_compile "$hook_path" >/dev/null 2>&1; then
-        warn "Hook $hook does not compile under 'python -W error' -- a warning that will become a SyntaxError and silently disable the guard."
+        warn "Hook $hook does not compile under 'python -W error' -- a warning that will become a SyntaxError and break this hook (a broken deny_dangerous.py blocks guarded tools on Claude and leaves Codex unguarded)."
         note "Run: $PY -W error -m py_compile $hook_path"
         continue
     fi

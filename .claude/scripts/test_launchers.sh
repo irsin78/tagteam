@@ -143,6 +143,7 @@ printf '%s\n' "stub final message" > "${out:-$FIXTURE_ROOT/codex-last-message.lo
 case "${STUB_ACTION:-none}" in
     status-line) printf '%s\n' "$STUB_STATUS_LINE"; exit "${STUB_STATUS_EXIT:-1}" ;;
     touch-project-agent) mkdir -p .agents/agents; echo 'changed project agent' > .agents/agents/project-agent.md ;;
+    touch-codex-agent) mkdir -p .codex/agents; echo 'model = "changed"' > .codex/agents/harness-implementer.toml ;;
     needs-input) printf '%s\n' 'NEEDS_INPUT: which config file should carry the flag?' 'I made no file changes.' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
     refused) printf '%s\n' 'REFUSED: the task asks for hidden reasoning, which I cannot provide.' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
     label-midbody) printf '%s\n' 'CHANGED: none' 'NOTES: the spec says to return NEEDS_INPUT: when a file is missing; nothing was missing.' > "${out:-$FIXTURE_ROOT/codex-last-message.log}" ;;
@@ -174,6 +175,7 @@ case "${STUB_ACTION:-none}" in
     # (push review 2026-09-04, BLOCKER).
     touch-codex-indented)
         printf '\n [projects."/repo"]\ntrust_level = "trusted"\n' >> "$HOME/.codex/config.toml" ;;
+    progress) printf '%s\n' '- done: step 1 | next: step 2 | blocked: none' >> "${HARNESS_PROGRESS_FILE:?no progress path}" ;;
     delayed-write:*) sleep 1.1; printf '%s\n' 'stub-output' > "${STUB_ACTION#delayed-write:}" ;;
     write:*) printf '%s\n' 'stub-output' > "${STUB_ACTION#write:}" ;;
     commit) git -c user.name=Stub -c user.email=stub@example.invalid commit --allow-empty -m stub >/dev/null ;;
@@ -248,6 +250,23 @@ echo "$*" >> "$FIXTURE_ROOT/claude-args.log"
 printf '%s\n' "$@" > "$FIXTURE_ROOT/claude-argv.log"
 echo "${HARNESS_DELEGATE_RUN:-unset}" > "$FIXTURE_ROOT/claude-role.log"
 cat > "$FIXTURE_ROOT/claude-stdin.log"
+# stream-json shapes (measured 2026-10-21): one event per line, the result
+# event carrying the json-envelope fields, a task_summary line after it.
+STREAM_TEXT='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Starting the stub task."}]}}'
+STREAM_RESULT='{"type":"result","subtype":"success","is_error":false,"result":"stub final message","usage":{"input_tokens":10,"output_tokens":5},"num_turns":3}'
+STREAM_TAIL='{"type":"system","subtype":"task_summary","detail":null}'
+stream_events() {
+    printf '%s\n' '{"type":"system","subtype":"init","session_id":"stub","tools":["Bash","Read"]}'
+    printf '%s\n' "$STREAM_TEXT"
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls -la","description":"list"}}]}}'
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"total 0\ndrwxr-xr-x stub"}]}}'
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":"prompt.txt"}}]}}'
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":[{"type":"text","text":"1\tstub prompt"}]}]}}'
+    printf '%s\n' '{"type":"system","subtype":"post_turn_summary","status_category":"completed","status_detail":"stub listed and read"}'
+}
+trace_converter_pid() {
+    sed -n 's/^# converter pid=\([0-9]*\) .*/\1/p' .claude/claude-logs/trace-*.log 2>/dev/null | head -n 1
+}
 case "${STUB_ACTION:-none}" in
     notice) printf '{}\n' > .claude/.preflight-status ;;
     none) ;;
@@ -259,6 +278,7 @@ case "${STUB_ACTION:-none}" in
     touch-control-plane) echo '# stub changed control plane' >> .claude/settings.json ;;
     touch-harness-config) printf '%s\n' '{"content_dirs":["template"]}' > .claude/harness-config.json ;;
     write:*) echo 'stub-output' > "${STUB_ACTION#write:}" ;;
+    progress) printf '%s\n' '- done: step 1 | next: step 2 | blocked: none' >> "${HARNESS_PROGRESS_FILE:?no progress path}" ;;
     commit) git -c user.name=Stub -c user.email=stub@example.invalid commit --allow-empty -m stub >/dev/null ;;
     nojson) echo 'not json'; exit 0 ;;
     status-line) python -c 'import json,os; print(json.dumps({"is_error":True,"result":os.environ["STUB_STATUS_LINE"]}))'; exit 0 ;;
@@ -306,6 +326,55 @@ case "${STUB_ACTION:-none}" in
     bash-denied)
         printf '%s\n' '{"is_error":false,"subtype":"success","result":"stub final message","permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_stub","tool_input":{"command":"ls"}}],"usage":{"input_tokens":10,"output_tokens":5}}'
         exit 0 ;;
+    sleep:*)
+        printf '%s\n' "$$" > "$FIXTURE_ROOT/stub-child.pid"
+        sleep "${STUB_ACTION#sleep:}"
+        ;;
+    stream) stream_events; printf '%s\n' "$STREAM_RESULT" "$STREAM_TAIL"; exit 0 ;;
+    stream-noeol) stream_events; printf '%s' "$STREAM_RESULT"; exit 0 ;;
+    # Live growth: the trace copied mid-run must already carry the first event;
+    # the result line arrives in two writes with a pause between them.
+    stream-split)
+        printf '%s\n' "$STREAM_TEXT"
+        sleep 1.5
+        cat .claude/claude-logs/trace-*.log > "$FIXTURE_ROOT/trace-mid.log" 2>/dev/null
+        printf '%s' "${STREAM_RESULT:0:30}"; sleep 0.6; printf '%s\n' "${STREAM_RESULT:30}"
+        exit 0 ;;
+    # The converter dies mid-run; the launcher must still publish the result.
+    stream-kill-trace)
+        stream_events
+        pid=
+        for _ in {1..50}; do pid=$(trace_converter_pid); [ -n "$pid" ] && break; sleep 0.1; done
+        [ -z "$pid" ] || kill -KILL "$pid" 2>/dev/null
+        sleep 0.5
+        printf '%s\n' "$STREAM_RESULT"; exit 0 ;;
+    # As above, plus the temp file a converter killed mid-write would leave
+    # (`run-<id>.json.tmp<pid>` beside the trace): the launcher must sweep it.
+    stream-kill-trace-tmp)
+        stream_events
+        pid=
+        for _ in {1..50}; do pid=$(trace_converter_pid); [ -n "$pid" ] && break; sleep 0.1; done
+        [ -z "$pid" ] || kill -KILL "$pid" 2>/dev/null
+        sleep 0.5
+        for t in .claude/claude-logs/trace-*.log; do
+            id=${t##*/trace-}; id=${id%.log}
+            printf '%s\n' '{"partial":true}' > ".claude/claude-logs/run-$id.json.tmp99999"
+        done
+        printf '%s\n' "$STREAM_RESULT"; exit 0 ;;
+    # Malformed events and a first result: tracing errors stay in the trace,
+    # the last result wins.
+    stream-trace-errors)
+        echo 'not json'
+        printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":7}]}}'
+        printf '%s\n' '{"type":"assistant","message":"broken"}'
+        printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"first result","usage":{"input_tokens":1,"output_tokens":1}}'
+        printf '%s\n' "$STREAM_RESULT"; exit 0 ;;
+    # The envelope verdict paths, now as result events after stream events.
+    stream-web-ok) stream_events; printf '%s\n' '{"type":"result","is_error":false,"subtype":"success","result":"","structured_output":{"status":"ok","summary":"stub web summary","sources":[{"url":"https://example.com","fetched":true}]},"usage":{"input_tokens":10,"output_tokens":5}}'; exit 0 ;;
+    stream-web-denied) stream_events; printf '%s\n' '{"type":"result","is_error":false,"subtype":"success","result":"FETCH_UNAVAILABLE","permission_denials":[{"tool_name":"WebFetch","tool_use_id":"toolu_stub","tool_input":{"url":"https://example.com","prompt":"read it"}}],"usage":{"input_tokens":10,"output_tokens":5}}'; exit 0 ;;
+    stream-nostruct) stream_events; printf '%s\n' '{"type":"result","is_error":false,"subtype":"success","result":"SUMMARY: stub says it fetched the page","usage":{"input_tokens":10,"output_tokens":5}}'; exit 0 ;;
+    stream-quota) stream_events; printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"HTTP 429 Too Many Requests"}'; exit 1 ;;
+    stream-refusal) stream_events; printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction"},"result":"API Error: Sonnet 5.5'"'"'s safeguards flagged this message (https://www.anthropic.com/legal/aup).","num_turns":2}'; exit 1 ;;
     exit:*) exit "${STUB_ACTION#exit:}" ;;
     *) echo "unknown STUB_ACTION: $STUB_ACTION" >&2; exit 98 ;;
 esac
@@ -360,7 +429,7 @@ fresh_case() {
     mkdir -p "$CASE_REPO/.claude" "$CASE_HOME/.gemini/antigravity-cli"
     printf '%s\n' '{"permissions":{"allow":["write_file(*)"],"deny":[]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
     printf '%s\n' '{"permissions":{}}' > "$CASE_REPO/.claude/settings.json"
-    printf '%s\n' '.claude/codex-logs/' '.claude/agy-logs/' '.claude/claude-logs/' '.claude/.probe-cache' > "$CASE_REPO/.gitignore"
+    printf '%s\n' '.claude/codex-logs/' '.claude/agy-logs/' '.claude/claude-logs/' '.claude/.probe-cache' '.harness/' > "$CASE_REPO/.gitignore"
     printf '%s\n' 'test prompt' > "$CASE_REPO/prompt.txt"
     [ "${1:-}" != nongit ] || return 0
     (
@@ -433,6 +502,19 @@ state_path() {
     find "$CASE_HOME/.claude/harness-runs" -type f -name "state-$1.json" -print 2>/dev/null | head -n 1
 }
 
+# state_log_is <rid> <basename>: the record names its activity log by an
+# absolute path ending in <basename> (either separator).
+state_log_is() {
+    local file
+    file=$(state_path "$1")
+    [ -n "$file" ] || return 1
+    "$REAL_PY" - "$file" "$2" <<'PY'
+import json, ntpath, os, sys
+log = json.load(open(sys.argv[1], encoding="utf-8")).get("log") or ""
+raise SystemExit(0 if os.path.isabs(log) and ntpath.basename(log) == sys.argv[2] else 1)
+PY
+}
+
 state_field_is() {
     local rid=$1 field=$2 expected=$3 file
     file=$(state_path "$rid")
@@ -448,12 +530,12 @@ PY
 }
 
 plant_record() {
-    local rid=$1 pid=$2 sandbox=$3
+    local rid=$1 pid=$2 sandbox=$3 log=${4:-} tool=${5:-codex}
     (
         cd "$CASE_REPO" || exit 1
         env HOME="$CASE_HOME" PATH="$STUB_BIN:$ORIGINAL_PATH" RID="$rid" PLANT_PID="$pid" PLANT_SANDBOX="$sandbox" \
-            RUN_STATE_PATH="$RUN_STATE" "$BASH" -c '
-                TOOL=codex RUN_ID=$RID TIMEOUT=570 SANDBOX=$PLANT_SANDBOX
+            PLANT_LOG="$log" PLANT_TOOL="$tool" RUN_STATE_PATH="$RUN_STATE" "$BASH" -c '
+                TOOL=$PLANT_TOOL RUN_ID=$RID TIMEOUT=570 SANDBOX=$PLANT_SANDBOX ACTIVITY_LOG=$PLANT_LOG
                 . "$RUN_STATE_PATH" || exit 1
                 LAUNCHER_PID=$PLANT_PID
                 LAUNCHER_STIME=$(pid_stime "$PLANT_PID")
@@ -489,7 +571,7 @@ fi
 # bindings_v3 <rows-json>: wrap worker rows in the minimal schema-3 envelope
 # (bands, latency, selection_policy, role floors) the router validates.
 bindings_v3() {
-    printf '%s\n' "{\"schema_version\":3,\"bands\":{\"order\":[\"E\",\"D\",\"C\",\"B\",\"A\",\"S\"],\"S\":{\"model_fixed\":true,\"lanes\":{\"claude\":\"claude-fable-5-1\",\"openai\":\"gpt-6-astra\"},\"foreground_effort\":\"high\",\"detached_effort\":\"xhigh\"},\"A\":{\"min_index\":52},\"B\":{\"min_index\":48},\"C\":{\"min_index\":40},\"D\":{\"min_index\":30},\"E\":{\"min_index\":0}},\"latency\":{\"interactive\":10,\"foreground\":60,\"detached\":null},\"selection_policy\":{\"cost_tie_pct\":15,\"cross_lane_s\":true,\"attempt_cap\":3},\"roles\":{\"implement\":{\"band_floor\":\"B\"},\"image_verify\":{\"band_floor\":\"D\"},\"web\":{\"band_floor\":\"E\"},\"explore\":{\"band_floor\":\"E\"},\"write\":{\"band_floor\":\"C\"},\"decide\":{\"band_floor\":\"A\"},\"plan_review\":{\"band_floor\":\"A\"},\"review_gate\":{\"band_floor\":\"C\"},\"review_deep\":{\"band_floor\":\"A\"}},\"workers\":[$1]}"
+    printf '%s\n' "{\"schema_version\":3,\"bands\":{\"order\":[\"E\",\"D\",\"C\",\"B\",\"A\",\"S\"],\"S\":{\"model_fixed\":true,\"lanes\":{\"claude\":\"claude-fable-5-2\",\"openai\":\"gpt-6-astra\"},\"foreground_effort\":\"high\",\"detached_effort\":\"xhigh\"},\"A\":{\"min_index\":52},\"B\":{\"min_index\":48},\"C\":{\"min_index\":40},\"D\":{\"min_index\":30},\"E\":{\"min_index\":0}},\"latency\":{\"interactive\":10,\"foreground\":60,\"detached\":null},\"selection_policy\":{\"cost_tie_pct\":15,\"cross_lane_s\":true,\"attempt_cap\":3},\"roles\":{\"implement\":{\"band_floor\":\"B\"},\"image_verify\":{\"band_floor\":\"D\"},\"web\":{\"band_floor\":\"E\"},\"explore\":{\"band_floor\":\"E\"},\"write\":{\"band_floor\":\"C\"},\"decide\":{\"band_floor\":\"A\"},\"plan_review\":{\"band_floor\":\"A\"},\"review_gate\":{\"band_floor\":\"C\"},\"review_deep\":{\"band_floor\":\"A\"}},\"workers\":[$1]}"
 }
 # row_v3 <id> <vendor> <tier> <index> <launcher> <roles-json> <model-json> <effort-json>
 row_v3() {
@@ -584,6 +666,65 @@ run_capture agy-large-prompt bash "$AGY_RUN" -p large.txt
 ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" '> 30000' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
 expect_case "agy rejects prompt over 30 KB" "$ok" "exit=$LAST_RC"
 
+# -r: read-only review in agy plan mode; a workspace change fails the run.
+fresh_case
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-readonly env STUB_ACTION=none HARNESS_RUN_ID=agyro bash "$AGY_RUN" -p prompt.txt -r
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE .*mode=plan, sandbox=read-only' \
+    && grep -Fq -- '--mode plan' "$TEST_ROOT/agy-args.log" && ! grep -Fq -- '--sandbox' "$TEST_ROOT/agy-args.log" && ok=1
+expect_case "agy -r runs plan mode and reports read-only" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-readonly-write env STUB_ACTION="write:$CASE_REPO/review-notes.txt" HARNESS_RUN_ID=agyrow bash "$AGY_RUN" -p prompt.txt -r
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED\(read-only workspace changed, was DONE\)' \
+    && has "$LAST_OUT" '^CHANGED: .*review-notes.txt' && ok=1
+expect_case "agy -r fails a run that changed the workspace" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture agy-readonly-notice env STUB_ACTION=notice HARNESS_RUN_ID=agyron bash "$AGY_RUN" -p prompt.txt -r
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+expect_case "agy -r ignores session-owned notice files" "$ok" "exit=$LAST_RC"
+
+for bad in "-r -x $TEST_ROOT/out.txt" "-r -c"; do
+    fresh_case
+    rm -f "$TEST_ROOT/agy-args.log"
+    run_capture agy-mode-conflict bash "$AGY_RUN" -p prompt.txt $bad
+    ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: -r' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+    expect_case "agy refuses $bad" "$ok" "exit=$LAST_RC"
+done
+
+# -c: per-run command grant through --settings; the saved global grant is untouched.
+fresh_case
+rm -f "$TEST_ROOT/agy-args.log"
+cp "$CASE_HOME/.gemini/antigravity-cli/settings.json" "$CASE_HOME/settings.before"
+run_capture agy-commands env STUB_ACTION=none HARNESS_RUN_ID=agyc bash "$AGY_RUN" -p prompt.txt -c
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^AGY_COMMANDS: per-run sandbox grant' \
+    && has "$LAST_OUT" '^STATUS: DONE .*mode=commands-sandbox' \
+    && grep -Fq -- '--sandbox --settings {"permissions":{"allow":["write_file(*)","command(*)"]}}' "$TEST_ROOT/agy-args.log" \
+    && ! grep -Fq -- '--mode plan' "$TEST_ROOT/agy-args.log" \
+    && cmp -s "$CASE_HOME/settings.before" "$CASE_HOME/.gemini/antigravity-cli/settings.json" && ok=1
+expect_case "agy -c passes a this-run command grant and keeps global settings" "$ok" "exit=$LAST_RC"
+
+fresh_case
+printf '%s\n' '{"permissions":{"allow":["write_file(*)","command(*)"]}}' > "$CASE_HOME/.gemini/antigravity-cli/settings.json"
+rm -f "$TEST_ROOT/agy-args.log"
+run_capture agy-commands-global bash "$AGY_RUN" -p prompt.txt -c
+ok=0; [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED' && [ ! -e "$TEST_ROOT/agy-args.log" ] && ok=1
+expect_case "agy -c still refuses a saved global command grant" "$ok" "exit=$LAST_RC"
+
+# Detached runs re-execute with the original arguments, so the mode survives -b.
+for mode in r c; do
+    fresh_case
+    rm -f "$TEST_ROOT/agy-args.log"
+    run_capture "agy-detach-$mode" env STUB_ACTION=none HARNESS_RUN_ID="agydetach$mode" bash "$AGY_RUN" -p prompt.txt "-$mode" -b
+    detach_rc=$LAST_RC
+    run_capture "agy-detach-wait-$mode" bash "$AGY_RUN" --wait "agydetach$mode" -t 60
+    case "$mode" in r) want='--mode plan' ;; *) want='--sandbox --settings' ;; esac
+    ok=0; [ "$detach_rc" -eq 0 ] && [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' \
+        && grep -Fq -- "$want" "$TEST_ROOT/agy-args.log" && ok=1
+    expect_case "agy -$mode survives -b" "$ok" "detach=$detach_rc wait=$LAST_RC"
+done
+
 
 fi
 
@@ -622,6 +763,18 @@ expect_case "codex TOKENS parsed under a UTF-8 locale" "$ok" "exit=$LAST_RC"
 
 fresh_case
 : > "$TEST_ROOT/codex-args.log"
+run_capture codex-progress-written env STUB_ACTION=progress bash "$CODEX_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PROGRESS: \.harness/progress/progress-.*\.md \(1 milestones\)$' \
+    && has "$LAST_OUT" '^CHANGED: none$' && tail -n 1 "$TEST_ROOT/codex-args.log" | grep -q 'Progress file: ' && ok=1
+expect_case "codex progress: milestone counted, instruction present" "$ok" "exit=$LAST_RC"
+fresh_case
+run_capture codex-progress-readonly env STUB_ACTION=none bash "$CODEX_RUN" -p prompt.txt -s read-only
+ok=0
+[ "$LAST_RC" -eq 0 ] && ! { tail -n 1 "$TEST_ROOT/codex-args.log" | grep -q 'Progress file: '; } && has "$LAST_OUT" '^PROGRESS: disabled \(read-only' && ok=1
+expect_case "codex progress: read-only run carries no progress instruction" "$ok" "exit=$LAST_RC"
+fresh_case
+: > "$TEST_ROOT/codex-args.log"
 run_capture codex-done env STUB_ACTION=none HARNESS_RUN_ID=codexdone bash "$CODEX_RUN" -p prompt.txt
 ok=0
 if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^CHANGED: none$' \
@@ -645,7 +798,7 @@ ok=0
 if [ "$LAST_RC" -eq 0 ] && has "$TEST_ROOT/codex-args.log" 'exec resume fixture-session .* -$' \
    && ! has "$TEST_ROOT/codex-args.log" 'You are a DELEGATE' \
    && ! has "$TEST_ROOT/codex-args.log" 'Follow the correction' \
-   && has "$TEST_ROOT/codex-stdin.log" '^You are a DELEGATE.*Role is already resolved.*Follow the correction provided in the <stdin> block\.$' \
+   && has "$TEST_ROOT/codex-stdin.log" '^You are a DELEGATE.*Role is already resolved.*Follow the correction provided in the <stdin> block\.( Progress file: .*)?$' \
    && has "$TEST_ROOT/codex-stdin.log" '^<stdin>$' && has "$TEST_ROOT/codex-stdin.log" '^</stdin>$' \
    && sed -e '1,/^<stdin>$/d' -e '/^<\/stdin>$/,$d' "$TEST_ROOT/codex-stdin.log" | cmp -s "$CASE_REPO/prompt.txt" - \
    && has "$LAST_OUT" '^RESUME: fixture-session'; then ok=1; fi
@@ -727,6 +880,44 @@ run_capture untrusted-override env STUB_ACTION=none HARNESS_ALLOW_UNTRUSTED_HOOK
 ok=0
 if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE'; then ok=1; fi
 expect_case "explicit override runs deliberately unguarded" "$ok" "exit=$LAST_RC"
+
+# Linked worktree without its own hooks.json: Codex loads the main working
+# tree's hooks there, so the trust gate still runs (and the stub engine cannot
+# confirm trust, hence exit 4). A plain repository without hooks.json skips it
+# (every other case in this suite).
+fresh_case
+LINKED_MAIN="$TEST_ROOT/case-$CASE_NO/main"
+mkdir -p "$LINKED_MAIN"
+# The worktree is cut from an empty commit so the main working tree's hooks.json
+# (written afterwards, untracked) never appears in the linked tree.
+( cd "$LINKED_MAIN" && git init -q && git config core.safecrlf false \
+  && git -c user.name=Fixture -c user.email=fixture@example.invalid commit -q --allow-empty -m main \
+  && git worktree add -q "$TEST_ROOT/case-$CASE_NO/linked" -b linked ) || echo "linked worktree fixture failed" >&2
+mkdir -p "$LINKED_MAIN/.codex"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"echo ok"}]}],"Stop":[{"hooks":[{"type":"command","command":"echo ok"}]}]}}' > "$LINKED_MAIN/.codex/hooks.json"
+cp -r "$CASE_REPO/.claude" "$CASE_REPO/.gitignore" "$CASE_REPO/prompt.txt" "$TEST_ROOT/case-$CASE_NO/linked/"
+CASE_REPO="$TEST_ROOT/case-$CASE_NO/linked"
+run_capture linked-worktree-gate env STUB_ACTION=none HARNESS_RUN_ID=linkedgate bash "$CODEX_RUN" -p prompt.txt
+ok=0
+if [ "$LAST_RC" -eq 4 ] && has "$LAST_OUT" 'HARNESS_DENIED: Codex hook trust is not confirmed' \
+   && ! has "$LAST_OUT" 'definitions are required' && [ ! -e "$CASE_REPO/.codex/hooks.json" ]; then ok=1; fi
+expect_case "linked worktree without its own hooks.json still runs the trust gate" "$ok" "exit=$LAST_RC"
+
+# The gate's worktree test, taken from the launcher source: a subfolder of a
+# plain repository (absolute --git-dir, relative --git-common-dir) is not a
+# linked worktree, the linked tree above is, and GIT_DIR overrides do not
+# redirect either answer. Launchers themselves run from a project root, so
+# this exercises the function rather than a whole run.
+fresh_case
+mkdir -p "$CASE_REPO/docs"
+GATE_FN=$(sed -n '/^linked_worktree() {/,/^}/p' "$CODEX_RUN")
+ok=0
+if [ -n "$GATE_FN" ] \
+   && ! ( cd "$CASE_REPO/docs" && eval "$GATE_FN" && linked_worktree ) \
+   && ! ( cd "$CASE_REPO" && eval "$GATE_FN" && linked_worktree ) \
+   && ( cd "$TEST_ROOT/case-$((CASE_NO - 1))/linked" && eval "$GATE_FN" && linked_worktree ) \
+   && ! ( cd "$CASE_REPO/docs" && export GIT_DIR="$TEST_ROOT/case-$((CASE_NO - 1))/main/.git" && eval "$GATE_FN" && linked_worktree ); then ok=1; fi
+expect_case "gate: plain repository subfolder is not a linked worktree, linked tree is" "$ok" "fn=${#GATE_FN}"
 
 
 fi
@@ -842,6 +1033,128 @@ ok=0
 if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'stub final message'    && has "$LAST_OUT" '^TOKENS: 15 \(output=5,cache_read=0,cache_create=0,input=10\)$' && ! has "$LAST_OUT" '^COST_USD:' && state_field_is claudedone state done; then ok=1; fi
 timing_ok "$LAST_OUT" 1 0 || ok=0
 expect_case "claude DONE report and saved state" "$ok" "exit=$LAST_RC"
+
+# Progress file: a writable run carries the launcher-made path, the worker's
+# milestones are counted, read-only runs get no instruction, -P warns on none.
+fresh_case
+run_capture claude-progress-none env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^PROGRESS: none \(' && ! has "$LAST_OUT" '^PROGRESS_WARNING' \
+    && tail -n 1 "$TEST_ROOT/claude-args.log" | grep -q 'Progress file: ' && ok=1
+expect_case "claude progress: none by default, instruction present" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-progress-written env STUB_ACTION=progress bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PROGRESS: \.harness/progress/progress-.*\.md \(1 milestones\)$' \
+    && has "$LAST_OUT" '^CHANGED: none$' && ok=1
+expect_case "claude progress: milestone counted, file excluded from CHANGED" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-progress-long-run env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -P
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^PROGRESS_WARNING: -P long run reported no milestones' && ok=1
+expect_case "claude progress: -P without milestones warns but stays DONE" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-progress-readonly env STUB_ACTION=none bash "$CLAUDE_RUN" -p prompt.txt -s read-only
+ok=0
+[ "$LAST_RC" -eq 0 ] && ! { tail -n 1 "$TEST_ROOT/claude-args.log" | grep -q 'Progress file: '; } && has "$LAST_OUT" '^PROGRESS: disabled \(read-only' && ok=1
+expect_case "claude progress: read-only run carries no progress instruction" "$ok" "exit=$LAST_RC"
+
+# ---- stream-json live trace (claude-trace.py) ----
+# The launcher now runs claude with --output-format stream-json; the result
+# event feeds the unchanged envelope parsers, the trace file is readable live.
+CLAUDE_STREAM_RESULT='{"type":"result","subtype":"success","is_error":false,"result":"stub final message","usage":{"input_tokens":10,"output_tokens":5},"num_turns":3}'
+run_json_equals() {
+    "$REAL_PY" -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1], encoding="utf-8")) == json.loads(sys.argv[2]) else 1)' "$1" "$2"
+}
+fresh_case
+run_capture claude-stream env STUB_ACTION=stream HARNESS_RUN_ID=claudestream bash "$CLAUDE_RUN" -p prompt.txt
+trace="$CASE_REPO/.claude/claude-logs/trace-claudestream.log"
+ok=0
+if [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'stub final message' \
+   && has "$LAST_OUT" '^TOKENS: 15 \(output=5,cache_read=0,cache_create=0,input=10\)$' \
+   && has "$LAST_OUT" '^TRACE: \.claude/claude-logs/trace-claudestream\.log \([0-9]+ lines, stream: \.claude/claude-logs/stream-claudestream\.jsonl\)$' \
+   && ! has "$LAST_OUT" '^TRACE_WARNING' && has "$LAST_OUT" '^CHANGED: none$' \
+   && has "$trace" '^# converter pid=[0-9]+ sentinel=' \
+   && has "$trace" ' assistant: Starting the stub task\.$' && has "$trace" ' tool_use Bash: ls -la$' \
+   && has "$trace" ' tool_result: total 0 drwxr-xr-x stub$' && has "$trace" ' tool_use Read: prompt\.txt$' \
+   && has "$trace" ' tool_result: 1 stub prompt$' && has "$trace" ' summary: stub listed and read$' \
+   && has "$trace" ' result: subtype=success is_error=False' && ! has "$trace" 'init' \
+   && has "$trace" 'converter finished \(result written, exit 0\)' \
+   && [ -s "$CASE_REPO/.claude/claude-logs/stream-claudestream.jsonl" ] \
+   && run_json_equals "$CASE_REPO/.claude/claude-logs/run-claudestream.json" "$CLAUDE_STREAM_RESULT"; then ok=1; fi
+expect_case "claude stream: trace lines, result event published, report unchanged" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-stream-noeol env STUB_ACTION=stream-noeol HARNESS_RUN_ID=claudenoeol bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ! has "$LAST_OUT" '^TRACE_WARNING' \
+    && run_json_equals "$CASE_REPO/.claude/claude-logs/run-claudenoeol.json" "$CLAUDE_STREAM_RESULT" && ok=1
+expect_case "claude stream: result line without a trailing newline" "$ok" "exit=$LAST_RC"
+
+fresh_case
+rm -f "$TEST_ROOT/trace-mid.log"
+run_capture claude-stream-split env STUB_ACTION=stream-split HARNESS_RUN_ID=claudesplit bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ! has "$LAST_OUT" '^TRACE_WARNING' \
+    && has "$TEST_ROOT/trace-mid.log" ' assistant: Starting the stub task\.$' \
+    && run_json_equals "$CASE_REPO/.claude/claude-logs/run-claudesplit.json" "$CLAUDE_STREAM_RESULT" && ok=1
+expect_case "claude stream: trace grows while the run is live and split writes are joined" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-stream-kill-trace env STUB_ACTION=stream-kill-trace HARNESS_RUN_ID=claudekill bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'stub final message' \
+    && has "$LAST_OUT" '^TRACE_WARNING: converter exit [0-9]+.*; result re-extracted from the stream \(stream: ' \
+    && has "$LAST_OUT" '^TOKENS: 15 ' \
+    && run_json_equals "$CASE_REPO/.claude/claude-logs/run-claudekill.json" "$CLAUDE_STREAM_RESULT" && ok=1
+expect_case "claude stream: a killed converter does not cost the result" "$ok" "exit=$LAST_RC"
+
+# The log directory is committed here, so a leftover temp file would show up
+# in CHANGED; it must be swept, not excluded.
+fresh_case
+sed -i 's#^\.claude/claude-logs/$##' "$CASE_REPO/.gitignore"
+git -C "$CASE_REPO" add .gitignore >/dev/null 2>&1
+git -C "$CASE_REPO" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'logs tracked' >/dev/null 2>&1
+run_capture claude-stream-kill-trace-tmp env STUB_ACTION=stream-kill-trace-tmp HARNESS_RUN_ID=claudekilltmp bash "$CLAUDE_RUN" -p prompt.txt
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' \
+    && has "$LAST_OUT" '^TRACE_WARNING: converter exit [0-9]+.*; result re-extracted from the stream' \
+    && has "$LAST_OUT" '^CHANGED: none$' \
+    && [ -z "$(ls "$CASE_REPO"/.claude/claude-logs/run-claudekilltmp.json.tmp* 2>/dev/null)" ] \
+    && run_json_equals "$CASE_REPO/.claude/claude-logs/run-claudekilltmp.json" "$CLAUDE_STREAM_RESULT" && ok=1
+expect_case "claude stream: a killed converter's temp file is swept, CHANGED stays none" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-stream-trace-errors env STUB_ACTION=stream-trace-errors HARNESS_RUN_ID=claudetraceerr bash "$CLAUDE_RUN" -p prompt.txt
+trace="$CASE_REPO/.claude/claude-logs/trace-claudetraceerr.log"
+ok=0
+[ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" 'stub final message' && ! has "$LAST_OUT" 'first result' \
+    && ! has "$LAST_OUT" '^TRACE_WARNING' \
+    && has "$trace" ' trace-skip: not JSON: not json$' && has "$trace" ' tool_result: 7$' && has "$trace" ' trace-error: TypeError' \
+    && run_json_equals "$CASE_REPO/.claude/claude-logs/run-claudetraceerr.json" "$CLAUDE_STREAM_RESULT" && ok=1
+expect_case "claude stream: malformed events stay trace problems and the last result wins" "$ok" "exit=$LAST_RC"
+
+fresh_case
+run_capture claude-stream-web-ok env STUB_ACTION=stream-web-ok bash "$CLAUDE_RUN" -p prompt.txt -a web -s read-only
+ok=0; [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && has "$LAST_OUT" '^WEB_FETCH: ok' && has "$LAST_OUT" 'stub web summary' && ok=1
+expect_case "claude stream: web structured_output verdict ok" "$ok" "exit=$LAST_RC"
+for pair in 'stream-web-denied:FAILED\(web fetch permission denied' 'stream-nostruct:FAILED\(web structured_output missing'; do
+    fresh_case
+    run_capture "claude-${pair%:*}" env STUB_ACTION="${pair%:*}" bash "$CLAUDE_RUN" -p prompt.txt -a web -s read-only
+    ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" "^STATUS: ${pair#*:}" && ok=1
+    expect_case "claude stream: ${pair%:*} keeps its web verdict" "$ok" "exit=$LAST_RC"
+done
+fresh_case
+run_capture claude-stream-quota env STUB_ACTION=stream-quota bash "$CLAUDE_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED' && has "$LAST_OUT" '^AVAILABILITY: exhausted:claude' && ok=1
+expect_case "claude stream: quota result event reports AVAILABILITY" "$ok" "exit=$LAST_RC"
+fresh_case
+run_capture claude-stream-refusal env STUB_ACTION=stream-refusal bash "$CLAUDE_RUN" -p prompt.txt
+ok=0; [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^STATUS: FAILED' && has "$LAST_OUT" '^REFUSAL: reasoning_extraction - API Error: ' && ! has "$LAST_OUT" '^AVAILABILITY:' && ok=1
+expect_case "claude stream: refusal result event reports REFUSAL" "$ok" "exit=$LAST_RC"
 
 ok=0
 if has "$TEST_ROOT/claude-role.log" '^1$' && has "$TEST_ROOT/claude-args.log" '--tools Read,Write,Edit,Bash,Grep,Glob' \
@@ -1436,7 +1749,152 @@ if [ "$detach_rc" -eq 0 ] && has "$detach_out" '^RUN_ID: detachrun$' && has "$de
    && [ "$wait_rc" -eq 0 ] && has "$wait_out" '^STATUS: DONE' && state_field_is detachrun state done; then ok=1; fi
 LAST_OUT=$wait_out
 timing_ok "$LAST_OUT" 1 0 || ok=0
+state_log_is detachrun run-detachrun.log || ok=0
 expect_case "detached max run status and wait lifecycle" "$ok" "detach=$detach_rc status=$status_rc wait=$wait_rc"
+
+# HEARTBEAT: --status and an expired --wait on a live run print one line
+# with elapsed time, the activity log's size and age and, for codex, the
+# last shell command's result and head. Only exec entries in codex's own
+# shell-invocation shape count (an `exec` line in prose or command output
+# does not); the head is single-line, control characters replaced, capped;
+# no other log text (prose, command output, here-string bodies).
+fresh_case
+start_live_shell
+mkdir -p "$CASE_REPO/.claude/codex-logs"
+hb_log=.claude/codex-logs/run-hbrun.log
+hb_esc=$'\033'
+hb_long=$(printf 'x%.0s' {1..150})
+printf '%s\n' 'codex' 'exec' 'SECRET_PROSE planning the review' 'exec' \
+    '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -ExecutionPolicy Bypass -NoProfile -Command '"'git status --short'"' in D:\repo' \
+    ' succeeded in 120ms:' 'exec' 'SECRET_OUTPUT line' > "$CASE_REPO/$hb_log"
+plant_record hbrun "$LIVE_PID" read-only "$hb_log"
+run_capture hb-status-done bash "$CODEX_RUN" --status hbrun
+hb_done_rc=$LAST_RC; hb_done_out=$LAST_OUT
+printf '%s\n' '' 'exec' "/bin/bash -lc 'printf \"${hb_esc}[31mred\"; echo $hb_long' in /repo" >> "$CASE_REPO/$hb_log"
+run_capture hb-status-running bash "$CODEX_RUN" --status hbrun
+hb_run_rc=$LAST_RC; hb_run_out=$LAST_OUT
+printf '%s\n' ' exited 1 in 5ms:' 'SECRET_OUTPUT failure' >> "$CASE_REPO/$hb_log"
+run_capture hb-wait bash "$CODEX_RUN" --wait hbrun -t 1
+hb_wait_rc=$LAST_RC; hb_wait_out=$LAST_OUT
+printf '%s\n' '' 'exec' '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "@'"'" 'exec' \
+    'SECRET_HEREDOC body' "'@ | python -B -\" in D:\\repo" >> "$CASE_REPO/$hb_log"
+run_capture hb-multiline bash "$CODEX_RUN" --status hbrun
+hb_multi_out=$LAST_OUT
+plant_record hbnolog "$LIVE_PID" read-only
+run_capture hb-nolog bash "$CODEX_RUN" --status hbnolog
+hb_nolog_out=$LAST_OUT
+plant_record hbmissing "$LIVE_PID" read-only .claude/codex-logs/run-hbmissing.log
+run_capture hb-missing bash "$CODEX_RUN" --status hbmissing
+hb_missing_out=$LAST_OUT
+# Over 16 MiB only the tail is read: no count, the tail's last command.
+"$REAL_PY" - "$CASE_REPO/.claude/codex-logs/run-hbbig.log" <<'PY'
+import sys
+with open(sys.argv[1], "wb") as fh:
+    fh.write(b"exec\n/bin/bash -lc 'SECRET_EARLY' in /repo\n")
+    fh.write((b"o" * 99 + b"\n") * (17 * 10486))
+    fh.write(b"exec\n/bin/bash -lc 'make test' in /repo\n")
+PY
+plant_record hbbig "$LIVE_PID" read-only .claude/codex-logs/run-hbbig.log
+run_capture hb-big bash "$CODEX_RUN" --status hbbig
+hb_big_out=$LAST_OUT
+# A partial header in output must not swallow the next real command's
+# text; a heredoc line that looks like a closing line, an over-long line
+# ending in `exec`, and a working directory containing ` in `.
+printf '%s\n' 'exec' "/bin/bash -lc 'SECRET_PARTIAL output" 'exec' \
+    "/bin/bash -lc 'git status' in /repos/work in progress" ' succeeded in 3ms:' > "$CASE_REPO/.claude/codex-logs/run-hbpartial.log"
+printf '%s\n' 'exec' "/bin/bash -lc 'cat <<EOF" "SECRET_BODY' in /tmp" "EOF' in /repo" > "$CASE_REPO/.claude/codex-logs/run-hbheredoc.log"
+"$REAL_PY" - "$CASE_REPO/.claude/codex-logs/run-hblong.log" <<'PY'
+import sys
+with open(sys.argv[1], "wb") as fh:
+    # Split at the 64 KiB read limit, the second piece is exactly `exec`.
+    fh.write(b"o" * 65536 + b"exec\n/bin/bash -lc 'SECRET_LONG' in /repo\n")
+PY
+printf '%s\n' 'exec' "/bin/bash -lc 'git status' in /repos/work in progress" > "$CASE_REPO/.claude/codex-logs/run-hbdir.log"
+# Parallel calls finish in any order, and output can look like a result
+# line: codex results are not counted at all.
+printf '%s\n' 'exec' "/bin/bash -lc 'make a' in /repo" 'exec' "/bin/bash -lc 'make b' in /repo" \
+    ' exited 1 in 5ms:' 'SECRET_OUTPUT a' > "$CASE_REPO/.claude/codex-logs/run-hboverlap.log"
+printf '%s\n' 'exec' "/bin/bash -lc 'cat fixture.txt' in /repo" ' succeeded in 3ms:' ' exited 1 in 5ms:' \
+    > "$CASE_REPO/.claude/codex-logs/run-hbresult.log"
+# Windows cmd.exe /c, with backslash escapes inside double quotes.
+printf '%s\n' 'exec' '"C:\\windows\\system32\\cmd.exe" /d /c "rmdir \"D:\\Projects\\x\"" in D:\Projects\repo' \
+    > "$CASE_REPO/.claude/codex-logs/run-hbcmd.log"
+# Directory text never joins the head: a cwd with a quote and ` in `.
+printf '%s\n' 'exec' "/bin/bash -lc 'git log' in /tmp/SECRET_CWD' in /home/O'Brien" > "$CASE_REPO/.claude/codex-logs/run-hbcwd.log"
+# Shell-quoted as codex prints it, a first line that looks closed is not.
+"$REAL_PY" - "$CASE_REPO/.claude/codex-logs/run-hbshlex.log" <<'PY'
+import shlex, sys
+with open(sys.argv[1], "w", encoding="utf-8", newline="\n") as fh:
+    fh.write("exec\n" + shlex.join(["/bin/bash", "-lc", "printf ' in /SECRET_PRIVATE\nrest'"]) + " in /repo\n")
+PY
+for hb_rid in hbpartial hbheredoc hblong hbdir hboverlap hbresult hbcmd hbcwd hbshlex; do
+    plant_record "$hb_rid" "$LIVE_PID" read-only ".claude/codex-logs/run-$hb_rid.log"
+    run_capture "hb-$hb_rid" bash "$CODEX_RUN" --status "$hb_rid"
+    printf -v "hb_${hb_rid}_out" '%s' "$LAST_OUT"
+done
+# A claude trace: tool calls only, never assistant text or tool results.
+mkdir -p "$CASE_REPO/.claude/claude-logs"
+hb_trace=.claude/claude-logs/trace-hbclaude.log
+printf '%s\n' '# converter pid=1 sentinel=/tmp/x' '08:00:01Z assistant: SECRET_PROSE I will look first' \
+    '08:00:02Z tool_use Bash: git status' '08:00:03Z tool_result: SECRET_RESULT clean tree' \
+    '08:00:04Z tool_use Edit: src/app.py' > "$CASE_REPO/$hb_trace"
+plant_record hbclaude "$LIVE_PID" workspace-write "$hb_trace" claude
+run_capture hb-claude bash "$CLAUDE_RUN" --status hbclaude
+hb_claude_out=$LAST_OUT
+printf '%s\n' '08:00:05Z tool_use Read: src/b.py' '08:00:06Z tool_result error: SECRET_ERROR old_string not found' >> "$CASE_REPO/$hb_trace"
+run_capture hb-claude-error bash "$CLAUDE_RUN" --status hbclaude
+hb_claude_err_out=$LAST_OUT
+hb_head=$(sed -n 's/^HEARTBEAT: .*shell commands, last started: //p' "$hb_run_out")
+ok=0
+if [ "$hb_done_rc" -eq 6 ] && has "$hb_done_out" '^STATE: running' \
+   && has "$hb_done_out" '^HEARTBEAT: elapsed [0-9]+s; log 8 lines, last write [0-9]+s ago; 1 shell commands, last started: git status --short$' \
+   && [ "$hb_run_rc" -eq 6 ] && has "$hb_run_out" '^HEARTBEAT: elapsed [0-9]+s; log 11 lines, .*; 2 shell commands, last started: printf " \[31mred"; echo x+\.\.\.$' \
+   && [ "${#hb_head}" -le 103 ] && ! grep -q "$hb_esc" "$hb_run_out" \
+   && [ "$hb_wait_rc" -eq 6 ] && has "$hb_wait_out" '^STATE: running \(waited [0-9]+s; .*tell the user the HEARTBEAT' \
+   && has "$hb_wait_out" '^HEARTBEAT: .*; 2 shell commands, last started: printf ' \
+   && has "$hb_multi_out" '^HEARTBEAT: .*; 3 shell commands, last started: \(multi-line command\)$' \
+   && has "$hb_hbpartial_out" '^HEARTBEAT: .*; no shell commands yet$' \
+   && has "$hb_hbheredoc_out" '^HEARTBEAT: .*; 1 shell commands, last started: \(multi-line command\)$' \
+   && has "$hb_hblong_out" '^HEARTBEAT: .*log 2 lines, .*; no shell commands yet$' \
+   && has "$hb_hbdir_out" '^HEARTBEAT: .*; 1 shell commands, last started: git status$' \
+   && has "$hb_hboverlap_out" '^HEARTBEAT: .*; 2 shell commands, last started: make b$' \
+   && has "$hb_hbresult_out" '^HEARTBEAT: .*; 1 shell commands, last started: cat fixture.txt$' \
+   && has "$hb_hbcmd_out" '^HEARTBEAT: .*; 1 shell commands, last started: rmdir "D:\\Projects\\x"$' \
+   && has "$hb_hbcwd_out" '^HEARTBEAT: .*; 1 shell commands, last started: git log$' \
+   && has "$hb_hbshlex_out" '^HEARTBEAT: .*; 1 shell commands, last started: \(multi-line command\)$' \
+   && has "$hb_claude_out" '^HEARTBEAT: elapsed [0-9]+s; log 5 lines, last write [0-9]+s ago; 2 tool calls \(1 running, 0 failed\), last started: Edit: src/app.py$' \
+   && has "$hb_claude_err_out" '^HEARTBEAT: .*; 3 tool calls \(1 running, 1 failed\), last started: Read: src/b.py$' \
+   && has "$hb_nolog_out" '^HEARTBEAT: elapsed [0-9]+s; log unknown' \
+   && has "$hb_missing_out" '^HEARTBEAT: elapsed [0-9]+s; log not written yet$' \
+   && has "$hb_big_out" '^HEARTBEAT: elapsed [0-9]+s; log 1[67] MiB \(last 1 MiB read\), last write [0-9]+s ago; last shell command started: make test$' \
+   && ! grep -q SECRET_ "$hb_done_out" "$hb_run_out" "$hb_wait_out" "$hb_multi_out" "$hb_big_out" \
+        "$hb_hbpartial_out" "$hb_hbheredoc_out" "$hb_hblong_out" "$hb_hbdir_out" \
+        "$hb_hboverlap_out" "$hb_hbcwd_out" "$hb_hbshlex_out" \
+        "$hb_claude_out" "$hb_claude_err_out"; then ok=1; fi
+expect_case "HEARTBEAT reports elapsed, log age and a sanitized last command only" "$ok" "done=$hb_done_rc running=$hb_run_rc wait=$hb_wait_rc head=${#hb_head}"
+# An abort rewrite of a dead run keeps the log it recorded.
+stop_live_shell "$LIVE_PID"
+run_capture hb-dead bash "$CODEX_RUN" --status hbrun
+ok=0; has "$LAST_OUT" '^STATE: aborted' && state_field_is hbrun state aborted && state_log_is hbrun run-hbrun.log && ok=1
+expect_case "abort rewrite keeps the recorded activity log" "$ok" "exit=$LAST_RC"
+
+# The same line from a real detached codex run: the record names the run
+# log once the CLI is spawned.
+fresh_case
+run_capture hb-detach env STUB_ACTION=sleep:4 HARNESS_RUN_ID=hbdetach bash "$CODEX_RUN" -p prompt.txt -b
+hb_detach_out=$LAST_OUT
+ok=0
+for _ in $(seq 1 30); do
+    run_capture hb-detach-status bash "$CODEX_RUN" --status hbdetach
+    if has "$LAST_OUT" '^HEARTBEAT: elapsed [0-9]+s; log [1-9][0-9]* lines, last write [0-9]+s ago; no shell commands yet$'; then ok=1; break; fi
+    [ "$LAST_RC" -eq 6 ] || break
+    sleep 0.2
+done
+hb_status_out=$LAST_OUT
+run_capture hb-detach-wait bash "$CODEX_RUN" --wait hbdetach -t 60
+[ "$LAST_RC" -eq 0 ] && has "$hb_detach_out" '^WAIT: .* -t 120 .*HEARTBEAT' && state_log_is hbdetach run-hbdetach.log || ok=0
+LAST_OUT=$hb_status_out
+expect_case "detached codex run serves a HEARTBEAT from its run log" "$ok" "wait=$LAST_RC"
 
 
 fi
@@ -1696,6 +2154,9 @@ for tool in codex claude agy; do
     # agy passes the budget through to the CLI, so the stub's args log shows
     # that the full 900 s reached the worker rather than a clamped value.
     [ "$tool" != agy ] || grep -Fq -- '--print-timeout 900s' "$TEST_ROOT/agy-args.log" || ok=0
+    # Each launcher names the file its CLI writes while working.
+    case "$tool" in codex) hb_name=run ;; claude) hb_name=trace ;; *) hb_name=agy ;; esac
+    has "$long_out" '^WAIT: .* -t 120 ' && state_log_is "longbudget$tool" "$hb_name-longbudget$tool.log" || ok=0
     expect_case "$tool -b accepts -t 900 and completes detached" "$ok" "detach=$long_rc wait=$LAST_RC"
 done
 
@@ -1743,6 +2204,68 @@ else
     skip_case "GNU timeout maps to codex exit 124" "GNU coreutils timeout is not first on PATH"
 fi
 
+# claude-run.sh: each trapped signal must also end the trace converter and
+# remove its sentinel directory. The signal is sent only once both the stub
+# child and the converter header line are observable, so the cleanup path is
+# what gets exercised. INT is not covered: a job started with `&` in this
+# non-interactive suite begins with SIGINT ignored, and bash cannot trap a
+# signal that was ignored at entry, so the launcher would never see it here.
+for sig in TERM HUP; do
+fresh_case
+signal_out="$TEST_ROOT/claude-signal-$sig.out"
+rm -f "$TEST_ROOT/stub-child.pid"
+(
+    cd "$CASE_REPO" || exit 99
+    exec env HOME="$CASE_HOME" PATH="$STUB_BIN:$ORIGINAL_PATH" FIXTURE_ROOT="$TEST_ROOT" \
+        STUB_ACTION=sleep:60 HARNESS_RUN_ID="claudesig$sig" bash "$CLAUDE_RUN" -p prompt.txt
+) > "$signal_out" 2>&1 &
+launcher_pid=$!
+BG_PIDS+=("$launcher_pid")
+trace="$CASE_REPO/.claude/claude-logs/trace-claudesig$sig.log"
+for _ in {1..100}; do
+    [ -s "$TEST_ROOT/stub-child.pid" ] && grep -q '^# converter pid=' "$trace" 2>/dev/null && break
+    sleep 0.1
+done
+if [ ! -s "$TEST_ROOT/stub-child.pid" ] || ! grep -q '^# converter pid=' "$trace" 2>/dev/null; then
+    LAST_OUT=$signal_out
+    skip_case "claude $sig stops the stub child and the trace converter" "stub child or converter was not observable"
+    kill -TERM "$launcher_pid" 2>/dev/null || true
+    wait "$launcher_pid" 2>/dev/null || true
+else
+    stub_pid=$(tr -d '\r\n' < "$TEST_ROOT/stub-child.pid")
+    conv_pid=$(sed -n 's/^# converter pid=\([0-9]*\) sentinel=.*/\1/p' "$trace" | head -n 1)
+    sentinel_dir=$(sed -n 's/^# converter pid=[0-9]* sentinel=\(.*\)$/\1/p' "$trace" | head -n 1 | tr -d '\r')
+    kill -"$sig" "$launcher_pid" 2>/dev/null
+    wait "$launcher_pid" 2>/dev/null
+    signal_rc=$?
+    child_gone=0; kill -0 "$stub_pid" 2>/dev/null || child_gone=1
+    conv_gone=0; kill -0 "$conv_pid" 2>/dev/null || conv_gone=1
+    sentinel_gone=0; [ -n "$sentinel_dir" ] && [ ! -e "$sentinel_dir" ] && sentinel_gone=1
+    LAST_OUT=$signal_out
+    ok=0
+    if [ "$signal_rc" -eq 143 ] && state_field_is "claudesig$sig" state aborted && state_field_is "claudesig$sig" exit 143 \
+       && [ "$child_gone" -eq 1 ] && [ "$conv_gone" -eq 1 ] && [ "$sentinel_gone" -eq 1 ]; then ok=1; fi
+    if [ "$child_gone" -ne 1 ] && [ "$conv_gone" -eq 1 ] && [ "$sentinel_gone" -eq 1 ] && case "${OS:-}:$(uname -s 2>/dev/null)" in Windows_NT:*|*:MINGW*|*:MSYS*|*:CYGWIN*) true;; *) false;; esac; then
+        skip_case "claude $sig stops the stub child and the trace converter" "MSYS could not verify native child termination (converter and sentinel were cleaned)"
+    else
+        expect_case "claude $sig stops the stub child and the trace converter" "$ok" "launcher=$signal_rc child_gone=$child_gone converter_gone=$conv_gone sentinel_gone=$sentinel_gone"
+    fi
+fi
+done
+
+if timeout --version 2>/dev/null | grep -qi coreutils; then
+    fresh_case
+    run_capture claude-timeout env STUB_ACTION=sleep:10 HARNESS_RUN_ID=claudetimeout bash "$CLAUDE_RUN" -p prompt.txt -t 2
+    conv_pid=$(sed -n 's/^# converter pid=\([0-9]*\) .*/\1/p' "$CASE_REPO/.claude/claude-logs/trace-claudetimeout.log" 2>/dev/null | head -n 1)
+    ok=0
+    [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" '^TIMEOUT:' && has "$LAST_OUT" 'claude_exit=124' \
+        && has "$LAST_OUT" '^TRACE_WARNING: no result event in the stream' \
+        && [ -n "$conv_pid" ] && ! kill -0 "$conv_pid" 2>/dev/null && ok=1
+    expect_case "GNU timeout maps to claude exit 124 and leaves no converter" "$ok" "exit=$LAST_RC converter=$conv_pid"
+else
+    skip_case "GNU timeout maps to claude exit 124 and leaves no converter" "GNU coreutils timeout is not first on PATH"
+fi
+
 
 fi
 
@@ -1787,6 +2310,15 @@ if selected evidence; then
             [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
         fi
         expect_case "project agent control-plane approval=$approval" "$ok" "exit=$LAST_RC"
+        fresh_case
+        run_capture codex-agent-control-plane env STUB_ACTION=touch-codex-agent HARNESS_ALLOW_CONTROL_PLANE="$approval" bash "$CODEX_RUN" -p prompt.txt
+        ok=0
+        if [ "$approval" = 0 ]; then
+            [ "$LAST_RC" -eq 1 ] && has "$LAST_OUT" 'CONTROL_PLANE_WARNING.*[.]codex/agents/harness-implementer.toml' && has "$LAST_OUT" '^STATUS: BLOCKED' && ok=1
+        else
+            [ "$LAST_RC" -eq 0 ] && has "$LAST_OUT" '^STATUS: DONE' && ok=1
+        fi
+        expect_case "codex agent control-plane approval=$approval" "$ok" "exit=$LAST_RC"
     done
 fi
 

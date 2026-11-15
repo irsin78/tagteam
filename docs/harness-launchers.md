@@ -67,6 +67,9 @@ guidance, and do not reread unchanged supplied docs. Below is for orchestrators.
    the `-m`/`-e` you pass differ from the route, replace that part with the
    actual values and the reason. For a design session without `announce`, state
    the model/effort and reason yourself. This is a progress notice, not an approval gate.
+   On the Claude host the delegation notice hook also shows the passed
+   `HARNESS_ANNOUNCE` line and the call's actual `-m`/`-e`; it does not replace
+   this sentence (delegation-matrix.md, same section).
    Write goal, scope, existing-change preservation, constraints, verification, and
    output contract to a prompt file; write any launcher verifier separately first.
    Use routed JSON values for MODEL/EFFORT. Run `.sh` with Git Bash even from
@@ -131,11 +134,58 @@ permissions, not a general network sandbox.
   pages; send implementers only the necessary summary prepared by the parent.
 
 4. Start long tasks with `-b` and call `--wait RUN_ID` with the returned RUN_ID.
+   Every implementation unit that the per-host table in delegation-matrix.md sends
+   to a session uses a new implementation session; a unit routed to another vendor,
+   or to a model above the orchestrator's, goes to the routed launcher worker
+   (delegation-matrix.md, "Session shape"). When the route carries `long_run: true`
+   or the user requests a peer loop, use its own worktree and branch with that loop;
+   mission documents arrive through a commit, and the orchestrator commits declared
+   files and merges the branch (peer-sessions skill section 1). Other units share the
+   orchestrator's checkout, one writer at a time, returning CHANGED / VERIFY / NOTES.
+   A host without sessions uses the routed launcher worker; split long runs into
+   foreground-budget units and pass `-P` on each unit:
+   writable runs export `HARNESS_PROGRESS_FILE` and tell the worker to append one
+   `- done: … | next: … | blocked: …` line per completed step to
+   `.harness/progress/progress-<run id>.md` (the file is excluded from CHANGED;
+   read-only runs report `PROGRESS: disabled`). The report prints
+   `PROGRESS: <path> (<n> milestones)` or `PROGRESS: none`, and with `-P` a run
+   without milestones adds `PROGRESS_WARNING`: read the log before trusting the
+   result and make the next unit smaller.
+   claude-run.sh also keeps a live trace: claude runs with `--output-format
+   stream-json`, its events go to `.claude/claude-logs/stream-<run id>.jsonl`, and
+   `claude-trace.py` follows that file into `.claude/claude-logs/trace-<run id>.log`
+   (one timestamped line per assistant text, tool call with its main argument,
+   tool result head and turn summary) while the worker runs. Read it with a
+   bounded read (`tail -n 20 <trace>`, or Monitor on Claude Code); the run id is
+   printed at detach, so the path is known before the run ends. The report prints
+   `TRACE: <path> (<n> lines, stream: <path>)`; `TRACE_WARNING:` means the trace
+   is incomplete (converter failure, or no result event in the stream) and names
+   the stream. The result itself never depends on the trace: the launcher
+   re-extracts the `result` event from the stream when the converter fails, so
+   STATUS, TOKENS and FINAL_MESSAGE are unchanged by a tracing problem. The
+   converter is stopped with the run (normal exit or a signal); only a SIGKILLed
+   launcher leaves it to end on its own timer (`-t` + 90 s).
    A headless or scripted orchestrator (`claude -p`, CI, overnight runs) receives
    no completion notification for a detached run and must block on `--wait` until
    it finishes; ending the turn after `-b` abandons the worker.
    `--wait -t N` is a wait budget including status/PID checks. A final exit-race
    recheck may exceed it by one check duration. On exit 6, wait for the same ID.
+   While a run executes, `--status` and an expired `--wait` print a `HEARTBEAT:`
+   line from the activity log the run's record names (codex run log, claude
+   trace, agy log): elapsed time, line count and seconds since the last write,
+   and how many shell commands (codex) or tool calls (claude) started, with the
+   last one started: a sanitized 100-character command head (a multi-line
+   command shows only `(multi-line command)`) or `<tool>: <main argument>`.
+   For claude it also counts calls still running or failed (never attributed to
+   a call: parallel calls finish in any order); codex results are not counted,
+   because parallel commands and command output make them ambiguous. No other
+   log text (assistant text, tool results, command output) is echoed, and a log
+   over 16 MiB is read only in its last 1 MiB (no count then). The `WAIT:` hint
+   uses `-t 120` so the orchestrator can relay that line to a watching user every
+   two minutes; an unattended orchestrator can use `-t 570`. The claude
+   implement route resolves to a foreground claude-run.sh call, which shows the
+   user nothing until it returns: when the user is waiting on a run that may take
+   more than a couple of minutes, start it with `-b` and poll the same way.
    Exit 2 is availability failure, exit 4 policy denial, exit 1 task/verification
    failure. Claude corrective retries are new calls inlining the original spec
    and failure; `-r` is unsupported. On availability failure, fall back once to
@@ -158,7 +208,7 @@ permissions, not a general network sandbox.
 | Dangerous commands/delegate control plane | PreToolUse | Trusted PreToolUse |
 | Output management | Worker explicitly saves logs | Inspect exit code and needed output |
 | Configuration changes | Live control plane: orchestrator directly; other configuration: worker (session-role.md rule 2) | Check host permissions and change diff |
-| Delegation result evidence | SubagentStop + launcher | Launcher + explicit HEAD/status/diff checks |
+| Delegation result evidence | SubagentStop + launcher | SubagentStop + launcher (trusted hook) + explicit HEAD/status/diff checks |
 | Completion verification | Stop, explicit finish if marker remains | Stop, explicit finish if marker remains (failure persists after continuation limit) |
 
 For Codex AGENTS.md and SessionStart developer-context delivery, see

@@ -73,6 +73,9 @@ $RECYCLE.BIN/
 .claude/.stop-gate
 # Session-scoped mission pointers; durable task state stays in docs/missions/.
 .claude/.mission-open/
+# Worker progress files (launcher -P / HARNESS_PROGRESS_FILE); outside .claude/ because
+# Claude Code refuses delegate writes under .claude/.
+.harness/
 # r15: orchestrator approval marker for settings changes, permission-prompt audit log, subagent worktrees
 .claude/.control-plane-approved
 .claude/.approvals.jsonl

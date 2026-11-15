@@ -118,13 +118,21 @@ admit_run
         self.assertTrue(any(path.endswith("/personal/.codex/config.toml") for path in hashes))
 
     def test_project_agent_definition_is_hashed_and_classified(self):
-        target = self.root / '.agents/agents/project-agent.md'
-        target.parent.mkdir(parents=True)
-        target.write_bytes(b'original')
-        self.assertEqual(self.hashes()['.agents/agents/project-agent.md'], hashlib.sha256(b'original').hexdigest())
-        result = self.control('echo changed > .agents/agents/project-agent.md')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('HITS=.agents/agents/project-agent.md', result.stdout)
+        for name in ('.agents/agents/project-agent.md', '.codex/agents/harness-implementer.toml'):
+            with self.subTest(name=name):
+                target = self.root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'original')
+                self.assertEqual(self.hashes()[name], hashlib.sha256(b'original').hexdigest())
+                result = self.control('echo changed > ' + name)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('HITS=' + name, result.stdout)
+                # A change the hash cannot see (only the worker's changed-file list
+                # names it) is classified by the launcher's CONTROL_PLANE_RE alone.
+                target.unlink()
+                result = self.control('printf "%s\\n" "' + name + '" > changed')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('HITS=' + name, result.stdout)
 
     def test_content_config_is_hashed_and_classified(self):
         target = self.root / '.claude/harness-config.json'

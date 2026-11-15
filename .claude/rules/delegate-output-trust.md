@@ -14,7 +14,8 @@ Establish starting state, ownership and scope before writes; never revert unrela
 work to get a clean tree. Use a worktree/scratch copy for overlapping edits and
 supply intended uncommitted inputs (a HEAD-based worktree does not contain them).
 Scoped sequential writes may use a recorded baseline; no blanket clean-tree or
-extra-commit requirement. Never start competing writers; use launcher wait/status.
+extra-commit requirement. Never start two writers on the same tree or overlapping
+files; use launcher wait/status.
 Git is optional: non-Git work uses sequential scopes or isolated copies, not git init.
 Afterward inspect whole-tree changes. The parent integrates isolated output and
 handles authorized cleanup; workers report paths instead of forcing deletion.
@@ -22,6 +23,7 @@ handles authorized cleanup; workers report paths instead of forcing deletion.
 ## 3. Recovering from unexpected Git changes
 Unexpected HEAD changes require
 baseline/history inspection before recovery, never blind HEAD~1 or automatic reset.
-Codex native workers have no automatic Claude SubagentStop evidence; check files
-and verification explicitly. FINAL_MESSAGE cannot override failed checks, scope
-warnings or remaining .stop-gate markers on any launcher.
+Codex native workers leave the same who/where record only through a trusted
+SubagentStop hook; on either host check files and verification explicitly.
+FINAL_MESSAGE cannot override failed checks, scope warnings or remaining
+.stop-gate markers on any launcher.

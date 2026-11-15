@@ -21,7 +21,8 @@ otherwise use the next row's replacement. Never open a session to hold orchestra
 1. Route the unit: `harness-route.py --host <host> --role implement --assess ...`. Take `model`
    and `effort` from the result.
 2. Announce (session-role rule 5).
-3. Create the session with fresh context and pass model and effort explicitly. An omitted value
+3. Choose the [Session shape](#session-shape), create the session with fresh context,
+   and pass model and effort explicitly. An omitted value
    inherits the orchestrator's model, so omission is a defect. After creation, confirm the
    session's actual model/effort; if it differs from the route or cannot be read, stop that
    session and use the launcher worker instead.
@@ -38,6 +39,17 @@ Example (Claude desktop app, orchestrator on Fable; the example user speaks Kore
 
 then the session is created with `model: claude-opus-5-5`, `effort: medium`, fresh context, and
 the brief's first line `HARNESS ROLE: DELEGATE (implementation session)`.
+
+### Session shape
+Every implementation unit that the per-host table above sends to a session uses a new implementation session; a unit routed to another vendor, or to a model above the orchestrator's, goes to the routed launcher worker.
+- `long_run: true`, or a user-requested peer-session loop: use its own worktree and branch
+  and the peer loop (baton, four messages and event log). Follow peer-sessions skill section 1:
+  mission documents reach the worktree through a commit; the orchestrator commits the
+  declared files and merges the branch.
+- Every other unit: share the orchestrator's checkout, one writer at a time, returning
+  CHANGED / VERIFY / NOTES. The peer loop is not required.
+- A host without sessions: use the routed launcher worker. For `long_run`, split work into
+  verifiable units and use `-P` progress and trace monitoring as described in "Assign a worker".
 
 ### Design escalation
 Check before designing whenever the assessment has `open=2`, and whenever a design decision looks
@@ -106,18 +118,49 @@ verification, recording the actual authorship.
 Export the router's `launch_env` and pass `-t suggested_timeout_s` to the launcher
 (detached `-b` for `max` and whenever `needs_detached` is true; a suggestion above
 570 s is detached because foreground `-t` is capped there), so band, assessment and
-role are recorded without hand-typing. Assessed routes without volume use the small-task estimate for timeout.
+role are recorded without hand-typing. `launch_env` also carries `HARNESS_ANNOUNCE`
+(the announce line, present on every route); put it in the same command as the
+launcher call, as an assignment prefix or `export`/`$env:` statement, so the
+delegation notice hook can show it. Assessed routes without volume use the small-task estimate for timeout.
+`long_run: true` (implement/write routes with assessed volume 2; timeout and
+latency class do not set it) flags work whose rollback is expensive if the
+worker drifts: the announce line ends with `long run (volume 2): implementation session in its own worktree`.
+This selects the [Session shape](#session-shape), not whether a session is used:
+long runs and user-requested peer loops use their own worktree and branch; every
+other unit shares the orchestrator's checkout, one writer at a time, and returns
+CHANGED / VERIFY / NOTES. Mission documents reach a worktree through a commit;
+the orchestrator commits declared files and merges the branch (peer-sessions skill,
+section 1). On a host without sessions use the routed launcher worker, splitting long runs into
+change units that each fit one foreground budget and are verifiable on their
+own, inspect the diff, run the affected checks and commit explicit paths after
+each unit, and pass `-P`: the worker appends one `- done | next | blocked` line
+per completed step to the run's progress file
+(`.harness/progress/progress-<run id>.md`, reported as `PROGRESS:`), and a
+`-P` run that reports no milestones prints `PROGRESS_WARNING` without changing
+STATUS. Watch the progress file, and for a
+Claude worker the live trace (`.claude/claude-logs/trace-<run id>.log`, one line
+per tool call and summary, reported as `TRACE:`), with a bounded read (or Monitor
+on Claude Code) while a detached unit runs; a stalled or off-course milestone or
+tool call is the moment to stop the run, not after it ends. Reviews
+and reads are never long runs: they accumulate nothing to roll back.
 Choose role -> capability band -> latency class -> risk floor/budget -> specialty
 and hard constraints (vision, web, isolation, platform, data boundary).
 model-bindings.json (+ local) lists `workers`: one row per (model, effort) with
 measured index/cost/TTFT and per-host role priorities; declare optional workers
 with `status: optional` and `requires`.
-Implementation goes to the design author's vendor by default (the orchestrator's
-when it designed) and crosses only on `--vendor` or exhaustion; reviews always
-cross (see "Separate authorship from review").
+For `implement` and `write`, explicit `--worker <id>` selects that worker's vendor,
+including the author's own vendor, regardless of the automatic vendor preference.
+It does not make the work an independent review; review/advice roles still exclude
+every artifact author. Existing worker eligibility and option checks still apply.
+A worker on another vendor than the default implementation vendor is a cross and
+needs `--vendor-reason`, like `--vendor` below.
+
+Implementation goes to the design author's vendor by default (the orchestrator's when it designed) and crosses only on
+`--vendor` with a stated reason or exhaustion; reviews always cross (see "Separate
+authorship from review").
 Bands are capability labels independent of leaderboard index values, with one
 Claude cell and one OpenAI cell per band (`tier_cell`, user decision 2026-10-19):
-S Fable 5.1 medium / Astra medium (each vendor's top line at medium effort; the
+S Fable 5.2 medium / Astra medium (each vendor's top line at medium effort; the
 start tier for the hardest assessed tasks and the last escalation rung after A
 fails; defined by vendor line, not by index; S rows require an S floor); A strong
 judgment, Opus 5.5 high / GPT-6.1 Sol xhigh; B general implementation and its
@@ -158,7 +201,8 @@ and a band only available detached returns `needs_detached` instead of a lower b
 for structure/dependency reasoning; the E floor is not a recommendation for every
 exploration. Tiny lookups stay in the main session.
 Native subagents need explicit supported model/effort; include inheritance cost
-when overrides are unavailable. Codex uses process launchers for Claude workers;
+when overrides are unavailable. On the Codex host the installed `.codex/agents/`
+definitions (`harness-implementer`, `harness-scout`) carry them. Codex uses process launchers for Claude workers;
 Claude may use installed native subagents. Git worktree agents require Git; otherwise
 use a scoped sequential run or scratch copy, never automatic git init.
 
@@ -244,11 +288,27 @@ Review plans against designers and code against implementers with a fresh worker
 Implementation and writing stay on the design author's vendor by default
 (`vendor_precedence.implementation_default = same`): the router returns
 `same_vendor: true` with `separation_satisfied: false`, and the review that
-follows must name that vendor as author so it goes to another vendor. Pass
-`--vendor <other vendor>` to cross implementation on purpose; a declared-exhausted
-default vendor crosses automatically. Reviews never accept `--vendor`. Keeping
+follows must name that vendor as author so it goes to another vendor. Cross
+implementation only on the user's request or a stated task reason (for example
+a capability the task needs that the other vendor's rows provide): pass
+`--vendor <other vendor> --vendor-reason "<reason>"`. Separating implementer from
+reviewer is not a reason: the review already crosses. The router refuses a crossing
+`--vendor` or `--worker` without a reason (HARNESS_DENIED, exit 4) and shows the
+reason in the announce line. A declared-exhausted default vendor crosses
+automatically without one. Reviews never accept `--vendor`. Keeping
 design and implementation on one vendor leaves the other vendor free as the
 review lane and as the clearly separated fallback when one side runs out of quota.
+Gemini 4 Argon (agy) is the third review lane: its review roles are marked
+`fallback`, so it ranks after the other vendor and is chosen when that vendor is
+declared exhausted (`HARNESS_BUDGET=exhausted:openai` on a Claude host) or is an
+author. Its TTFT is unmeasured, so the router returns it detached; such a route
+carries `launcher_flags: ["-r"]` (agy plan mode, read-only). Argon's implement role
+is `explicit_only`: it runs web front-end work only when the parent passes
+`--vendor google` or `--worker argon-high` with a `--vendor-reason` naming that
+task, never on automatic crossing. These
+detached fallbacks (exhausted review rows, a named worker or vendor) apply only when
+`--latency` is not given; an assessed or `--author-tier` band keeps its existing rule
+of preferring a detached row of that band.
 Recompute when authorship changes; never hide a coauthor or call self-review
 independent. Missing independence is unavailable. Acceptance still needs actual
 outputs and checks. Review triggers, risk floors and limits: verification-tiering.md.
@@ -270,13 +330,27 @@ Follow session-role.md rule 5 before every launch, review and session creation:
 If no `announce` line exists (a design session), state the model/effort and reason
 yourself. When the launcher call differs from the route, replace model/effort
 with the actual values and say why. Capability band S-E differs from
-verification Tier 0-2.
+verification Tier 0-2. The quoted line alone is not enough.
 Unknown/inherited settings stay explicit; a planned route is not a running worker.
+A child session started with `start_session` (peer-sessions skill) is a launch in this
+sense: resolve the implement route first, pass its `model` and `effort` to
+`start_session` and quote the announce line. Omitted, the child inherits the parent's
+model, so an S-band orchestrator session would hand B-band work to an S-band model.
 Announce material changes before retry/fallback, including lost independence;
 where direct work is enabled, this also applies to a direct takeover.
 Polling needs no notice.
 Continue authorized work immediately: this is a progress update, not an approval gate.
 Examples and launch recipes: docs/harness-launchers.md (read only the needed section).
+On the Claude host a PreToolUse hook (`announce_delegation.py`) also records each
+orchestrator launcher call as a notice: the router's announce line from
+`HARNESS_ANNOUNCE` (or `announce line not passed`) plus the actual launcher, `-m` and
+`-e` (`not given` when absent). The CLI shows it at once; the desktop app folds it into
+the tool call. It carries no task and only the first launcher call of a command, so it
+is a floor under the sentence announcement, never a replacement. When unsure it says
+less (`-m unparsed`, or no notice for heredoc bodies, `bash -n`/`-c` and read-back
+calls); an `export` inside a subshell, function or conditional is read as if it
+applied. Child sessions started with `start_session`, native subagents and calls on
+the Codex host are not seen by this hook.
 
 ## Availability and fallback
 An exhausted vendor is unavailable without a probe. Only a launcher's

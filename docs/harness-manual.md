@@ -20,9 +20,9 @@ entire manual for onboarding.
 
 ```
 .claude/
-  agents/     Six subagent definitions (2 external CLI + 4 Claude)
+  agents/     Six subagent definitions (2 external CLI + 4 Claude); two Codex native workers live in .codex/agents/
   rules/      Shared policies: roles, verification, security boundaries (Claude auto-loads; Codex reads through AGENTS.md)
-  skills/     Recipes loaded only when needed (codex delegation, agy delegation, safety guard verification)
+  skills/     Recipes loaded only when needed (codex delegation, agy delegation, safety guard verification, peer sessions — experimental)
   hooks/      Host-specific hooks and regression tests for dangerous commands, startup, stop, delegation results
   scripts/    codex·agy·claude·local delegation launchers (preflight/invocation/postflight), control-plane hashes, WSL isolation lane helpers
     harness-route.py · harness-session.py · harness_records.py
@@ -31,7 +31,8 @@ entire manual for onboarding.
   settings.json · sandbox-sensitive.json · model-bindings.json (tier table) · model-bindings.local.json.example (local override skeleton; .local.json is gitignored)
 AGENTS.md.template          Single entry instructions for both hosts (install as AGENTS.md; Codex reads it directly, Claude Code through the import)
 CLAUDE.md.template          One-line `@AGENTS.md` import stub (install as CLAUDE.md)
-.codex/hooks.json           Codex SessionStart/PreToolUse/UserPromptSubmit/Stop wiring
+.codex/hooks.json           Codex SessionStart/PreToolUse/UserPromptSubmit/Stop/SubagentStop wiring
+.codex/agents/              Optional Codex native workers (implementer, scout) with explicit model/effort
 check-windows-aliases.ps1   Windows installation preflight (aliases + hook liveness + agy grant)
 check-posix.sh              macOS/Linux installation preflight (bash ≥ 4 · python · hook liveness · agy grant)
 tools/linux-probe.sh        Platform measurements (check unverified notes; no installation or credentials needed)
@@ -99,7 +100,7 @@ another delegation. Reader inputs and local model `auto` behavior are defined in
 | Role | Default route and selection criteria |
 |---|---|
 | Orchestration and decisions | Follow session-role.md and the delegation matrix's "Design escalation" procedure |
-| Implementation | Uses a worker on the design author's vendor by default (the orchestrator's when it designed; Claude: Opus 5.5 medium; OpenAI: GPT-6.1 Sol high) with `same_vendor: true`; the review then goes to the other vendor. `--vendor <other>` crosses implementation on purpose, and a declared-exhausted default vendor crosses automatically. The router picks the cheapest row meeting band floor B in the latency class. Explicitly lower the floor for mechanical work |
+| Implementation | Uses a worker on the design author's vendor (the orchestrator's when it designed) by default (Claude: Opus 5.5 medium; Codex: GPT-6.1 Sol high) with `same_vendor: true`; the review then goes to the other vendor. `--vendor <other> --vendor-reason "<reason>"` crosses implementation on the user's request or a stated task reason (Claude host → Sol high, Codex host → Opus medium; without a reason the router refuses it, and implementer/reviewer separation is not a reason), and a declared-exhausted default vendor crosses automatically. The router picks the cheapest row meeting band floor B in the latency class. Explicitly lower the floor for mechanical work |
 | Writing, HTML, experimental code | Match the tier to the audience and task. Apply binding exceptions for specialties such as HTML |
 | Review | Verify according to risk. Pass `--author-tier` with the author's band: the same band on the other vendor (gate floor C, deep review floor B) |
 | Image verification | Explicit binding in `roles.image_verify`. Does not always match the orchestrator/implementer's vendor |
@@ -124,7 +125,25 @@ Example for an English-speaking user:
 > GPT-6.1 Sol high will fix cache invalidation because band B fits this bounded implementation at lower cost.
 > band B (assessed difficulty 1, exposure 1) -> gpt-6.1-sol/high via codex-run.sh: best cost score of 2 eligible; same vendor as the author; the review must cross vendors
 
-Capability bands S–E differ from verification risk Tiers 0–2.
+When the launcher call's model/effort differ from the route, replace that part
+with the actual values and the reason. An announce line ending in
+`long run (volume 2): implementation session in its own worktree` means the route
+set `long_run: true`. Every implementation unit that the per-host table in
+delegation-matrix.md sends to a session uses a new implementation session; a unit
+routed to another vendor, or to a model above the orchestrator's, goes to the routed
+launcher worker. Long runs and user-requested peer loops use their own worktree and branch
+and the peer loop; mission documents arrive through a commit and the orchestrator
+commits declared files and merges the branch (peer-sessions skill, section 1).
+Other units share the orchestrator's checkout, one writer at a time, returning
+CHANGED / VERIFY / NOTES. On a host without sessions use the routed launcher worker;
+split long runs into verifiable units, pass `-P` and monitor progress and trace
+(delegation-matrix.md, "Assign a worker").
+Capability bands S–E differ from verification risk Tiers 0–2. Announce model changes and
+reasons; this message requires no renewed approval.
+On the Claude host the `announce_delegation.py` hook additionally shows each launcher
+call's announce line and actual `-m`/`-e` as a notice (folded in the desktop app); it
+does not replace this sentence
+([delegation matrix](orchestration/delegation-matrix.md#user-facing-delegation-announcement)).
 
 ### Separating shared contracts, host mechanisms, model traits, and roles
 
@@ -142,6 +161,14 @@ Fix evidence/approval defects in shared rules. Add host/model adaptations only f
 demonstrated gains in failures, rework, or delay. Do not generalize one vendor's
 prompting advice to another, or assign procedural strength by vendor; use task risk and
 observations.
+
+Role example: the read-only native workers `haiku-scout` and `haiku-fetcher` set
+`omitClaudeMd: true` (Claude Code 2.1.271 or later), which leaves out CLAUDE.md,
+AGENTS.md and `.claude/rules/` while PreToolUse guards still run (measured
+2026-11-13). The worker rules they need are written in their own bodies, and the
+parent's prompt names any project-specific protected paths
+([scout brief](orchestration/scout-brief.md)). Writing workers and reviewers keep
+the entry instructions.
 
 ### Applying the GPT-6 Astra official guide
 
@@ -183,6 +210,22 @@ before personal selection; never enable/generate shared config, and retain
 explicit cross-host handoff contracts.
 [Official context management guide](https://learn.chatgpt.com/docs/models#experimental-context-management).
 
+### Applying the Claude Fable 5.2 official guide
+
+The [official Anthropic guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-2)
+applies to Claude routes and to instructions a Claude session reads (entry
+instructions, always-loaded rules, native agent bodies); it does not change other
+vendors' procedures. Shared contracts stay in the same files as for the Astra
+guide above. The guide points below are paraphrased from the 2026-11-13 reading.
+
+| Category | Official point and template handling |
+|---|---|
+| Effort | Re-measure effort for this model instead of carrying over a previous model's setting. Binding effort is rechecked on representative tasks at adoption, and so is the `effort` in native agent definitions. Do not raise it to xhigh or above without a measurement |
+| Absolute words | The model follows instructions containing `never` as absolute rules, so rules should state their scope and reason, with exceptions written out. Prohibitions in shared rules name who they bind and what they cover; new rules do the same |
+| Accumulating caution | Stale notes and vague prohibitions produce needless approval requests; routine steps that need no approval should be named. Project policy names steps taken without asking (as its Git item does), and stale memory notes and mission state are corrected to the facts |
+| Subagents | When the model spawns more subagents than needed, the subagent tool description should state the cost and when delegation pays. Agent `description` fields already say when not to use the agent; whether to delegate follows the cost score in the delegation matrix |
+| Progress updates | The model can be asked for a one-line update every few tool calls. AGENTS.md's progress sentence carries this |
+
 ### Policy documents — pointers
 
 - Roles, progress, conflicts, requirements, communication: `rules/session-role.md`
@@ -207,6 +250,9 @@ explicit cross-host handoff contracts.
   Codex also follows AGENTS.md's explicit read path. Examples:
   [Mission operation](missions/README.md).
 - Recipes: `skills/delegate-codex/SKILL.md`, `skills/delegate-agy/SKILL.md`.
+  Experimental two-session handoff (design/judgment ↔ implementation over desktop
+  messages): `skills/peer-sessions/SKILL.md`, operating notes `docs/peer-sessions.md`,
+  event log `tools/peer-event.py`. It adds a procedure, no permissions.
   Entry instructions resolve roles and required reading.
 
 ### Rationale for rules and scope of reconsideration
@@ -247,10 +293,14 @@ removed procedures, and optional tools.
   [Runtime boundary](runtime-boundary.md#what-the-guards-do-not-cover).
 - PreToolUse directly runs deny_dangerous.py. It performs limited checks on direct
   commands and structured writes; it does not interpret entire shell programs.
+  Its two Claude entries set `"onFailure": "block"`, so a guard that cannot run
+  denies the tool call instead of silently allowing it
+  ([installation](harness-install.md#installation), shared step 0).
 - SessionStart leaves only platform guidance and minimal records. It does not
   inspect usage, local servers, or all files. Diagnose installation issues with
   check-windows-aliases.ps1/check-posix.sh.
-- SubagentStop records only metadata such as delegate and work paths. The parent
+- SubagentStop records only metadata such as delegate and work paths, on Claude and,
+  through a trusted Codex hook, on Codex (each record names its `host`). The parent
   checks actual artifacts, reusing external launcher file-change evidence.
 - Stop requires successful verification only when the task has a .stop-gate.
   Registered multi-item missions separately get one early-stop recovery.
@@ -380,9 +430,11 @@ acceptance scripts. This is a procedure, not a script included in the template.
 - Use local bindings for per-account model access, subscriptions, and budget
   declarations. Do not automatically query usage at startup or economize by
   skipping mandatory verification.
-- For long delegation, use launcher `-b` and `--wait <RUN_ID> -t 570`. Wait exit
-  code 6 means still running, so continue checking status. Follow each launcher's
-  recipe for specific options.
+- For long delegation, or a review the user is waiting on, use launcher `-b` and
+  `--wait <RUN_ID> -t 120`. Wait exit code 6 means still running: relay its
+  `HEARTBEAT:` line to the user in one line and continue checking status
+  (`-t 570` when nobody is watching). Follow each launcher's recipe for specific
+  options.
 - If actual costs/delays repeatedly miss expectations, inspect existing execution
   records and [TIMING](harness-launchers.md#meaning-of-launcher-statistics). Do not treat older measurements as current performance.
 
@@ -499,6 +551,10 @@ project chooses additional isolation and auditing.
 - Usage limits/credit/billing errors do not trigger the fallbackModel chain.
   This harness handles exhausted credits through a "protocol" (manual switching
   rules).
+- `agy-run.sh -r` runs a read-only review in agy plan mode; `-c` grants commands for
+  one run in agy's sandbox (`skills/delegate-agy/SKILL.md`, docs/runtime-boundary.md).
+  Gemini 4 Argon is the fallback reviewer for the three review roles and implements
+  web front-end work only when named (`--vendor google --vendor-reason "<task>"`).
 - The agy write launcher uses the CLI's default model and medium effort unless
   `-e` is supplied; it does not select the model from the binding JSON. Candidate
   bindings are not evidence of the model actually used. After a diagnosed

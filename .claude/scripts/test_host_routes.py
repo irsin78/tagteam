@@ -35,6 +35,99 @@ LEGACY_CROSS = {'vendor_precedence': {'implementation_default': 'other'}}
 
 
 class HostRoutes(unittest.TestCase):
+    def test_child_prepare_identity_preservation_and_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            common = root / 'common'
+            common.mkdir()
+            target = root / '.codex/hooks.json'
+            target.parent.mkdir()
+            target.write_bytes(b'preserve existing bytes')
+            head = 'a' * 40
+            def git(cwd, *args):
+                self.assertEqual(Path(cwd), root)
+                return str(root) if args[-1] == '--show-toplevel' else str(common) if args[-1] == '--git-common-dir' else head
+            with patch.object(session, '_git', side_effect=git), patch.object(session, 'linked_worktree_main', return_value=root.parent), patch.object(session, 'check_codex_hooks', return_value=4) as check, patch.object(session.subprocess, 'run') as run, patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0'}):
+                result = {}
+                self.assertEqual(session.prepare_codex_child(str(root), str(common), head, 'unused', result), 4)
+                self.assertEqual(result['preparation'], 'existing')
+                check.assert_called_once()
+                run.assert_not_called()
+                self.assertEqual(target.read_bytes(), b'preserve existing bytes')
+                for count in (0, -1):
+                    check.return_value = count
+                    with self.assertRaisesRegex(ValueError, 'no effective trusted'):
+                        session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+                check.side_effect = ValueError('untrusted')
+                with self.assertRaisesRegex(ValueError, 'untrusted'):
+                    session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+                for expected_common, expected_head in ((str(root), head), (str(common), 'b' * 40), (str(common), 'aaaa')):
+                    with self.assertRaises(ValueError):
+                        session.prepare_codex_child(str(root), expected_common, expected_head, 'unused', {})
+                with patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '1', 'HARNESS_ALLOW_CONTROL_PLANE': '1'}):
+                    with self.assertRaisesRegex(ValueError, 'delegates'):
+                        session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+                with patch.object(session, 'linked_worktree_main', return_value=None):
+                    with self.assertRaisesRegex(ValueError, 'linked child'):
+                        session.prepare_codex_child(str(root), str(common), head, 'unused', {})
+
+    def test_child_prepare_generation_and_partial_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            generator = root / '.claude/scripts/gen-codex-hooks.sh'
+            generator.parent.mkdir(parents=True)
+            generator.write_text('fixture')
+            target = root / '.codex/hooks.json'
+            head = 'a' * 40
+            def git(cwd, *args):
+                if args[0] == 'status': return ''
+                if args[0] == 'ls-files': return 'tracked'
+                return head if args[-1] == 'HEAD' else str(root)
+            def generate(argv, **kwargs):
+                self.assertEqual(argv, [sys.executable, str(generator), '--python', sys.executable])
+                self.assertEqual(kwargs['cwd'], root)
+                self.assertFalse(any(k.upper().startswith('GIT_') for k in kwargs['env']))
+                target.parent.mkdir()
+                target.write_text('generated fixture')
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            with patch.object(session, '_git', side_effect=git), patch.object(session, 'linked_worktree_main', return_value=root.parent), patch.object(session, 'check_codex_hooks', side_effect=ValueError('untrusted')) as check, patch.object(session.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'fixture generation failed')) as run, patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0', 'GIT_CONFIG_COUNT': '1', 'GIT_DIR': 'wrong'}):
+                failed = {}
+                with self.assertRaisesRegex(ValueError, 'generation failed'):
+                    session.prepare_codex_child(str(root), str(root), head, sys.executable, failed)
+                self.assertEqual(failed['preparation'], 'failed')
+                check.assert_not_called()
+                run.side_effect = generate
+                result = {}
+                with self.assertRaisesRegex(ValueError, 'untrusted'):
+                    session.prepare_codex_child(str(root), str(root), head, sys.executable, result)
+                self.assertEqual(result['preparation'], 'generated')
+                self.assertTrue(target.is_file())
+
+    def test_child_prepare_rejects_modified_generator_before_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            generator = root / '.claude/scripts/gen-codex-hooks.sh'
+            generator.parent.mkdir(parents=True)
+            generator.write_text('modified script')
+            for tracked, status in ((None, ''), ('tracked', ' M .claude/scripts/gen-codex-hooks.sh'), ('tracked', ' M .claude/scripts/workspace-snapshot.py'), ('tracked', None)):
+                def git(cwd, *args):
+                    if args[0] == 'ls-files': return tracked
+                    if args[0] == 'status': return status
+                    return 'a' * 40 if args[-1] == 'HEAD' else str(root)
+                with patch.object(session, '_git', side_effect=git), patch.object(session, 'linked_worktree_main', return_value=root.parent), patch.object(session.subprocess, 'run') as run, patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0'}):
+                    with self.assertRaisesRegex(ValueError, 'modified child hook generator'):
+                        session.prepare_codex_child(str(root), str(root), 'a' * 40, sys.executable, {})
+                    run.assert_not_called()
+                    self.assertFalse((root / '.codex').exists())
+
+    def test_hook_cli_zero_compatibility(self):
+        launcher = (HERE / 'codex-run.sh').read_text(encoding='utf-8')
+        self.assertIn('check-codex-hooks', launcher)
+        for flags, expected in (([], 0), (['--json'], 4), (['--workspace-root', str(ROOT)], 4)):
+            with patch.object(sys, 'argv', ['harness-session.py', 'check-codex-hooks', *flags]), patch.object(session, 'check_codex_hooks', return_value=0), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(session.main(), expected)
+                self.assertNotIn('HOOKS_TRUSTED', out.getvalue())
+
     @unittest.skipUnless((ROOT / 'AGENTS.md.template').exists(), 'template source only')
     def test_orchestrator_routes_implementation_to_sessions_and_workers(self):
         instructions = (ROOT / 'AGENTS.md.template').read_text(encoding='utf-8')
@@ -169,7 +262,7 @@ class HostRoutes(unittest.TestCase):
             self.assertTrue(all(w['tier'] != 'S' for w in rows))
             self.assertTrue(all(self.data['bands']['order'].index(w['tier']) >=
                                 self.data['bands']['order'].index(band) for w in rows))
-        for host, model in [('codex', 'claude-fable-5-1'), ('claude', 'gpt-6-astra')]:
+        for host, model in [('codex', 'claude-fable-5-2'), ('claude', 'gpt-6-astra')]:
             for latency, effort in [('foreground', 'medium'), ('detached', 'medium')]:
                 result = routes.resolve(self.data, host, 'implement', tier='S', latency=latency)
                 self.assertEqual((result['model'], result['effort']), (model, effort))
@@ -455,7 +548,17 @@ class HostRoutes(unittest.TestCase):
         result = routes.resolve(self.data, 'claude', 'write', budget=budget + ',google', latency='detached')
         self.assertFalse(result['available'])
         for host in ('claude', 'codex'):
+            # Argon is the remaining independent reviewer: detached, read-only (-r).
             result = routes.resolve(self.data, host, 'review_deep', author_vendors=['openai', 'claude'], budget=budget)
+            self.assertEqual((result['worker_id'], result['available']), ('argon-high', True))
+            self.assertEqual(result['launcher_flags'], ['-r'])
+            self.assertTrue(result['needs_detached'])
+            result = routes.resolve(self.data, host, 'review_deep', author_vendors=['openai', 'claude'],
+                                    budget=budget + ',google')
+            self.assertFalse(result['available'])
+            self.assertIn('independent reviewer is exhausted', result['reason'])
+            result = routes.resolve(self.data, host, 'review_deep', author_vendors=['openai', 'claude', 'google'],
+                                    budget=budget)
             self.assertFalse(result['separation_satisfied'])
             self.assertFalse(result['available'])
             self.assertIn('no configured route is independent', result['reason'])
@@ -549,6 +652,128 @@ for line in sys.stdin:
                                 session.check_codex_hooks(root)
             self.assertEqual(config.read_text(), '# trust state must remain untouched\n')
 
+    def test_codex_hook_trust_accepts_main_repository_source_in_linked_worktree(self):
+        # Codex loads a linked worktree's project hooks from the main repository's
+        # .codex/hooks.json; the check accepts that source with the same trust rules
+        # and never accepts it outside a worktree.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / 'worktree'
+            main = Path(temp) / 'main'
+            for base in (root, main):
+                (base / '.codex').mkdir(parents=True)
+            definitions = json.dumps({'hooks': {event: [{'hooks': [{'type': 'command', 'command': 'echo ok'}]}]
+                                                for event in ('PreToolUse', 'Stop', 'UserPromptSubmit')}})
+            (main / '.codex/hooks.json').write_text(definitions)
+            stub = Path(temp) / 'engine.py'
+            stub.write_text('''import json, sys
+from pathlib import Path
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get('method') == 'initialize':
+        response = {'id': request['id'], 'result': {}}
+    elif request.get('method') == 'hooks/list':
+        response = json.loads(Path(sys.argv[1]).read_text())
+    else:
+        continue
+    print(json.dumps(response), flush=True)
+''')
+            response_file = Path(temp) / 'response.json'
+            native = subprocess.Popen
+            def spawn(*args, **kwargs):
+                return native([sys.executable, str(stub), str(response_file)], **kwargs)
+            def listing(source, status='trusted'):
+                hooks = [{'key': str(source) + ':' + event + ':0:0', 'sourcePath': str(source),
+                          'enabled': True, 'trustStatus': status}
+                         for event in ('pre_tool_use', 'stop', 'user_prompt_submit')]
+                return {'id': 2, 'result': {'data': [{'hooks': hooks, 'warnings': [], 'errors': []}]}}
+            main_source = (main / '.codex/hooks.json').resolve()
+            with patch.object(session.shutil, 'which', return_value='codex'), patch.object(session.subprocess, 'Popen', side_effect=spawn):
+                with patch.object(session, 'linked_worktree_main', return_value=main.resolve()):
+                    # worktree without its own file: main source accepted
+                    response_file.write_text(json.dumps(listing(main_source)))
+                    self.assertEqual(session.check_codex_hooks(root), 3)
+                    # the worktree's own file exists but Codex loaded main's: still accepted
+                    (root / '.codex/hooks.json').write_text(definitions)
+                    self.assertEqual(session.check_codex_hooks(root), 3)
+                    # same trust rules on the main source
+                    response_file.write_text(json.dumps(listing(main_source, status='untrusted')))
+                    with self.assertRaisesRegex(ValueError, 'untrusted'):
+                        session.check_codex_hooks(root)
+                    # both sources listed: a trusted worktree copy never excuses an untrusted main definition
+                    both = listing((root / '.codex/hooks.json').resolve())
+                    both['result']['data'][0]['hooks'] += listing(main_source, status='untrusted')['result']['data'][0]['hooks']
+                    response_file.write_text(json.dumps(both))
+                    with self.assertRaisesRegex(ValueError, 'untrusted.*main'):
+                        session.check_codex_hooks(root)
+                    both = listing((root / '.codex/hooks.json').resolve())
+                    both['result']['data'][0]['hooks'] += listing(main_source)['result']['data'][0]['hooks']
+                    response_file.write_text(json.dumps(both))
+                    self.assertEqual(session.check_codex_hooks(root), 3)
+                    # neither source listed
+                    response_file.write_text(json.dumps(listing(Path(temp) / 'elsewhere/hooks.json')))
+                    with self.assertRaisesRegex(ValueError, 'missing from effective hooks/list'):
+                        session.check_codex_hooks(root)
+                    # no hooks.json anywhere in a worktree: nothing to confirm, like a plain project without one
+                    (root / '.codex/hooks.json').unlink()
+                    (main / '.codex/hooks.json').unlink()
+                    self.assertEqual(session.check_codex_hooks(root), 0)
+                    # an unreadable candidate is an error, never a confirmed absence
+                    with patch.object(session.Path, 'is_file', side_effect=OSError('EACCES')):
+                        with self.assertRaisesRegex(ValueError, 'cannot inspect'):
+                            session.check_codex_hooks(root)
+                    (main / '.codex/hooks.json').write_text(definitions)
+                with patch.object(session, 'linked_worktree_main', return_value=None):
+                    # not a worktree: the main repository's source is never accepted
+                    response_file.write_text(json.dumps(listing(main_source)))
+                    with self.assertRaisesRegex(ValueError, 'no .codex/hooks.json in the project'):
+                        session.check_codex_hooks(root)
+                    (root / '.codex/hooks.json').write_text(definitions)
+                    with self.assertRaisesRegex(ValueError, 'missing from effective hooks/list'):
+                        session.check_codex_hooks(root)
+
+    def test_linked_worktree_main_detects_git_worktrees(self):
+        git = shutil.which('git')
+        if not git: self.skipTest('git required')
+        with tempfile.TemporaryDirectory() as temp:
+            main = Path(temp) / 'main'
+            main.mkdir()
+            env = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@x', GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@x')
+            def run(*args, cwd=main):
+                subprocess.run([git, *args], cwd=cwd, env=env, check=True, capture_output=True)
+            run('init', '-q')
+            run('commit', '-q', '--allow-empty', '-m', 'init')
+            linked = Path(temp) / 'linked'
+            run('worktree', 'add', '-q', str(linked), '-b', 'exp')
+            self.assertIsNone(session.linked_worktree_main(main))
+            self.assertEqual(session.linked_worktree_main(linked), main.resolve())
+            # a subfolder of a plain repository is not a linked worktree
+            (main / 'docs').mkdir()
+            self.assertIsNone(session.linked_worktree_main(main / 'docs'))
+            (linked / 'docs').mkdir()
+            self.assertEqual(session.linked_worktree_main(linked / 'docs'), main.resolve())
+            plain = Path(temp) / 'plain'
+            plain.mkdir()
+            self.assertIsNone(session.linked_worktree_main(plain))
+            # GIT_DIR / GIT_WORK_TREE overrides never redirect the path-based answer
+            with patch.dict(os.environ, {'GIT_DIR': str(main / '.git'), 'GIT_WORK_TREE': str(main)}):
+                self.assertEqual(session.linked_worktree_main(linked), main.resolve())
+                self.assertIsNone(session.linked_worktree_main(plain))
+            # a submodule's main repository keeps its git dir under the superproject's
+            # .git/modules; `worktree list` names that git dir, so core.worktree decides.
+            upstream = Path(temp) / 'upstream'
+            upstream.mkdir()
+            run('init', '-q', cwd=upstream)
+            run('commit', '-q', '--allow-empty', '-m', 'sub', cwd=upstream)
+            try:
+                run('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', upstream.as_posix(), 'sub')
+            except subprocess.CalledProcessError:
+                self.skipTest('git submodule add unavailable')
+            sub = main / 'sub'
+            sub_linked = Path(temp) / 'sub-linked'
+            run('worktree', 'add', '-q', str(sub_linked), '-b', 'exp', cwd=sub)
+            self.assertEqual(session.linked_worktree_main(sub_linked), sub.resolve())
+            self.assertIsNone(session.linked_worktree_main(sub))
+
     def test_generated_hooks_execute_in_paths_with_shell_metacharacters(self):
         bash = routes.find_bash()
         if not bash: self.skipTest('Bash required')
@@ -616,6 +841,65 @@ for line in sys.stdin:
         self.assertTrue(wired, 'Missing Claude UserPromptSubmit -> stop_gate.py --new-prompt; '
                               'merge that hook into .claude/settings.json.')
 
+    def test_claude_guard_hooks_fail_closed_and_only_they(self):
+        settings = json.loads((ROOT / '.claude/settings.json').read_text(encoding='utf-8'))
+
+        def script_names(handler):
+            tokens = shlex.split(handler.get('command', ''), posix=False)
+            tokens += handler.get('args', [])
+            return {token.strip('\"\'').replace('\\', '/').rsplit('/', 1)[-1] for token in tokens}
+
+        guarded = set()
+        for event, entries in settings.get('hooks', {}).items():
+            for entry in entries:
+                for handler in entry.get('hooks', []):
+                    if handler.get('type') != 'command':
+                        continue
+                    names = script_names(handler)
+                    if event == 'PreToolUse' and 'deny_dangerous.py' in names:
+                        self.assertEqual(handler.get('onFailure'), 'block',
+                                         f'PreToolUse guard for {entry.get("matcher")!r} must set '
+                                         '"onFailure": "block" so a guard that cannot run denies '
+                                         'the call (docs/harness-install.md, shared step 0).')
+                        guarded.update(entry.get('matcher', '').split('|'))
+                    elif names & {'session_preflight.py', 'stop_gate.py', 'verify_delegation.py',
+                                  'announce_delegation.py'}:
+                        # Harness hooks outside the guard stay fail-open: a broken
+                        # SessionStart, prompt or Stop hook must not lock the session.
+                        self.assertNotIn('onFailure', handler,
+                                         f'{event} hook {sorted(names)} must not set onFailure.')
+        for tool in ('Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
+            self.assertIn(tool, guarded, f'No fail-closed PreToolUse guard covers {tool}.')
+
+    def test_claude_delegation_notice_hook_is_a_separate_fail_open_entry(self):
+        settings = json.loads((ROOT / '.claude/settings.json').read_text(encoding='utf-8'))
+        notice, guards = [], []
+        for position, entry in enumerate(settings.get('hooks', {}).get('PreToolUse', [])):
+            names = [{token.strip('\"\'').replace('\\', '/').rsplit('/', 1)[-1]
+                      for token in shlex.split(handler.get('command', ''), posix=False) + handler.get('args', [])}
+                     for handler in entry.get('hooks', [])]
+            if any('deny_dangerous.py' in found for found in names):
+                guards.append(position)
+            if any('announce_delegation.py' in found for found in names):
+                # Its own entry: never inside a guard entry, so a notice failure cannot block.
+                self.assertFalse(any('deny_dangerous.py' in found for found in names))
+                notice.append((position, entry))
+        self.assertEqual(len(notice), 1, 'Missing Claude PreToolUse -> announce_delegation.py; '
+                                         'merge that hook into .claude/settings.json.')
+        position, entry = notice[0]
+        self.assertEqual(set(entry.get('matcher', '').split('|')), {'Bash', 'PowerShell'})
+        # After both guard entries, one short python handler with only the hook as argument.
+        self.assertTrue(guards and position > max(guards), 'the notice entry must follow the guard entries')
+        self.assertEqual(len(entry['hooks']), 1)
+        handler = entry['hooks'][0]
+        # A project may point hooks at another interpreter name (python3, py, an absolute path).
+        self.assertRegex(str(handler.get('command')).replace('\\', '/').rsplit('/', 1)[-1].lower(),
+                         r'^(python[0-9.]*|py)(\.exe)?$')
+        self.assertEqual(handler.get('timeout'), 5)
+        args = handler.get('args', [])
+        self.assertEqual(len(args), 1)
+        self.assertEqual(args[0].replace('\\', '/').rsplit('/', 1)[-1], 'announce_delegation.py')
+
     def test_orchestrator_policies_are_installed_at_their_referenced_paths(self):
         for name in ('delegation-matrix.md', 'retry-policy.md'):
             path = ROOT / 'docs' / 'orchestration' / name
@@ -631,7 +915,7 @@ for line in sys.stdin:
     def test_exhausted_review_reports_incomplete_without_implementation_fallback(self):
         for role in ('plan_review', 'review_gate', 'review_deep'):
             route = routes.resolve(self.data, 'codex', role,
-                                   budget='exhausted:claude', author_vendors=['openai'])
+                                   budget='exhausted:claude,google', author_vendors=['openai'])
             self.assertFalse(route['available'])
             self.assertIn('required review as incomplete', route['reason'])
             self.assertIn('do not use implementation fallback', route['reason'])
@@ -645,7 +929,8 @@ for line in sys.stdin:
         output = StringIO()
         with patch.object(routes, 'find_bash', return_value=None), patch.object(sys, 'argv', [
                 'harness-route.py', '--host', 'codex', '--role', 'review_deep',
-                '--author-vendor', 'openai', '--author-vendor', 'claude']), redirect_stdout(output):
+                '--author-vendor', 'openai', '--author-vendor', 'claude', '--author-vendor', 'google']), \
+                redirect_stdout(output):
             self.assertEqual(routes.main(), 2)
         route = json.loads(output.getvalue())
         self.assertFalse(route['available'])
@@ -796,10 +1081,11 @@ for line in sys.stdin:
         for role in ('plan_review', 'review_gate', 'review_deep'):
             with self.assertRaisesRegex(ValueError, 'actual artifact'):
                 routes.resolve(self.data, 'codex', role)
-        result = routes.resolve(self.data, 'codex', 'review_deep', author_vendors=['openai', 'claude'])
+        result = routes.resolve(self.data, 'codex', 'review_deep', author_vendors=['openai', 'claude', 'google'])
         self.assertFalse(result['available'])
         self.assertFalse(result['separation_satisfied'])
-        result = routes.resolve(self.data, 'codex', 'review_deep', author_vendors=['openai'], budget='exhausted:claude')
+        result = routes.resolve(self.data, 'codex', 'review_deep', author_vendors=['openai'],
+                                budget='exhausted:claude,google')
         self.assertFalse(result['available'])
         self.assertEqual(result['vendor'], 'claude')
 
@@ -884,7 +1170,8 @@ for line in sys.stdin:
             data = json.loads(route.stdout)
             self.assertEqual((data['vendor'], data['available'], data['budget']), ('claude', True, 'exhausted:openai'))
             crossed = subprocess.run([sys.executable, str(HERE / 'harness-route.py'), '--host', 'claude', '--role', 'implement',
-                                      '--vendor', 'openai'], cwd=root, env=dict(env, HARNESS_SESSION_ID='sess-9'),
+                                      '--vendor', 'openai', '--vendor-reason', 'test: explicit cross to the exhausted vendor'],
+                                     cwd=root, env=dict(env, HARNESS_SESSION_ID='sess-9'),
                                      capture_output=True, text=True)
             self.assertEqual(crossed.returncode, 2, crossed.stderr)
             data = json.loads(crossed.stdout)
@@ -961,7 +1248,7 @@ for line in sys.stdin:
         if not (ROOT / '.codex/hooks.json').exists():
             self.skipTest('Codex hooks are not installed on this project')
         hooks = json.loads((ROOT / '.codex/hooks.json').read_text())['hooks']
-        self.assertEqual(set(hooks), {'SessionStart', 'PreToolUse', 'UserPromptSubmit', 'Stop'})
+        self.assertEqual(set(hooks), {'SessionStart', 'PreToolUse', 'UserPromptSubmit', 'Stop', 'SubagentStop'})
         self.assertIn('session_preflight.py', hooks['SessionStart'][0]['hooks'][0]['command'])
         self.assertIn('stop_gate.py', hooks['UserPromptSubmit'][0]['hooks'][0]['command'])
         self.assertIn('--new-prompt', hooks['UserPromptSubmit'][0]['hooks'][0]['command'])
@@ -978,6 +1265,10 @@ for line in sys.stdin:
             generated = json.loads(output.read_text())['hooks']
             self.assertEqual(set(generated), set(hooks))
             self.assertIn('--new-prompt', generated['UserPromptSubmit'][0]['hooks'][0]['command'])
+            for record in (hooks, generated):
+                command = record['SubagentStop'][0]['hooks'][0]['command']
+                self.assertIn('verify_delegation.py', command)
+                self.assertTrue(command.endswith('--host codex'), command)
             for event in hooks:
                 self.assertEqual(generated[event][0]['hooks'][0]['timeout'],
                                  hooks[event][0]['hooks'][0]['timeout'])
@@ -1038,7 +1329,7 @@ for line in sys.stdin:
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((project / '.git').exists())
             hooks = json.loads(output.read_text())['hooks']
-            self.assertEqual(set(hooks), {'SessionStart', 'PreToolUse', 'UserPromptSubmit', 'Stop'})
+            self.assertEqual(set(hooks), {'SessionStart', 'PreToolUse', 'UserPromptSubmit', 'Stop', 'SubagentStop'})
             prompt_hook = hooks['UserPromptSubmit'][0]['hooks'][0]
             self.assertIn('--new-prompt', prompt_hook['commandWindows'])
             for entries in hooks.values():
@@ -1205,7 +1496,10 @@ class SameVendorDefault(unittest.TestCase):
         self.assertEqual((route['worker_id'], route['vendor']), ('sol61-high', 'openai'))
         self.assertTrue(route['separation_satisfied'])
         self.assertNotIn('same_vendor', route)
-        self.assertTrue(route['reason'].startswith('vendor openai selected: implementation crosses to another vendor'))
+        self.assertEqual(route['vendor_override'],
+                         {'default': 'claude', 'vendor': 'openai', 'by': '--vendor', 'reason': None})
+        self.assertTrue(route['reason'].startswith('vendor openai instead of the default claude (--vendor): no reason given; '
+                                                   'vendor openai selected: implementation crosses to another vendor'))
         for role, expected in [('review_gate', 'sol61-medium'), ('review_deep', 'sol61-high'), ('plan_review', 'sol61-high')]:
             review = routes.resolve(self.data, 'claude', role, author_vendors=['claude'])
             self.assertEqual((review['worker_id'], review['vendor']), (expected, 'openai'))
@@ -1247,6 +1541,123 @@ class SameVendorDefault(unittest.TestCase):
         self.assertEqual(output['announce'],
                          'band B (implement role floor) -> claude-opus-5-5/medium via claude-run.sh: cheapest of 2 eligible '
                          'in foreground; same vendor as the author; the review must cross vendors')
+
+
+class VendorOverrideReason(unittest.TestCase):
+    """Moving implementation off its default vendor needs a stated reason (2026-11-02).
+
+    An orchestrator crossed with --vendor only because a stale README named the
+    other app as the implementer; the CLI now refuses a crossing --vendor or
+    --worker without --vendor-reason and shows the reason in the announce line.
+    """
+
+    OTHER = {('claude', 'implement'): ('openai', 'sol61-high'), ('claude', 'write'): ('openai', 'sol61-medium'),
+             ('codex', 'implement'): ('claude', 'opus55-medium'), ('codex', 'write'): ('claude', 'sonnet55-high')}
+
+    def setUp(self):
+        public = json.loads((ROOT / '.claude/model-bindings.json').read_text(encoding='utf-8'))
+        self.data = routes.merge_bindings(public, {})
+        self.assertEqual(self.data['vendor_precedence']['implementation_default'], 'same')
+
+    def cli(self, *argv, data=None, budget='normal'):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(routes, 'load_bindings', return_value=data or self.data), patch.object(
+                routes, 'find_bash', return_value='bash'), patch.object(
+                routes, 'budget_for', return_value=budget), patch.object(sys, 'argv', ['harness-route.py', *argv]), \
+                patch.dict(os.environ, {'HARNESS_DELEGATE_RUN': '0'}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = routes.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def test_crossing_vendor_or_worker_without_reason_is_refused(self):
+        for (host, role), (other, worker) in self.OTHER.items():
+            own = {'claude': 'claude', 'codex': 'openai'}[host]
+            for flag, value in (('--vendor', other), ('--worker', worker)):
+                with self.subTest(host=host, role=role, flag=flag):
+                    code, out, err = self.cli('--host', host, '--role', role, flag, value)
+                    self.assertEqual((code, out), (4, ''))
+                    self.assertIn(f'implementation on {other} instead of the default {own} ({flag})', err)
+                    self.assertIn('needs --vendor-reason', err)
+                    self.assertIn('separating implementer from reviewer is not one', err)
+
+    def test_reason_reaches_metadata_reason_and_announce(self):
+        for (host, role), (other, worker) in self.OTHER.items():
+            own = {'claude': 'claude', 'codex': 'openai'}[host]
+            for flag, value in (('--vendor', other), ('--worker', worker)):
+                with self.subTest(host=host, role=role, flag=flag):
+                    code, out, err = self.cli('--host', host, '--role', role, flag, value,
+                                              '--vendor-reason', 'user asked for the other app')
+                    self.assertEqual(code, 0, err)
+                    route = json.loads(out)
+                    self.assertEqual(route['vendor'], other)
+                    self.assertEqual(route['vendor_override'], {'default': own, 'vendor': other, 'by': flag,
+                                                                'reason': 'user asked for the other app'})
+                    clause = f'implementation on {other} instead of the default {own} ({flag}): user asked for the other app'
+                    self.assertIn('; ' + clause + '; ', route['announce'])
+                    self.assertTrue(route['reason'].startswith(
+                        f'vendor {other} instead of the default {own} ({flag}): user asked for the other app; '))
+
+    def test_default_vendor_and_automatic_crossing_need_no_reason(self):
+        for argv in (('--host', 'claude', '--role', 'implement', '--vendor', 'claude'),
+                     ('--host', 'codex', '--role', 'write', '--vendor', 'openai'),
+                     ('--host', 'claude', '--role', 'implement', '--worker', 'opus55-high')):
+            with self.subTest(argv=argv):
+                code, out, err = self.cli(*argv)
+                self.assertEqual(code, 0, err)
+                self.assertNotIn('vendor_override', json.loads(out))
+        # A reason without an override is accepted and not shown.
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor-reason', 'unused reason')
+        self.assertEqual(code, 0, err)
+        route = json.loads(out)
+        self.assertNotIn('vendor_override', route)
+        self.assertNotIn('unused reason', route['announce'] + route['reason'])
+        # The own vendor declared exhausted: the route crosses on its own.
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai', budget='exhausted:claude')
+        self.assertEqual(code, 0, err)
+        self.assertNotIn('vendor_override', json.loads(out))
+        # A project that crosses by default has no default vendor to override.
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai',
+                                  data=routes.merge_bindings(self.data, LEGACY_CROSS))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn('vendor_override', json.loads(out))
+
+    def test_default_vendor_follows_retry_author_and_rows(self):
+        env = dict(os.environ)
+        default = routes.default_implementation_vendor
+        self.assertEqual(default(self.data, 'claude', 'implement', {'claude'}, None, 'normal', ROOT, env), 'claude')
+        self.assertEqual(default(self.data, 'claude', 'implement', {'claude'}, 'sol61-high', 'normal', ROOT, env), 'openai')
+        self.assertEqual(default(self.data, 'claude', 'implement', {'openai'}, None, 'normal', ROOT, env), 'openai')
+        self.assertEqual(default(self.data, 'codex', 'write', {'openai', 'claude'}, None, 'normal', ROOT, env), 'openai')
+        self.assertIsNone(default(self.data, 'claude', 'implement', {'claude'}, None, 'exhausted:claude', ROOT, env))
+        self.assertIsNone(default(self.data, 'claude', 'plan_review', {'claude'}, None, 'normal', ROOT, env))
+        no_row = dict(self.data, workers=[dict(w, status='retired') if w['vendor'] == 'claude' else w
+                                          for w in self.data['workers']])
+        self.assertIsNone(default(no_row, 'claude', 'implement', {'claude'}, None, 'normal', ROOT, env))
+        # A single author on the other vendor makes that vendor the default.
+        route = routes.resolve(self.data, 'claude', 'implement', author_vendors=['openai'], vendor='claude')
+        self.assertEqual(route['vendor_override'], {'default': 'openai', 'vendor': 'claude', 'by': '--vendor', 'reason': None})
+
+    def test_reason_validation_and_review_roles(self):
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai',
+                                  '--vendor-reason', ' user\nasked\x1b[31m  for\tcodex ')
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)['vendor_override']['reason'], 'user asked [31m for codex')
+        for reason in ('', ' \n\t ', 'x' * 201):
+            with self.subTest(length=len(reason)):
+                code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai',
+                                          '--vendor-reason', reason)
+                self.assertEqual((code, out), (4, ''))
+                self.assertIn('--vendor-reason must be 1-200 characters', err)
+        code, out, err = self.cli('--host', 'claude', '--role', 'implement', '--vendor', 'openai', '--vendor-reason', 'x' * 200)
+        self.assertEqual(code, 0, err)
+        code, out, err = self.cli('--host', 'claude', '--role', 'review_deep', '--author-vendor', 'claude',
+                                  '--vendor-reason', 'not for reviews')
+        self.assertEqual((code, out), (4, ''))
+        self.assertIn('--vendor-reason is only for implement/write', err)
+
+    def test_internal_launcher_default_is_not_refused(self):
+        self.assertEqual(routes.launcher_default(self.data, 'openai', 'implement')['id'], 'sol61-high')
+        self.assertEqual(routes.launcher_default(self.data, 'claude', 'write')['id'], 'sonnet55-high')
 
 
 class ReviewFollowUps(unittest.TestCase):
@@ -1326,16 +1737,16 @@ class AssessmentRoutes(unittest.TestCase):
     def assess(self, **ratings):
         return dict(dict(open=0, tangle=0, precedent=0, verifier=0, consequence=0), **ratings)
 
-    def test_catalog_contains_exactly_the_23_supported_rows(self):
+    def test_catalog_contains_exactly_the_25_supported_rows(self):
         expected = {
             'S': {'fable-medium', 'fable-high', 'fable-xhigh', 'astra-medium', 'astra-high', 'astra-xhigh'},
             'A': {'opus55-high', 'opus55-xhigh', 'sol61-max', 'sol61-xhigh', 'argon-high'},
             'B': {'opus55-medium', 'sol61-high'},
-            'C': {'sonnet55-high', 'sol61-medium', 'flash-medium'},
-            'D': {'sonnet55-medium', 'luna6-high', 'sol61-low', 'flash-low', 'local-reader'},
+            'C': {'sonnet55-high', 'sol61-medium', 'flash-medium', 'terra61-xhigh'},
+            'D': {'sonnet55-medium', 'luna6-high', 'sol61-low', 'flash-low', 'local-reader', 'terra61-medium'},
             'E': {'haiku55', 'luna6-low'},
         }
-        self.assertEqual(len(self.data['workers']), 23)
+        self.assertEqual(len(self.data['workers']), 25)
         for band, ids in expected.items():
             self.assertEqual({w['id'] for w in self.data['workers'] if w['tier'] == band}, ids)
         # One Claude cell and one OpenAI cell per band (user decision 2026-10-19); the
@@ -1346,7 +1757,7 @@ class AssessmentRoutes(unittest.TestCase):
         self.assertEqual({cells[(b, 'openai')] for b in 'SABCDE'},
                          {'astra-medium', 'sol61-xhigh', 'sol61-high', 'sol61-medium', 'luna6-high', 'luna6-low'})
         self.assertEqual({w['id'] for w in self.data['workers'] if w['status'] == 'conditional'},
-                         {'fable-high', 'fable-xhigh', 'astra-high', 'astra-xhigh', 'opus55-xhigh', 'sol61-max'})
+                         {'fable-high', 'fable-xhigh', 'astra-high', 'astra-xhigh', 'opus55-xhigh', 'sol61-max', 'terra61-medium', 'terra61-xhigh'})
         # Luna low reads for the Codex host only; the Claude host keeps its in-process Haiku agents.
         self.assertEqual(routes.resolve(self.data, 'claude', 'explore')['worker_id'], 'haiku55')
         self.assertEqual(routes.resolve(self.data, 'codex', 'explore')['worker_id'], 'luna6-low')
@@ -1621,7 +2032,7 @@ class OrchestratorMetadata(unittest.TestCase):
                 ('B', self.assess(open=2), True, 'A', {'model': 'claude-opus-5-5', 'effort': 'high'}),
                 ('A', self.assess(open=2), False, 'A', None),
                 ('S', self.assess(open=2), False, 'A', None),
-                ('A', self.assess(tangle=2, verifier=2), True, 'S', {'model': 'claude-fable-5-1', 'effort': 'medium'})]:
+                ('A', self.assess(tangle=2, verifier=2), True, 'S', {'model': self.data['bands']['S']['lanes']['claude'], 'effort': 'medium'})]:
             with self.subTest(band=band, ratings=ratings):
                 plain = routes.resolve(self.data, 'claude', 'implement', env={}, assess=ratings)
                 route = routes.resolve(self.data, 'claude', 'implement', env={}, assess=ratings, orchestrator_band=band)
@@ -1680,6 +2091,23 @@ class OrchestratorMetadata(unittest.TestCase):
         route = routes.resolve(data, 'claude', 'write', assess=self.assess(), orchestrator_band='B')
         self.assertEqual(route['design_escalation']['design_band'], 'A')
 
+    def test_cli_preserves_vendor_reason_and_design_escalation_together(self):
+        args = ['harness-route.py', '--host', 'claude', '--role', 'implement',
+                '--vendor', 'openai', '--vendor-reason', 'user requested OpenAI',
+                '--orchestrator-band', 'B',
+                '--assess', 'open=2,tangle=0,precedent=0,verifier=0,consequence=0,volume=2']
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+                routes, 'load_bindings', return_value=self.data), patch.object(
+                routes, 'find_bash', return_value='bash'), patch.object(
+                sys, 'argv', args), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(routes.main(), 0)
+        route = json.loads(output.getvalue())
+        self.assertTrue(route['design_escalation']['required'])
+        self.assertEqual(route['vendor_override']['reason'], 'user requested OpenAI')
+        self.assertTrue(route['long_run'])
+        self.assertEqual(route['launch_env']['HARNESS_ANNOUNCE'], route['announce'])
+        self.assertIn('user requested OpenAI', route['announce'])
+
     def test_orchestrator_band_cli_requires_assess_and_preserves_announcement(self):
         for assessed in (False, True):
             args = ['harness-route.py', '--host', 'claude', '--role', 'implement', '--orchestrator-band', 'B']
@@ -1713,6 +2141,35 @@ class ScoredRoutes(unittest.TestCase):
     def scores(self, route):
         return {score['option']: score for score in route['scores']}
 
+    def test_long_run_flag_for_writing_roles_only(self):
+        # Assessed volume 2 marks a writing route as a long run: the announce line
+        # selects the worktree shape of an implementation session. Timeout past the cap, latency and
+        # read-only roles never set it; `reason` is unchanged.
+        suffix = 'long run (volume 2): implementation session in its own worktree'
+        with patch.object(routes, 'worker_estimate', return_value=(1, 0, 'seed')):
+            data = json.loads(json.dumps(self.data))
+            for seed in data['selection_policy']['estimates']['delegate_overhead'].values():
+                seed['minutes'] = 0
+            small = self.route(data, assess=self.assess(volume=0))
+            self.assertNotIn('long_run', small)
+            self.assertNotIn('long run', small['announce'])
+            big = self.route(data, assess=self.assess(volume=2))
+            self.assertTrue(big['long_run'])
+            self.assertTrue(big['announce'].endswith(suffix))
+            self.assertNotIn('long run', big['reason'])
+            self.assertEqual(big['suggested_timeout_s'], 570)
+            self.assertFalse(big['needs_detached'])
+            read = self.route(data, role='explore', assess=self.assess(volume=2))
+            self.assertNotIn('long_run', read)
+        with patch.object(routes, 'worker_estimate', return_value=(1, 10, 'seed')):
+            slow = self.route(assess=self.assess(volume=1))
+            self.assertGreater(slow['suggested_timeout_s'], routes.FOREGROUND_TIMEOUT_CAP_S)
+            self.assertTrue(slow['needs_detached'])
+            self.assertNotIn('long_run', slow)
+            big = self.route(assess=self.assess(volume=2))
+            self.assertTrue(big['long_run'])
+            self.assertIn('detached run (-b --wait); ' + suffix, big['announce'])
+
     def test_timeout_minimum_rounding_and_launch_environment(self):
         for volume in (None, 0, 1, 2):
             for minutes, expected in ((0, 570), (3, 570), (3.001, 571), (4.125, 672)):
@@ -1741,7 +2198,8 @@ class ScoredRoutes(unittest.TestCase):
                     canonical = ','.join(f'{key}={assessment[key]}' for key in records.ASSESSMENT_KEYS
                                          if key in assessment)
                     self.assertEqual(route['launch_env'], dict(HARNESS_BAND=route['band'],
-                                     HARNESS_ASSESS=canonical, HARNESS_ROLE='implement'))
+                                     HARNESS_ASSESS=canonical, HARNESS_ROLE='implement',
+                                     HARNESS_ANNOUNCE=route['announce']))
 
     def test_timeout_covers_the_worker_only_even_when_direct_wins(self):
         data = json.loads(json.dumps(self.data))
@@ -1809,8 +2267,25 @@ class ScoredRoutes(unittest.TestCase):
 
     def test_launch_environment_omits_unknown_assessment(self):
         route = self.route(assess=None)
-        self.assertNotIn('launch_env', route)
+        # Only the announce line travels without an assessment (announce_delegation.py).
+        self.assertEqual(route['launch_env'], {'HARNESS_ANNOUNCE': route['announce']})
         self.assertNotIn('suggested_timeout_s', route)
+
+    def test_launch_environment_carries_the_final_announce_line(self):
+        routes_seen = [self.route(), self.route(assess=None), self.route(role='review_gate', author_vendors=['claude']),
+                       self.route(worker='fast')]
+        for route in routes_seen:
+            with self.subTest(announce=route['announce']):
+                self.assertEqual(route['launch_env']['HARNESS_ANNOUNCE'], route['announce'])
+        # main() rewrites the announce line when no Bash exists; the env copy follows it.
+        stream = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), patch.object(routes, 'load_bindings', return_value=self.data), patch.object(
+                routes, 'find_bash', return_value=None), patch.object(routes, 'budget_for', return_value='normal'), patch.object(
+                sys, 'argv', ['harness-route.py', '--host', 'claude', '--role', 'implement']), contextlib.redirect_stdout(stream):
+            routes.main()
+        output = json.loads(stream.getvalue())
+        self.assertTrue(output['announce'].startswith('unavailable: no usable Bash'))
+        self.assertEqual(output['launch_env']['HARNESS_ANNOUNCE'], output['announce'])
 
     def test_defect_cli_retry_keeps_worker_model_effort_and_sandbox(self):
         stream = io.StringIO()

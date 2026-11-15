@@ -2,7 +2,7 @@
   "schema_version": 3,
   "description": "Role -> tier -> worker. The rules (rules/) speak only of tiers and roles; the concrete model, effort and per-host role priorities are set in the workers list here. Model API support, app modes, launcher policy and measured results are kept distinct. Codex delegates cannot use ultra.",
   "precedence": "model-bindings.local.json overrides keys at the same path (dictionaries merge key by key; arrays and scalars are replaced whole; workers_local merges rows by id). harness-route.py selects a worker from the workers list, the role, the host and the declared budget, and the launcher uses that resolved value. Nothing queries usage or servers at start-up. Runtime boundary: docs/runtime-boundary.md.",
-  "updated": "2026-10-20",
+  "updated": "2026-11-10",
   "catalog_checked": "2026-10-19",
   "vendors": {
     "claude": {
@@ -15,11 +15,10 @@
           "opus alias (claude -p --model opus: resolves to claude-opus-5-5)",
           "claude-sonnet-5-5 (claude -p --model claude-sonnet-5-5: OK on Claude Code 2.1.283; the CLI logs unrecognized_model and disables the advisor for it)",
           "claude-haiku-5-5 (claude -p --model claude-haiku-5-5 on Claude Code 2.1.296: OK, modelUsage=claude-haiku-5-5)",
-          "haiku alias (claude -p --model haiku: resolves to claude-haiku-5-5)"
+          "haiku alias (claude -p --model haiku: resolves to claude-haiku-5-5)",
+          "claude-fable-5-2 (claude -p --model claude-fable-5-2 --effort medium|high|xhigh on Claude Code 2.1.321, 2026-11-10: OK, modelUsage=claude-fable-5-2)"
         ],
-        "from_model_table": [
-          "claude-fable-5-1"
-        ],
+        "from_model_table": [],
         "source": "Claude Code 2.1.280; IDs not probed come from the claude-api skill model table (cached 2026-06-24)",
         "note": "In-process agents pin effort in frontmatter; claude-run.sh passes --effort explicitly. Opus 5.5 API default effort is medium; never rely on the default."
       }
@@ -33,23 +32,67 @@
         "https://developers.openai.com/api/docs/guides/latest-model",
         "https://developers.openai.com/api/docs/models/gpt-6-astra",
         "https://learn.chatgpt.com/docs/models",
-        "https://learn.chatgpt.com/docs/config-file/config-reference"
+        "https://learn.chatgpt.com/docs/config-file/config-reference",
+        "https://developers.openai.com/api/docs/models/gpt-6.1-terra"
       ],
       "effort_note": "The Astra API lists low/medium/high/xhigh/max explicitly (model page re-read 2026-10-06; API default medium per the latest-model guide). The Codex models page (2026-10-06) says \"Start with Light for Astra\", \"Start with High for Luna\" and, for GPT-6.1 Sol, the client default; The same page states: Light in the desktop app, ChatGPT Work on the web and the IDE extension, or Low in the CLI, suits quick, well-scoped tasks, so Light = model_reasoning_effort=low (verified 2026-10-06). The installed CLI cache (~/.codex/models_cache.json, fetched 2026-10-06) lists low/medium/high/xhigh/max/ultra for Astra with default_reasoning_level medium and multi_agent_reasoning_effort xhigh; GPT-6.1 Sol has default_reasoning_level low, so the client default the page refers to is low on this CLI. The S lane runs at medium (user decision 2026-10-19); high/xhigh/max rows are conditional and need an explicit --worker. Codex app Ultra is an automatic sub-agent mode; the delegation launcher and router refuse it under the no-redelegation contract. max is -b only. The enumeration in the official config-reference is separate and does not replace a measured success on the installed CLI. The human main session's model and mode are never changed.",
       "catalog": {
-        "checked": "2026-10-01",
-        "source": "~/.codex/models_cache.json (codex-cli 0.159.3, cache fetched 2026-10-01T01:19Z)",
+        "checked": "2026-10-27",
+        "source": "~/.codex/models_cache.json (codex-cli 0.164.0, cache fetched 2026-10-27T07:37Z); Terra official model page checked 2026-10-27. Earlier probe dates remain historical.",
         "listed": [
           "gpt-6.1-sol (priority 1)",
           "gpt-6-astra (priority 2)",
-          "gpt-6-luna (priority 4)"
+          "gpt-6.1-terra (priority 3)",
+          "gpt-6-luna (priority 5)"
         ],
         "probe": {
           "date": "2026-10-01",
           "command": "codex exec -m <model> -c model_reasoning_effort=<effort> -s read-only --skip-git-repo-check \"Reply with exactly: OK\" < /dev/null",
           "gpt-6.1-sol": "OK at medium (3,841 tokens) and high (3,842 tokens) on codex-cli 0.159.3, 2026-10-01: rollout reached this ChatGPT account. History: 2026-09-30 on codex-cli 0.158.0 it was refused with HTTP 400 'not supported when using Codex with a ChatGPT account' while the rollout was pending.",
           "note": "A catalog or leaderboard listing is not runnability. A candidate enters alternatives/pending_replacement only with a probe result and date; it becomes a worker row only after a successful probe on the installed CLI and account.",
-          "stdin_note": "codex-cli 0.159.x reads additional input from stdin when it is not closed; a manual probe without '< /dev/null' waits instead of answering. The launchers already pass the prompt on stdin."
+          "stdin_note": "codex-cli 0.159.x reads additional input from stdin when it is not closed; a manual probe without '< /dev/null' waits instead of answering. The launchers already pass the prompt on stdin.",
+          "gpt-6.1-terra": "OK at medium on codex-cli 0.164.0, 2026-10-27: codex-run.sh read-only probe returned TERRA_OK, STATUS DONE, CHANGED none, 5,080 tokens, 17s total. Model availability only; not a quality, tool-use or latency benchmark. Xhigh probe also passed on 2026-10-27 (TERRA_XHIGH_OK, STATUS DONE, CHANGED none)."
+        },
+        "model_details": {
+          "gpt-6.1-terra": {
+            "checked": "2026-10-27",
+            "source": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+            "description": "Fast, efficient model for visual reasoning, precise computer use and natural writing.",
+            "api": {
+              "reasoning_efforts": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "default_effort": "medium",
+              "context_window": 1050000,
+              "max_output_tokens": 128000,
+              "tool_calling": "Responses API required",
+              "standard_usd_per_million_tokens": {
+                "input": 1.0,
+                "cached_input": 0.05,
+                "output": 5.0
+              },
+              "pricing_note": "Standard text rates, <=272K input tokens; API prices are not benchmark metrics.cost or ChatGPT plan usage."
+            },
+            "codex_cache": {
+              "cli": "codex-cli 0.164.0",
+              "checked": "2026-10-27",
+              "default_effort": "low",
+              "listed_efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
+            },
+            "adoption": "Medium and xhigh availability probes passed. Explicit-only candidates: terra61-medium (D), terra61-xhigh (C), user-approved 2026-10-27. Existing default cells unchanged. AA index/cost evidence is provisional; TTFT and long-horizon/vision task acceptance are unverified. Existing ultra ban and detached-only max rule unchanged."
+          }
         }
       }
     },
@@ -64,7 +107,8 @@
           "gemini-4-argon (high/medium/low; agy ids gemini-4-argon-<effort>)",
           "gemini-3.8-flash (high/medium/low)"
         ]
-      }
+      },
+      "cli_modes": "agy 1.5.3 (2026-11-08): --mode plan (no edits; agy-run.sh -r for reviews), --sandbox (terminal restrictions) and --settings (this run only, never saved; agy-run.sh -c passes a command grant through it). Measured inside a Claude Code session: plan mode wrote nothing, the sandbox blocked network but not a write to the home directory."
     },
     "local": {
       "status": "unverified",
@@ -177,7 +221,7 @@
     }
   },
   "vendor_precedence": {
-    "rationale": "Review by a vendor other than the author is the rule; design and implementation stay on one vendor by default (implementation_default = same, user decision 2026-10-20), so the other vendor is the review lane and the clearly separated area to switch to when one side runs out of quota. harness-route.py --vendor <other vendor> crosses implementation on purpose; a declared-exhausted default vendor hands the route to another vendor automatically. The route is re-selected from the actual authoring vendor, risk and availability.",
+    "rationale": "Review by a vendor other than the author is the rule; design and implementation stay on one vendor by default (implementation_default = same, user decision 2026-10-20), so the other vendor is the review lane and the clearly separated area to switch to when one side runs out of quota. harness-route.py --vendor <other vendor> --vendor-reason \"<reason>\" crosses implementation on the user's request or a stated task reason (implementer/reviewer separation is not one; without a reason the router refuses); a declared-exhausted default vendor hands the route to another vendor automatically. The route is re-selected from the actual authoring vendor, risk and availability.",
     "overridden_by": "specialties and hard constraints (vision, web, isolation, platform, data that must not leave) beat this order. Never the other way round.",
     "by_orchestrator": {
       "claude": [
@@ -197,8 +241,8 @@
       "write",
       "decide"
     ],
-    "note": "by_orchestrator orders cross-vendor candidates (write/decide, and implementation when --vendor names another vendor or the default vendor is exhausted); with implementation_default = same the implementation lane is the host's own vendor. OpenAI lane shape: Astra (S), GPT-6.1 Sol (A/B/C), GPT-6 Luna (D/E), mirroring Fable / Opus / Sonnet / Haiku. The HTML specialty is kept.",
-    "implementation_vendor": "same: the design author's vendor (host vendor, or the previous worker's vendor on a retry); the route reports same_vendor: true, separation_satisfied: false. --vendor <other> crosses; reviews never accept --vendor. Set implementation_default to \"other\" to restore cross-vendor implementation as the default.",
+    "note": "by_orchestrator orders cross-vendor candidates (write/decide, and implementation when --vendor names another vendor with --vendor-reason or the default vendor is exhausted); with implementation_default = same the implementation lane is the host's own vendor. OpenAI lane shape: Astra (S), GPT-6.1 Sol (A/B/C), GPT-6 Luna (D/E), mirroring Fable / Opus / Sonnet / Haiku. The HTML specialty is kept.",
+    "implementation_vendor": "same: the design author's vendor (host vendor, or the previous worker's vendor on a retry); the route reports same_vendor: true, separation_satisfied: false. --vendor <other> with --vendor-reason crosses (a --worker on another vendor needs the reason too); reviews never accept --vendor. Set implementation_default to \"other\" to restore cross-vendor implementation as the default.",
     "implementation_default": "same"
   },
   "budget": {
@@ -218,14 +262,15 @@
   },
   "specialties": [
     {
-      "specialty": "HTML/CSS and static prototype authoring",
+      "specialty": "web front-end implementation (HTML/CSS/JS), static prototypes and documents",
       "vendor": "google",
       "tiers": [
+        "A",
         "C",
         "D"
       ],
       "evidence": "experience",
-      "rationale": "experience + 5x output speed + separate quota"
+      "rationale": "experience + 5x output speed + separate quota; Gemini 4 Argon (A) for web front-end implementation and documents (user observation 2026-11-08), picked with --vendor google or --worker argon-high"
     },
     {
       "specialty": "writing: design documents / operating manuals / per-language text / commit and release notes",
@@ -252,8 +297,8 @@
         "data": "https://epoch.ai/data/benchmark_data.zip (frontierswe_external.csv)",
         "provides": "long-horizon agentic SWE score (Mean@5), implementation/performance/research sub-scores, average cost and duration",
         "updated": "2026-09-30",
-        "checked": "2026-10-06",
-        "note": "Collected by Epoch AI; one row per model at its top effort (max; Gemini Flash high), harness proximus. 2026-10-06: Astra 0.655, Opus 5.5 0.623, Sonnet 5.5 0.619, Fable 5.1 0.563, Gemini 3.8 Flash 0.196, Gemini 4 Argon 0.549 (high). No GPT-6.1 Sol, GPT-6 Luna or Haiku 4.5 row.",
+        "checked": "2026-11-10",
+        "note": "Collected by Epoch AI; one row per model at its top effort (max; Gemini Flash high), harness proximus. 2026-11-10 (frontierswe.com top-10 table, read through an LLM summary): Fable 5.2 0.699 (±0.086), Astra 0.655 (±0.089); effort not stated on the page. Not visible in that table and carried from the 2026-10-06 CSV read: Opus 5.5 0.623, Sonnet 5.5 0.619, Gemini 4 Argon 0.549 (high), Gemini 3.8 Flash 0.196. No GPT-6.1 Sol, GPT-6 Luna or Haiku row seen.",
         "rationale": "Measures long-horizon agentic work and lists models within weeks of release. Scores are model-level evidence at the measured effort, not per-effort values. Excluded alternatives: policy.excluded."
       },
       "epoch_eci": {
@@ -262,9 +307,9 @@
         "url": "https://epoch.ai/eci",
         "data": "https://epoch.ai/data/eci_scores.csv",
         "provides": "composite capability index with confidence interval",
-        "updated": "2026-10-05",
-        "checked": "2026-10-06",
-        "note": "2026-10-06: Opus 5.5 167.4, Astra 166.5, Sonnet 5.5 165.2, Fable 5.1 164.8, Gemini 3.8 Flash 156.9; Haiku 4.5 listed (2025). No GPT-6.1 Sol or GPT-6 Luna. A composite like the primary, so it flags disagreement rather than filling slots."
+        "updated": "2026-11-09",
+        "checked": "2026-11-10",
+        "note": "2026-11-10 (CSV read through an LLM summary): Fable 5.2 174.24, Astra 169.16, GPT-6.1 Sol 168.87, Opus 5.5 168.67, GPT-6.1 Terra 168.11, Gemini 4 Argon 166.53, Sonnet 5.5 166.32, Haiku 5.5 160.25, Gemini 3.8 Flash 158.66, GPT-6 Luna 156.5. The scale moved since the 2026-10-06 read (Opus 5.5 was 167.4), so values from different read dates are not comparable; worker eci values follow this read. A composite like the primary, so it flags disagreement rather than filling slots."
       },
       "llm_stats": {
         "rank": "cross-check",
@@ -488,7 +533,7 @@
   "workers": [
     {
       "id": "fable-medium",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "vendor": "claude",
       "effort": "medium",
       "tier": "S",
@@ -497,24 +542,24 @@
       "tier_cell": true,
       "tier_fixed": true,
       "metrics": {
-        "index": 49,
-        "cost": 2.98,
-        "ttft_s": 14.27,
-        "tps": 56,
+        "index": 56,
+        "cost": 3.8,
+        "ttft_s": 12.36,
+        "tps": 86,
         "source": "artificial_analysis",
-        "read": "2026-10-19",
-        "secondary_pass1": 0.563,
+        "read": "2026-11-10",
+        "secondary_pass1": 0.699,
         "provisional": false,
-        "note": "AA leaderboard 2026-10-19, medium, 'with fallback' configuration",
-        "secondary_effort": "max",
+        "note": "AA 2026-11-10, 'Claude Fable 5.2 (medium)': index 56, cost per Intelligence Index task $3.80, First Answer Token 12.36s, 86 tok/s. The leaderboard and the model page agree; both were read through an LLM summary.",
+        "secondary_effort": "unstated",
         "secondary_source": "frontierswe",
-        "secondary_read": "2026-10-06",
-        "eci": 164.8
+        "secondary_read": "2026-11-10",
+        "eci": 174.2
       },
       "probe": {
-        "date": "2026-10-19",
+        "date": "2026-11-10",
         "result": "OK (one-word prompt, read-only)",
-        "cli": "Claude Code 2.1.303"
+        "cli": "Claude Code 2.1.321"
       },
       "roles": {
         "implement": 120,
@@ -524,7 +569,7 @@
         "review_gate": 120,
         "review_deep": 120
       },
-      "note": "Cross-check 10-06: agrees; FrontierSWE 0.563 is one step below Opus 5.5 and Astra on long-horizon work.",
+      "note": "Fable 5.2, probed 2026-11-10. Cross-check 11-10: agrees; FrontierSWE 0.699 (±0.086, top row, effort not stated) and ECI 174.2 are the highest among the bound models.",
       "sources": [
         "artificial_analysis",
         "frontierswe",
@@ -533,7 +578,7 @@
     },
     {
       "id": "fable-high",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "vendor": "claude",
       "effort": "high",
       "tier": "S",
@@ -542,24 +587,24 @@
       "tier_cell": false,
       "tier_fixed": true,
       "metrics": {
-        "index": 51,
-        "cost": 3.91,
-        "ttft_s": 29.0,
-        "tps": 51,
+        "index": 62,
+        "cost": 9.08,
+        "ttft_s": 31.81,
+        "tps": null,
         "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": 0.563,
-        "secondary_effort": "max",
+        "read": "2026-11-10",
+        "secondary_pass1": 0.699,
+        "secondary_effort": "unstated",
         "secondary_source": "frontierswe",
-        "secondary_read": "2026-10-06",
-        "eci": 164.8,
+        "secondary_read": "2026-11-10",
+        "eci": 174.2,
         "provisional": false,
-        "note": "AA 'with fallback' configuration"
+        "note": "AA leaderboard 2026-11-10, 'Claude Fable 5.2 (high)': index 62, cost per Intelligence Index task $9.08, First Answer Token 31.81s, read through an LLM summary. Output speed not shown for this effort (tps null)."
       },
       "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "Claude Code 2.1.283"
+        "date": "2026-11-10",
+        "result": "OK (one-word prompt, read-only)",
+        "cli": "Claude Code 2.1.321"
       },
       "roles": {
         "implement": 112,
@@ -569,7 +614,7 @@
         "review_gate": 112,
         "review_deep": 112
       },
-      "note": "Cross-check 10-06: agrees; FrontierSWE 0.563 is one step below Opus 5.5 and Astra on long-horizon work.",
+      "note": "Fable 5.2, probed 2026-11-10. Cross-check 11-10: agrees; FrontierSWE 0.699 (±0.086, top row, effort not stated) and ECI 174.2 are the highest among the bound models.",
       "sources": [
         "artificial_analysis",
         "frontierswe",
@@ -578,7 +623,7 @@
     },
     {
       "id": "fable-xhigh",
-      "model": "claude-fable-5-1",
+      "model": "claude-fable-5-2",
       "vendor": "claude",
       "effort": "xhigh",
       "tier": "S",
@@ -587,24 +632,24 @@
       "tier_cell": false,
       "tier_fixed": true,
       "metrics": {
-        "index": 53,
-        "cost": 5.98,
-        "ttft_s": 108.0,
-        "tps": 61,
+        "index": 62,
+        "cost": 14.83,
+        "ttft_s": 75.87,
+        "tps": null,
         "source": "artificial_analysis",
-        "read": "2026-09-30",
-        "secondary_pass1": 0.563,
-        "secondary_effort": "max",
+        "read": "2026-11-10",
+        "secondary_pass1": 0.699,
+        "secondary_effort": "unstated",
         "secondary_source": "frontierswe",
-        "secondary_read": "2026-10-06",
-        "eci": 164.8,
+        "secondary_read": "2026-11-10",
+        "eci": 174.2,
         "provisional": false,
-        "note": "AA 'with fallback' configuration"
+        "note": "AA leaderboard 2026-11-10, 'Claude Fable 5.2 (xhigh)': index 62, cost per Intelligence Index task $14.83, First Answer Token 75.87s, read through an LLM summary. Output speed not shown for this effort (tps null)."
       },
       "probe": {
-        "date": "2026-09-30",
-        "result": "OK",
-        "cli": "Claude Code 2.1.283"
+        "date": "2026-11-10",
+        "result": "OK (one-word prompt, read-only)",
+        "cli": "Claude Code 2.1.321"
       },
       "roles": {
         "implement": 113,
@@ -668,7 +713,7 @@
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 166.5
+        "eci": 169.2
       },
       "probe": {
         "date": "2026-10-19",
@@ -722,7 +767,7 @@
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 166.5,
+        "eci": 169.2,
         "provisional": false
       },
       "probe": {
@@ -752,7 +797,7 @@
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 166.5,
+        "eci": 169.2,
         "provisional": false
       },
       "probe": {
@@ -823,7 +868,7 @@
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 167.4,
+        "eci": 168.7,
         "provisional": false,
         "note": "AA 'with fallback' configuration"
       },
@@ -883,7 +928,7 @@
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 167.4,
+        "eci": 168.7,
         "provisional": false,
         "note": "AA 'with fallback' configuration"
       },
@@ -1006,7 +1051,7 @@
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 167.4,
+        "eci": 168.7,
         "provisional": false,
         "note": "AA 'with fallback' configuration"
       },
@@ -1071,7 +1116,7 @@
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 165.2
+        "eci": 166.3
       },
       "probe": {
         "date": "2026-10-19",
@@ -1145,7 +1190,7 @@
         "secondary_effort": "max",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 165.2,
+        "eci": 166.3,
         "provisional": false,
         "note": "AA leaderboard 2026-10-19, medium, 'with fallback' configuration"
       },
@@ -1347,7 +1392,7 @@
         "secondary_effort": "high",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 156.9,
+        "eci": 158.7,
         "provisional": false
       },
       "probe": {
@@ -1373,13 +1418,29 @@
       "updated": "2026-10-17",
       "catalog_checked": "2026-10-17",
       "status": "active",
-      "note": "Gemini 4 Argon (released 2026-09-30). agy 1.3.4 showed it as Ultra-plan only on 2026-10-14; it was then unlocked within the existing (non-Ultra) plan, with no plan change; agy 1.4.0 lists gemini-4-argon-low/medium/high on 2026-10-17. AA 10-14: high only, 53 / $1.99 per task; speed and first chunk not shown (values read through an LLM summary). agy has no command grant, so it cannot run tests; verification stays codex-side. Cross-check 10-17: FrontierSWE high 0.549 (read 2026-10-06), close to Fable 5.1 (0.563) and far above Gemini 3.8 Flash (0.196); a real agy-run write probe succeeded. Trust low removed (user decision 2026-10-17), so Argon is the agy write default ahead of Flash.",
+      "note": "Gemini 4 Argon (released 2026-09-30). agy 1.3.4 showed it as Ultra-plan only on 2026-10-14; it was then unlocked within the existing (non-Ultra) plan, with no plan change; agy 1.4.0 lists gemini-4-argon-low/medium/high on 2026-10-17. AA 10-14: high only, 53 / $1.99 per task; speed and first chunk not shown (values read through an LLM summary). agy has no command grant, so it cannot run tests; verification stays codex-side. Cross-check 10-17: FrontierSWE high 0.549 (read 2026-10-06), far above Gemini 3.8 Flash (0.196) and, against the 2026-11-10 read, below Fable 5.2 (0.699) and Astra (0.655); a real agy-run write probe succeeded. Trust low removed (user decision 2026-10-17), so Argon is the agy write default ahead of Flash. Review roles and implement added 2026-11-08 (user decision: Argon reviews held up in a real project review, and web front-end coding is a strength): reviews run read-only through agy-run.sh -r (agy --mode plan); implement is picked only with --vendor google or --worker argon-high, since implementation stays on the author's vendor by default. TTFT is unmeasured, so foreground routes skip it and review routes reach it detached.",
       "intelligence_index": 53,
       "effective_cost": 1.99,
       "id": "argon-high",
       "tier_cell": true,
       "roles": {
-        "write": 5
+        "write": 5,
+        "implement": {
+          "priority": 5,
+          "explicit_only": true
+        },
+        "plan_review": {
+          "priority": 5,
+          "fallback": true
+        },
+        "review_gate": {
+          "priority": 5,
+          "fallback": true
+        },
+        "review_deep": {
+          "priority": 5,
+          "fallback": true
+        }
       },
       "launcher": ".claude/scripts/agy-run.sh",
       "metrics": {
@@ -1438,7 +1499,7 @@
         "secondary_effort": "high",
         "secondary_source": "frontierswe",
         "secondary_read": "2026-10-06",
-        "eci": 156.9,
+        "eci": 158.7,
         "provisional": false
       },
       "probe": {
@@ -1470,6 +1531,73 @@
         "local_endpoint": true
       },
       "scored": false
+    },
+    {
+      "id": "terra61-xhigh",
+      "model": "gpt-6.1-terra",
+      "vendor": "openai",
+      "effort": "xhigh",
+      "tier": "C",
+      "status": "conditional",
+      "tier_cell": false,
+      "launcher": ".claude/scripts/codex-run.sh",
+      "metrics": {
+        "index": 45,
+        "cost": 0.19,
+        "ttft_s": null,
+        "tps": 90.9,
+        "source": "artificial_analysis",
+        "read": "2026-10-27",
+        "url": "https://artificialanalysis.ai/models/gpt-6-1-terra-xhigh",
+        "secondary_pass1": null,
+        "provisional": true,
+        "note": "Cost per Intelligence Index task, not token price. TTFT not collected; use explicit detached routing until measured. No long-horizon coding or vision acceptance inferred."
+      },
+      "probe": {
+        "date": "2026-10-27",
+        "result": "OK at xhigh; read-only availability probe, unchanged workspace; not a task benchmark",
+        "cli": "codex-cli 0.164.0"
+      },
+      "roles": {
+        "implement": 130,
+        "write": 130,
+        "review_gate": 130,
+        "image_verify": 130
+      },
+      "note": "User-approved C candidate; explicit selection only, existing default cell unchanged. Band assignment is provisional role scope, not a conversion of the Intelligence Index."
+    },
+    {
+      "id": "terra61-medium",
+      "model": "gpt-6.1-terra",
+      "vendor": "openai",
+      "effort": "medium",
+      "tier": "D",
+      "status": "conditional",
+      "tier_cell": false,
+      "launcher": ".claude/scripts/codex-run.sh",
+      "metrics": {
+        "index": 41,
+        "cost": 0.1,
+        "ttft_s": null,
+        "tps": null,
+        "source": "artificial_analysis",
+        "read": "2026-10-27",
+        "url": "https://artificialanalysis.ai/models/gpt-6-1-terra-medium",
+        "secondary_pass1": null,
+        "provisional": true,
+        "note": "Cost per Intelligence Index task, not token price. TTFT not collected; use explicit detached routing until measured. No long-horizon coding or vision acceptance inferred."
+      },
+      "probe": {
+        "date": "2026-10-27",
+        "result": "OK at medium; read-only availability probe, unchanged workspace; not a task benchmark",
+        "cli": "codex-cli 0.164.0"
+      },
+      "roles": {
+        "implement": 131,
+        "write": 131,
+        "explore": 131
+      },
+      "note": "User-approved D candidate; explicit selection only, existing default cell unchanged. Band assignment is provisional role scope, not a conversion of the Intelligence Index."
     }
   ],
   "bands": {
@@ -1485,7 +1613,7 @@
       "name": "Vendor top line",
       "model_fixed": true,
       "lanes": {
-        "claude": "claude-fable-5-1",
+        "claude": "claude-fable-5-2",
         "openai": "gpt-6-astra"
       },
       "foreground_effort": "medium",

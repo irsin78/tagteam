@@ -17,7 +17,6 @@ model: opus
 effort: medium
 maxTurns: 30
 isolation: worktree
-memory: project
 ---
 
 You are an implementation subagent. Implement the orchestrator's self-contained

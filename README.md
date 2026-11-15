@@ -14,10 +14,14 @@ Roles follow [session-role.md](.claude/rules/session-role.md). Whether the host
 is opened from a terminal, a desktop app or an IDE is not a routing criterion.
 Projects that do not use Git run the same way.
 
-| App you start | Orchestrates | Default implementation delegate |
-|---|---|---|
-| Claude Code | Claude Code | Claude worker (or the design author's vendor) |
-| Codex | Codex | Codex worker (or the design author's vendor) |
+| App you start | Orchestrates | Default implementation delegate | Reviews plans and code |
+|---|---|---|---|
+| Claude Code | Claude Code | Claude worker (or the design author's vendor) | Codex |
+| Codex | Codex | Codex worker (or the design author's vendor) | Claude Code |
+
+Implementation crosses to the other vendor only on the user's request or a
+stated task reason, which the delegation announcement shows (`--vendor` with
+`--vendor-reason`), or when the default vendor is declared exhausted.
 
 Optional workers are declared in the bindings' `workers` list or local `workers_local` overrides and selected only when their requirements are met.
 

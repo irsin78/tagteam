@@ -36,8 +36,8 @@ missions. Merge existing settings/instructions without overwriting.
 | `AGENTS.md.template` → `AGENTS.md`, `CLAUDE.md.template` → `CLAUDE.md` | Shared | One entry instruction file for both hosts plus the `@AGENTS.md` import stub for Claude Code. Fill Project policy in AGENTS.md only |
 | `.claude/settings.json`, `.claude/harness-config.json`, `.claude/model-bindings.json`, `.claude/model-bindings.local.json.example`, `.claude/rules/*.md` | Shared | Hook wiring, permissions, project content/verification configuration, shared contracts; model-bindings.json uses schema v2. Create personal settings in the target project from the example |
 | `docs/orchestration/delegation-matrix.md`, `docs/orchestration/retry-policy.md`, `docs/orchestration/scout-brief.md` | Shared | Orchestrator reads only needed documents when selecting delegation/diagnosing failures. Separate from Claude's automatic rules loading |
-| `.claude/hooks/deny_dangerous.py`, `session_preflight.py`, `stop_gate.py`, `verify_delegation.py`, `evidence.py` | Shared (all in the same hooks folder) | Shared dependencies of default hooks and delegation records |
-| `.claude/scripts/harness-route.py`, `harness-session.py`, `harness_records.py`, `worker_verify.py`, `test_worker_verify.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py` | Shared (all in the same scripts folder) | Routing, run records, stop checks, configuration/change evidence, execution tracking, Claude verification-prefix validation and its regressions. Keep with each launcher |
+| `.claude/hooks/deny_dangerous.py`, `announce_delegation.py`, `session_preflight.py`, `stop_gate.py`, `verify_delegation.py`, `evidence.py` | Shared (all in the same hooks folder) | Shared dependencies of default hooks, the delegation notice and delegation records |
+| `.claude/scripts/harness-route.py`, `harness-session.py`, `harness_records.py`, `worker_verify.py`, `test_worker_verify.py`, `launcher-common.sh`, `control-plane-hash.sh`, `run-state.sh`, `workspace-evidence.sh`, `workspace-snapshot.py`, `claude-trace.py` | Shared (all in the same scripts folder) | Routing, run records, stop checks, configuration/change evidence, execution tracking, live trace of Claude delegations, Claude verification-prefix validation and its regressions. Keep with each launcher |
 | `.claude/scripts/codex-run.sh`, `claude-run.sh`, `codex-report.schema.json`, `.claude/skills/delegate-codex/SKILL.md` | Bidirectional delegation | Per-app execution and Codex results/recipes |
 | `.codex/hooks.json`, `.claude/scripts/gen-codex-hooks.sh` | Using Codex | Hook wiring and installation-path generation. Machine-specific `/hooks` trust registration required. Installation checks also use the generator |
 | `.claude/scripts/test_host_routes.py`, `.claude/scripts/test_fixtures/*.json` | Using installation checks | Current dependency of both platform installation checks; its score/baseline scenarios read the fixtures. Unlike other `test_*` files, copy these too |
@@ -56,10 +56,12 @@ missions. Merge existing settings/instructions without overwriting.
 | Optional bundle | Additional files | When to use |
 |---|---|---|
 | Claude native workers | `claude-implementer.md`, `opus-architect.md`, `haiku-scout.md`, `haiku-fetcher.md`, `codex-delegate.md` in `.claude/agents/` | Native delegation/CLI controllers. Worktree roles require Git |
+| Codex native workers | `.codex/agents/harness-implementer.toml`, `.codex/agents/harness-scout.toml` | Native workers on the Codex host; model and effort are set in each file (implement and explore routes) |
 | Antigravity | `.claude/scripts/agy-run.sh`, `.claude/agents/antigravity-delegate.md`, `.claude/skills/delegate-agy/SKILL.md` | Configure CLI/permissions only when selecting agy. Shared launcher dependencies also required |
 | Local reads | `.claude/scripts/local-run.sh`, `local-read.py` | Declare only when using a local endpoint |
 | Enhanced WSL isolation | `.claude/scripts/lane-sensitive.sh`, `.claude/sandbox-sensitive.json` | When selecting a separate isolation lane |
 | Statistics, cleanup, Codex diagnostics | Needed files among `.claude/scripts/harness-stats.sh`, `harness-clean.py`, `check-codex-sandbox.sh` | Explicitly invoked tools. Statistics require shared `harness_records.py`; diagnostics require shared `workspace-snapshot.py` |
+| Peer sessions (experimental) | `.claude/skills/peer-sessions/SKILL.md`, `tools/peer-event.py` (+ `tools/test_peer_event.py`), `docs/peer-sessions.md` | Only when one mission runs across two desktop sessions; copy the tool into the project's `tools/` together with the skill (it is not part of the default install) |
 
 | Maintenance only | Application in consuming projects |
 |---|---|
@@ -73,7 +75,9 @@ hooks/agents/recipes; do not arbitrarily delete shared files. Consult absent mai
 files in the original template. See Installation for key merging, TODOs, and trust
 dialogs.
 
-## Updating from 8873d17 (orchestrator pinning)
+## Updating to orchestrator pinning
+
+This section applies to copies at 8873d17 or a later main.
 
 Contracts changed in this update (rules:
 [session-role.md](../.claude/rules/session-role.md); procedure:
@@ -131,6 +135,9 @@ To update an adopting project:
    `README.md` describes the harness; merge relevant guidance into the project's
    own README. A template-maintenance copy also updates
    `.claude/scripts/test_launchers.sh`; consuming projects need not install it.
+   If adopting peer sessions, also copy `.claude/skills/peer-sessions/SKILL.md`,
+   `docs/peer-sessions.md`, `tools/peer-event.py` and `tools/test_peer_event.py`
+   as listed in the optional install table above.
 2. Merge `.claude/harness-config.json`: add `worker_verify_commands: []` and
    keep the project's own `content_dirs`. List the project's exact verification
    command prefixes there using the
@@ -153,7 +160,7 @@ To update an adopting project:
 
 ## Installation
 
-The starting host is Claude Code or Codex; external implementation needs the other CLI.
+The starting host is Claude Code or Codex; cross-vendor reviews need the other app's CLI.
 Antigravity/local inference are optional. Hooks need Python; shell launchers need Bash.
 See [Dependencies](dependencies.md) for platform prerequisites and failure modes;
 prepare only selected routes. [Support status](#support-status) defines verified scope;
@@ -183,7 +190,11 @@ operation on unverified platforms is not promised.
    .claude/.delegation-log.jsonl
    .claude/.preflight-status
    .claude/.mission-open/
+   .harness/
    ```
+   `.harness/progress/` holds the per-run progress files that delegates append
+   milestones to (launchers export `HARNESS_PROGRESS_FILE`); it sits outside
+   `.claude/` because Claude Code refuses delegate writes there.
    `settings.local.json` accumulates local absolute paths, usernames, scratch
    paths, and session lookup traces. Global gitignore protection does not travel
    with clones/drop-ins; the other entries are local hook evidence.
@@ -245,13 +256,26 @@ operation on unverified platforms is not promised.
    `powershell -NoProfile -ExecutionPolicy Bypass -File check-windows-aliases.ps1`
    (Windows PS 5.1/7) or `bash check-posix.sh` (macOS/Linux, bash 3.2 compatible;
    accepts `--launchers`, `--template-dir`). Both are read-only: exit 0 healthy,
-   1 warning. Fix exit 1 first; a dead hook invalidates prohibitions. Checks cover
+   1 warning. Fix exit 1 first; a dead guard hook silently drops prohibitions on
+   Codex and blocks every guarded tool on Claude (below). Checks cover
    hook self-tests and agy grants; missing codex/agy binaries/write_file grants
    are INFO because fallbacks exist. Drift compares installed files and counts
    uninstalled ones separately, not installation completeness. See Windows-specific
    details for warning causes/replacement. Each session, codex-delegate repeats
    SANDBOX HEALTH PROBE / ALIAS CHECK, reporting only
    `CODEX_UNAVAILABLE: sandbox broken` or `ALIAS_WARNING`, never repairing.
+
+   **Claude guard hooks fail closed.** The two PreToolUse guard entries in
+   `settings.json` set `"onFailure": "block"`. When the guard cannot run (no
+   `python` on the PATH the app passes to hooks, missing or moved
+   `deny_dangerous.py`, a syntax error, a timeout), Claude Code denies every
+   Bash, PowerShell, Edit, Write, MultiEdit and NotebookEdit call and names the
+   hook failure as the reason; Read, Grep and Glob still work. Fix the cause
+   with the preflight above (its hook self-test runs the same file) rather
+   than removing the key. `onFailure` needs Claude Code 2.1.295 or later; how
+   older versions treat the key has not been measured, so update first. The
+   Codex hook definitions set no equivalent option and stay fail-open (see Hook
+   properties below).
 
 1. Prepare selected external CLIs (versions are minima; check only for symptoms
    such as rejected flags, not every run):
@@ -296,14 +320,32 @@ operation on unverified platforms is not promised.
 
 ### Codex host (hook mirror and trust registration)
 
+Native child worktrees also require explicit identity and a positive effective trust gate
+before DESIGN. See [native Codex bootstrap](peer-sessions.md#native-codex-bootstrap) for
+the parent-only `prepare-codex-child` interface and required workspace/common-dir/full-SHA
+arguments. An unavailable preparation interface leaves setup incomplete. Delegates never
+generate or repair their own hooks, and preparation never writes trust state.
+
 Establish Codex guards through `.codex/hooks.json`, sharing Claude's decision
 files: SessionStart → `session_preflight.py`, PreToolUse →
-`deny_dangerous.py --host codex`, Stop → `stop_gate.py --host codex`.
-Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
+`deny_dangerous.py --host codex`, Stop → `stop_gate.py --host codex`,
+SubagentStop → `verify_delegation.py --host codex` (native worker record, as on
+Claude). Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
+Upgrading from the four-entry definitions: run `gen-codex-hooks.sh --force` and
+retrust through `/hooks`; until the new SubagentStop entry is trusted,
+`codex-run.sh`'s hook check refuses to run.
+Optional native workers: copy `.codex/agents/*.toml` and ask Codex for the worker
+by its role name (`harness-implementer`, `harness-scout`); this was measured with
+codex-cli 0.168.0 under default settings (Windows, 2026-11-13). The Codex subagents
+documentation (read 2026-11-13) says a definition's `model` and
+`model_reasoning_effort` take precedence; here Codex reported the definition's
+effort as applied, and the model is checked in the Codex host test. If a model is
+rejected, switch that file to another verified explicit model; with none, leave
+the definition out. Never delete the keys to inherit the session model.
 
 1. **Trust registration (once per machine, interactive)**: Start `codex` at the
-   repository root and trust all four entries (SessionStart, PreToolUse,
-   UserPromptSubmit, Stop) through `/hooks`. Registration is stored in
+   repository root and trust all five entries (SessionStart, PreToolUse,
+   UserPromptSubmit, Stop, SubagentStop) through `/hooks`. Registration is stored in
    `~/.codex/config.toml` as
    `[hooks.state.'<absolute hooks.json path>:<event>:0:0'] trusted_hash`.
 2. **Detect Python during installation**: Run
@@ -317,8 +359,11 @@ Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
    detection avoids dependence on the desktop app's inherited shell PATH.
 
 3. **Three layers of checks**:
-   - `check-posix.sh` / `check-windows-aliases.ps1` check `.codex/hooks.json`
-     events/registration entries, not hashes, enabled state, or execution.
+   - `check-windows-aliases.ps1` queries effective `hooks/list` for its explicit
+     workspace, checking source, enabled state and current trust; without Codex
+     on PATH this section is skipped as a non-Codex installation. With Codex
+     selected, missing/unverified definitions warn and fail. `check-posix.sh`
+     still checks registration entries only. Neither proves actual hook execution.
      Retrust changed definitions separately. Both run `test_host_routes.py`,
      which detects missing `UserPromptSubmit -> stop_gate.py --new-prompt` wiring.
    - Before execution, `codex-run.sh` queries app-server `hooks/list`: every
@@ -326,7 +371,13 @@ Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
      Modified/untrusted/disabled/missing handlers, disabled hooks, unsupported APIs,
      and inconclusive queries exit 4. This checks configuration, not successful
      execution. Unguarded runs require explicit `HARNESS_ALLOW_UNTRUSTED_HOOKS=1`
-     authorization.
+     authorization. In a linked git worktree Codex loads the project hook
+     definitions from the main working tree's `.codex/hooks.json` (the worktree's
+     own copy is never loaded), so the check runs there even without a local
+     copy, accepts that source with the same trust rules, and prints a note.
+     The worktree therefore runs under the main working tree's hook definitions;
+     whether their commands resolve to the worktree's or the main tree's scripts
+     depends on how the commands were written (absolute or relative paths).
    - After execution, only full `hook: <Event> Completed|Blocked|Failed` lines
      (LF/CRLF) count: `Failed` → `HOOKS_FAILED:`, missing → `HOOKS_UNKNOWN:`.
      Quotes/line numbers are excluded, but tools can print indistinguishable old
@@ -337,7 +388,9 @@ Writes arrive as `apply_patch` envelopes; see step 4 for delegate identity.
 4. **Delegate identity**: `codex-run.sh` and `claude-run.sh` export
    `HARNESS_DELEGATE_RUN=1`; `codex exec`/`claude -p` are main sessions without
    `agent_id`, so this marker applies delegate commit/push/control-plane bans.
-   Manual sessions lack it and orchestrate. Authorized
+   Manual sessions lack it and orchestrate. Native Codex subagents carry
+   `agent_id`/`agent_type` in their PreToolUse input, so the same delegate bans
+   apply to their tool calls (codex-cli 0.168.0, Windows, one interactive session, 2026-11-13). Authorized
    `HARNESS_ALLOW_CONTROL_PLANE=1` lifts only control-plane protection, never
    commit/push bans; postflight cannot undo pushes.
    An outer project's `.claude/harness-config.json` may set
