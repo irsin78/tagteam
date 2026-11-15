@@ -9,7 +9,8 @@ and execution, see [Installation](harness-install.md) and [Launchers](harness-la
 Solo development is the default. The template provides an execution structure
 and minimal guards reusable across projects. It does not define every situation
 and every domain-specific exception as a shared rule. Whether the user starts in
-a terminal, a desktop app or an IDE, the app that was started orchestrates.
+a terminal, a desktop app or an IDE, the session in which the user gives the
+command orchestrates (`.claude/rules/session-role.md`).
 
 | What the template provides | What the adopting project decides |
 |---|---|
@@ -132,8 +133,9 @@ single number without basis.
 
 Delegation carries costs beyond model execution: writing the spec, start-up
 waiting, passing context, reviewing the result and requesting fixes.
-Implementation is delegated in principle, but small, clear work whose handover
-cost is hard to recover is handled directly. Related changes are grouped into
+Implementation always goes to a worker (`.claude/rules/session-role.md` rule 2);
+a project that judges the handover cost of small, clear work too high enables
+direct work explicitly, with a stated scope. Related changes are grouped into
 units the worker can verify on its own, and independent work is parallelised
 when the gain exceeds the coordination cost. Repeated delegation without fixing
 the cause of failure is stopped. File and line counts are reference signals for
