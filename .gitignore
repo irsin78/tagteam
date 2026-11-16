@@ -1,17 +1,9 @@
-### Claude Code harness
-# Per-machine accumulation: absolute paths, usernames, scratch dirs,
-# and past session queries. Never share this file.
+### tagteam
+# Machine-local settings and state
 .claude/settings.local.json
-# Model bindings local layer: local endpoints, owned subscriptions, measured values
-.claude/model-bindings.local.json
-# Hook-produced local evidence (see .claude/hooks/)
-.claude/.delegation-log.jsonl
-.claude/.delegation-memory.json
-.claude/.preflight-status
-# Per-agent memory written by agents with `memory: project`. Machine- and
-# session-local; committing it would carry one machine's learnings into
-# every drop-in target.
-.claude/agent-memory/
+.claude/tagteam/models.local.json
+.tagteam/
+__pycache__/
 
 ### macOS
 # Finder metadata

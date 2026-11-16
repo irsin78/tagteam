@@ -1,5 +1,0 @@
-{
-  "_comment": "content_dirs lists project-root content directories exempt from control-plane protection; [] exempts none. worker_verify_commands lists exact verification command prefixes a Claude launcher worker may run; grammar in docs/harness-launchers.md; bare interpreters and the listed wrappers are refused; any other executable is the project's own responsibility.",
-  "content_dirs": [],
-  "worker_verify_commands": []
-}

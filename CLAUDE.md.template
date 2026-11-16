@@ -1,5 +1,1 @@
-<!-- Claude Code entry. Install as CLAUDE.md in the project root, or add the
-     import line below to an existing CLAUDE.md. AGENTS.md (installed from
-     AGENTS.md.template) is the single instruction file for both hosts:
-     Claude Code loads it through this import, Codex reads it directly. -->
 @AGENTS.md
