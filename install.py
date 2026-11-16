@@ -71,7 +71,8 @@ def copy_tree(rep, src_dir, target, rel_dir, pattern="*"):
     if not src_dir.is_dir():
         return
     for f in sorted(src_dir.rglob(pattern)):
-        if f.is_file() and ".local." not in f.name and "__pycache__" not in f.parts:
+        if (f.is_file() and ".local." not in f.name and "__pycache__" not in f.parts
+                and "tests" not in f.relative_to(src_dir).parts):
             rel = Path(rel_dir) / f.relative_to(src_dir)
             put(rep, target, rel, f.read_bytes(), keep_existing=f.name.endswith(".local.json"))
 
