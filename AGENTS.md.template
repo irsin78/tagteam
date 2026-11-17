@@ -70,8 +70,11 @@ Procedure: skill `cycle` (load it for any mission with more than one unit).
    2026-11-17 / re-test after a host update]
 3. Design session writes the design document in the mission folder and reports
    its path. The orchestrator checks it and sends units to implementation sessions.
-4. Independent units may run at once (no shared files, no waiting on each other),
-   each writer in its own git worktree. Without Git, run units one at a time.
+4. Independent units may run at once (no shared files, no waiting on each other).
+   Writers share the main checkout; a writer gets its own git worktree only when
+   needed: files might overlap, checks would read another writer's half-done files,
+   a read-only review runs alongside, or the work goes to its own branch. Without
+   Git, run units one at a time.
 5. Each return is checked against the actual diff; *batched verification* and
    review run at chosen cut points; the orchestrator merges and commits.
 6. Repeat until the acceptance criteria hold, without the user relaying messages.

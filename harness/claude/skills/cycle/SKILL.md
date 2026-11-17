@@ -41,8 +41,11 @@ measured 2026-11-17 / re-test after a host update]
   keeps them for the whole mission; switching models discards the prompt cache.
 - The first prompt of every session contains the line `HARNESS ROLE: DELEGATE`. It cannot
   be added later by message.
-- Writers that run at the same time each get their own git worktree and branch. A single
-  writer at a time may share the main checkout. A new worktree does not initialize git
+- Writers that run at the same time share the main checkout when their files do not overlap
+  and their checks do not read each other's half-done files. Give a writer its own git
+  worktree and branch only when that is not so, when a read-only review runs alongside, or
+  when its work goes to its own branch (worktrees cost setup, submodule init and a merge).
+  A new worktree does not initialize git
   submodules; if the unit edits a submodule, the brief tells the worker to run
   `git submodule update --init <path>` first.
 - Record each session in status.md.

@@ -123,7 +123,8 @@ operational consequences are in [manual section 3.1](manual.md#31-the-session-po
 - The prompt cache of a reused session lasts one hour (`subagentPromptCacheTtl` is set to `1h` for subagents), and a
   fresh session costs on the order of 90,000 tokens before any work. Hence one session per role, kept for the mission.
 
-Independent units may run in parallel in separate git worktrees; without git, one at a time. The mission folder
+Independent units may run in parallel, sharing the main checkout unless their files or checks would collide (then a
+separate git worktree); without git, one at a time. The mission folder
 (`intent.md`, `spec.md`, `status.md`, design documents) is the record that survives compaction or a new orchestrator
 session.
 
