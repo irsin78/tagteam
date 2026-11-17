@@ -59,7 +59,8 @@ A weekly check of the vendors' model lists is optional: `python install.py <proj
 |---|---|---|
 | `install.py` | (not installed) | install, update, check, schedule |
 | `AGENTS.md.template`, `CLAUDE.md.template` | `AGENTS.md`, `CLAUDE.md` | the instruction file and a one-line import of it |
-| `harness/claude/` | `.claude/` | hook settings, worker agent definitions, skills |
+| `harness/claude/` | `.claude/` | hook settings, worker agent definitions |
+| `harness/skills/` | `.claude/skills/` | the `cycle` and `model-update` procedures |
 | `harness/codex/` | `.codex/` | hook settings, worker agent definitions |
 | `harness/tagteam/` | `.claude/tagteam/` | `route.py`, `run.py`, `role_guard.py`, `models_collect.py`, `models.json` |
 | `harness/tagteam/tests/`, `tests/` | (not installed) | unit tests |

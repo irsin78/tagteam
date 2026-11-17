@@ -61,7 +61,7 @@ def build_source(root, guard=STUB):
     files = {
         "claude/settings.json": json.dumps({"hooks": {"PreToolUse": ["new"]}, "subagentPromptCacheTtl": "1h"}),
         "claude/agents/a.md": "agent",
-        "claude/skills/s1/SKILL.md": "skill",
+        "skills/s1/SKILL.md": "skill",
         "tagteam/role_guard.py": guard,
         "tagteam/models.json": "{}",
         "tagteam/models_collect.py": FAKE_COLLECT,
@@ -265,7 +265,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
 
 
-SKILL = INSTALL.parent / "harness/claude/skills/model-update/SKILL.md"
+SKILL = INSTALL.parent / "harness/skills/model-update/SKILL.md"
 GUARD_WITH_STATE = "import os\ndef state_dir(payload):\n    return os.environ['TAGTEAM_STATE_DIR']\n"
 
 

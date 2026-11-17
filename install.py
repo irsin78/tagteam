@@ -216,7 +216,7 @@ def install(target, source, interactive):
     if (h / "claude" / "settings.json").is_file():
         merge_settings(rep, h / "claude" / "settings.json", target)
     copy_tree(rep, h / "claude" / "agents", target, ".claude/agents", "*.md")
-    copy_tree(rep, h / "claude" / "skills", target, ".claude/skills")
+    copy_tree(rep, h / "skills", target, ".claude/skills")
     copy_tree(rep, h / "tagteam", target, ".claude/tagteam")
     hooks = h / "codex" / "hooks.json"
     if hooks.is_file():

@@ -122,7 +122,7 @@ The *state folder* is `<git common dir>/tagteam/`, so all worktrees of one repos
 
 ## 3. Running a mission
 
-The procedure is the skill `cycle` ([SKILL.md](../harness/claude/skills/cycle/SKILL.md)); the rules are AGENTS.md section 3.
+The procedure is the skill `cycle` ([SKILL.md](../harness/skills/cycle/SKILL.md)); the rules are AGENTS.md section 3.
 In short: for anything with more than one unit the orchestrator creates `docs/missions/<purpose>/` with `intent.md` and
 `spec.md` and waits for your confirmation of the spec. On a turn you started it opens the session pool (one worker session
 per role, model and effort from the router). A design session writes the design document; implementation sessions implement
@@ -398,7 +398,7 @@ Change kinds in a proposal: `new_model`, `now_available`, `no_longer_available`,
 ### 8.1 Applying a proposal
 
 When a proposal is waiting, the next orchestrator session starts with `TAGTEAM: model update proposal (...)`. The
-orchestrator then loads the skill `model-update` ([SKILL.md](../harness/claude/skills/model-update/SKILL.md)): it records
+orchestrator then loads the skill `model-update` ([SKILL.md](../harness/skills/model-update/SKILL.md)): it records
 the route table before and after, refreshes benchmark values, registers new models (as `candidate: true` until a probe and
 two agreeing sources allow a route change), holds deletions and default-route changes that lack evidence, commits
 `models.json` only if it changed, and marks the proposal applied. Workers never apply a proposal. After a default-route

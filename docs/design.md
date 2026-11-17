@@ -80,7 +80,7 @@ location only `role_guard.py` computes; the other scripts import it from there.
 | Launcher | `harness/tagteam/run.py` | one worker through another vendor's CLI, model check, exhaustion detection, git check |
 | Collector | `harness/tagteam/models_collect.py` | model lists, benchmark values, proposal file |
 | Data | `harness/tagteam/models.json` | vendors, roles, models, grades, defaults |
-| Skills | `harness/claude/skills/` | `cycle`, `model-update` |
+| Skills | `harness/skills/` | `cycle`, `model-update` |
 | Worker definitions | `harness/claude/agents`, `harness/codex/agents` | fixed model and effort, limited tools |
 | Installer | `install.py` | install, update, check, schedule (not installed) |
 
