@@ -54,32 +54,9 @@ $RECYCLE.BIN/
 
 # NFS temporary files
 .nfs*
-# harness local artifacts
-.claude/codex-logs/
-.claude/agy-logs/
-.claude/claude-logs/
-.claude/local-logs/
-.claude/cmd-logs/
-.claude/.probe-cache
-# launcher regression fixtures (test_launchers.sh)
-.claude/.test-tmp/
-.claude/.stop-gate
-# Session-scoped mission pointers; durable task state stays in docs/missions/.
-.claude/.mission-open/
-# Worker progress files (launcher -P / HARNESS_PROGRESS_FILE); outside .claude/ because
-# Claude Code refuses delegate writes under .claude/.
-.harness/
-# r15: orchestrator approval marker for settings changes, permission-prompt audit log, subagent worktrees
-.claude/.control-plane-approved
-.claude/.approvals.jsonl
-.claude/.denials.jsonl
+# Desktop app worktree sessions
 .claude/worktrees/
-__pycache__/
 
 # Raw mission logs and disposable scratch data, not intent/spec/plan/state.
 docs/missions/**/logs/
 docs/missions/**/scratch/
-# Diagnostic payload dump: kept ignored so that re-enabling the dump can
-# never commit raw payloads.
-.claude/.payload-dump
-.claude/.payload-dump.jsonl

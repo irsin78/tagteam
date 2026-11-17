@@ -16,12 +16,12 @@
     "name": "Anthropic"
    },
    "evaluations": {
-    "artificial_analysis_intelligence_index": 61.8
+    "artificial_analysis_intelligence_index": 61.3
    },
    "artificial_analysis_intelligence_index_cost": {
     "total_cost": 1.0,
     "cost_per_task": {
-     "total_cost": 9.0784
+     "total_cost": 9.1234
     }
    }
   },
@@ -33,12 +33,12 @@
     "name": "Anthropic"
    },
    "evaluations": {
-    "artificial_analysis_intelligence_index": 64.6
+    "artificial_analysis_intelligence_index": 64.1
    },
    "artificial_analysis_intelligence_index_cost": {
     "total_cost": 1.0,
     "cost_per_task": {
-     "total_cost": 26.5386
+     "total_cost": 26.1234
     }
    }
   },

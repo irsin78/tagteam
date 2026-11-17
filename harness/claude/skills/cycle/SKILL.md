@@ -35,7 +35,9 @@ cannot open them. So open everything the phase needs while the user is present.
 - The first prompt of every session contains the line `HARNESS ROLE: DELEGATE`. It cannot
   be added later by message.
 - Writers that run at the same time each get their own git worktree and branch. A single
-  writer at a time may share the main checkout.
+  writer at a time may share the main checkout. A new worktree does not initialize git
+  submodules; if the unit edits a submodule, the brief tells the worker to run
+  `git submodule update --init <path>` first.
 - Record each session in status.md.
 - Later units reuse the pool by message (SendMessage). If the pool runs short, tell the
   user in one line which session is needed and why, and continue independent work.

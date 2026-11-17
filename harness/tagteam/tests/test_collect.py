@@ -304,7 +304,7 @@ class BenchTest(CollectTest):
         clock.start()
         self.addCleanup(clock.stop)
         self.write_local_bench({
-            "claude-fable-5-2": [self.entry("index", 62, "high"), self.entry("cost_per_task", 9.08, "high"),
+            "claude-fable-5-2": [self.entry("index", 60, "high"), self.entry("cost_per_task", 9.5, "high"),
                                  {"source": "frontierswe", "metric": "pass1", "value": 0.699, "date": "2026-11-10"}],
             "claude-sonnet-5-5": [self.entry("index", 47, "high"), self.entry("cost_per_task", 0.88, "high")],
             "gpt-6.1-terra": [self.entry("index", 45, "xhigh"), self.entry("cost_per_task", 0.19, "xhigh")]})
@@ -377,8 +377,8 @@ class BenchTest(CollectTest):
         _, prop = self.run_aa()
         got = {(c["model"], c["effort"], c["metric"]): (c["old"], c["new"]) for c in self.by(prop, "bench_changed")}
         self.assertEqual(got, {
-            ("claude-fable-5-2", "high", "index"): (62, 61.8),
-            ("claude-fable-5-2", "high", "cost_per_task"): (9.08, 9.0784),
+            ("claude-fable-5-2", "high", "index"): (60, 61.3),
+            ("claude-fable-5-2", "high", "cost_per_task"): (9.5, 9.1234),
             ("claude-sonnet-5-5", "high", "cost_per_task"): (0.88, 0.9),  # its index is null: ignored
             ("gpt-6.1-terra", "xhigh", "index"): (45, 46.5)})
         self.assertTrue(all(c["index_version"] == 5 for c in self.by(prop, "bench_changed")))
@@ -540,8 +540,8 @@ class BenchTest(CollectTest):
         self.assertEqual((data["schema"], data["source"], data["index_version"]), (1, mc.AA_SOURCE, 5))
         self.assertRegex(data["fetched"], r"^\d{4}-\d\d-\d\d$")
         got = {(m, b["effort"], b["metric"]): b["value"] for m, bs in data["models"].items() for b in bs}
-        self.assertEqual(got[("claude-fable-5-2", "high", "index")], 61.8)
-        self.assertEqual(got[("claude-fable-5-2", "high", "cost_per_task")], 9.0784)
+        self.assertEqual(got[("claude-fable-5-2", "high", "index")], 61.3)
+        self.assertEqual(got[("claude-fable-5-2", "high", "cost_per_task")], 9.1234)
         self.assertIn(("claude-fable-5-2", "max", "index"), got)
         self.assertNotIn(("claude-sonnet-5-5", "high", "index"), got)  # null at AA
         self.assertNotIn("claude-nova-6", data["models"])  # not registered
@@ -568,7 +568,7 @@ class BenchTest(CollectTest):
         mine = self.local_bench()["models"]["claude-fable-5-2"]
         self.assertIn({"source": "frontierswe", "metric": "pass1", "value": 0.699, "date": "2026-11-10"}, mine)
         high = [b for b in mine if b.get("effort") == "high" and b["metric"] == "index"]
-        self.assertEqual([b["value"] for b in high], [61.8])
+        self.assertEqual([b["value"] for b in high], [61.3])
 
     def test_write_bench_without_key_writes_nothing(self):
         os.remove(os.path.join(self.cfg, "bench.local.json"))
