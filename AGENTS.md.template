@@ -10,19 +10,28 @@ The user's instructions override skill guidance; on a conflict, follow the user 
 
 Every call that opens a session or a worker (`start_session`, a launcher run, a
 subagent without a fixed definition) passes `model` and `effort` explicitly. Take
-both from `python .claude/tagteam/route.py --role <role>` (roles: design,
-implement, review, read, translate; add `--json` for the launch command). A review
-needs `--author-vendor <vendor of the author>` and, to match the author's grade
-(the grade of its model at its effort, in models.json), `--grade <grade>`; pass `--orchestrator-model`/`--orchestrator-effort` so the
-router knows what a session may inherit. A `run` result goes through
-`.claude/tagteam/run.py`; a `native` result opens a session or subagent with
-those values. Left empty, a session inherits the orchestrator's model; sessions
-opened that way ran on the wrong model or did not run at all. A hook rejects
-`start_session` without `model` and `effort`.
+both, and how to open the worker, from
+`python .claude/tagteam/route.py --role <role> --host <host> --json` (roles: design,
+implement, review, read, translate; *host*: `claude-desktop`, `claude`, `codex` or
+`agy`). Always pass `--host`: guessing it from the environment can be wrong. The
+result's `launch.kind` is `session`, `subagent` (a worker definition, or on Codex the
+`default` agent with `model` and `reasoning_effort`) or `run` (through
+`.claude/tagteam/run.py`; `escalate: true` means request escalated permissions for
+that command). How to do each on your host: `hosts.md` next to the skill `cycle`.
+When a unit matches the `about` of a task in `models.local.json` `tasks` (the session
+start lists them), route it with `--task <name>` instead of `--role`.
+A review needs `--author-vendor <vendor of the author>` and the author's grade
+(`--grade <grade>`, or `--author-model` with `--author-effort`); the router refuses a
+review without it. Pass `--orchestrator-model`/`--orchestrator-effort` so the router
+knows what a session may inherit. Left empty, a session inherits the orchestrator's
+model; sessions opened that way ran on the wrong model or did not run at all. A hook
+rejects `start_session` without `model` and `effort`, and a Codex `spawn_agent`
+without them unless the agent type is a custom definition (which fixes both).
 
 Before opening, tell the user in one sentence which model/effort does what and
-why, plus the router's notice line. Ask the user first when a *design session*
-would use a model more capable or more expensive than the orchestrator's.
+why, plus the router's notice line. Ask the user first when the router returns
+`ask_user: true` (a *design session* more capable or more expensive than the
+orchestrator); `null` means it lacked the orchestrator's model and effort.
 
 ## 2. Roles
 
@@ -31,8 +40,8 @@ would use a model more capable or more expensive than the orchestrator's.
 - **Worker**: every other session, subagent or launcher process. A worker is
   marked by any of: a line starting `HARNESS ROLE: DELEGATE` anywhere in the
   session's first prompt (a task sent later by message cannot add it), the
-  environment variable `HARNESS_DELEGATE_RUN=1`, or running as a subagent. The
-  role is recorded once per session and never changes. A worker never promotes
+  environment variable `HARNESS_DELEGATE_RUN=1`, or running as a subagent (Codex:
+  the hook sees its `agent_id`). The role is recorded once per session and never changes. A worker never promotes
   itself; if unsure, keep worker limits.
 
 Worker limits:
@@ -58,16 +67,18 @@ verification and commit rules.
 
 ## 3. The cycle
 
-Procedure: skill `cycle` (load it for any mission with more than one unit).
+Procedure: skill `cycle` (load it for any mission with more than one unit; files
+`.claude/skills/cycle/SKILL.md` and `.agents/skills/cycle/SKILL.md`, host specifics in
+`hosts.md` beside it).
 1. Large work gets a mission folder `docs/missions/<purpose>/` with intent.md and
    spec.md. No implementation before the user confirms the spec; after that,
    continue to acceptance without re-approval per step.
 2. On the user turn that starts a phase, open the *session pool* the whole phase needs
-   (design and implementation sessions, fixed models). When a new session is needed
-   later, try to open it; if the host refuses, reuse a pool session by message, else
+   (design and implementation workers, fixed models). When a new worker is needed
+   later, try to open it; if the host refuses, reuse a pool worker by a follow-up, else
    ask on the next user turn. Try once per phase and note a refusal in status.md.
-   [host: Claude Code desktop 2.1 refuses start_session in automatic turns, measured
-   2026-11-17 / re-test after a host update]
+   Measured host limits are in `hosts.md`. [host: Claude Code desktop 2.1 refuses
+   start_session in automatic turns, measured 2026-11-17 / re-test after a host update]
 3. Design session writes the design document in the mission folder and reports
    its path. The orchestrator checks it and sends units to implementation sessions.
 4. Independent units may run at once (no shared files, no waiting on each other).
@@ -106,7 +117,9 @@ runs when they share no files. Record which units a review covers.
 ## 5. Commit, push, release
 
 - Only the orchestrator commits, per verified unit, staging explicit paths, and
-  reports what was committed.
+  reports what was committed. Where the host's sandbox protects `.git` (Codex), commit
+  through an escalation request (`hosts.md`); if it is not approved, report the unit as
+  verified but not committed.
 - Push follows `Push mode` in Project policy:
   - `solo` (default): the orchestrator pushes verified commits to the existing
     upstream and reports.
@@ -120,21 +133,22 @@ runs when they share no files. Record which units a review covers.
 | Term | Meaning |
 |---|---|
 | orchestrator | The session the user commanded. Splits, assigns, verifies, commits. One per mission |
+| host | The CLI the orchestrator runs in: Claude Code (desktop or CLI), Codex CLI or agy |
 | worker | Any other session, subagent or launcher process. Design and implementation sessions are kinds of worker |
 | design session | A worker session that writes only design documents in the mission folder |
 | implementation session | A worker session that only implements and verifies assigned units |
 | launcher | `.claude/tagteam/run.py`: runs another vendor's CLI (claude, codex, agy) once as a worker |
-| router | `.claude/tagteam/route.py`: picks model and effort for a role |
-| control plane | Files that run the harness itself: `.claude/`, `.codex/`, AGENTS.md, CLAUDE.md |
-| session pool | Worker sessions opened for a phase, one model per role, reused by message for later units |
+| router | `.claude/tagteam/route.py`: picks model, effort and launch method for a role |
+| control plane | Files that run the harness itself: `.claude/`, `.codex/`, `.agents/`, AGENTS.md, CLAUDE.md |
+| session pool | Workers (sessions, or Codex subagents) opened for a phase, one model per role, reused by follow-up for later units |
 | exhaustion | A vendor temporarily unusable (usage limit, out of credit); the router substitutes the same grade |
 | batched verification | Expensive checks (full suite, cross-vendor review) run once over several units |
 | model-compensation rule | A rule that covers a model's repeated mistake; tagged `[fix: ...]` and removed when a newer model no longer needs it |
 
 Rules tagged `[fix: ...]` are model-compensation rules; list them with
-`grep -rn "\[fix:" AGENTS.md .claude .codex`. Rules tagged `[host: ...]` record a measured
-host limit; list them with `grep -rn "\[host:" AGENTS.md .claude .codex` and re-test them
-after a host update. Untagged rules are harness structure.
+`grep -rn "\[fix:" AGENTS.md .claude .codex .agents`. Rules tagged `[host: ...]` record a
+measured host limit; list them with `grep -rn "\[host:" AGENTS.md .claude .codex .agents`
+and re-test them after a host update. Untagged rules are harness structure.
 
 ## Project policy
 

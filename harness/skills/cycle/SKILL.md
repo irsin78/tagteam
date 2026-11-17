@@ -6,6 +6,19 @@ description: "Orchestrator procedure for a multi-unit mission - mission folder, 
 # The orchestrator cycle
 
 Terms are defined only in AGENTS.md (section 6). The user's instructions override this skill.
+How to open, follow up, watch and stop workers on each host: [hosts.md](hosts.md) (same folder).
+
+## 0. Host check (mission start)
+
+- Name the host (`claude-desktop`, `claude`, `codex` or `agy`) and pass it to the router as `--host`.
+- Run `install.py <project> --check --host <host>` where the template source is. Parts it could not check
+  are reported as unverified; say so to the user instead of assuming they work.
+- Codex: tell the user in one line that commits, branches, worktrees and `run.py` workers (other vendors,
+  reviews) each ask for approval of an escalated command, and roughly how many the mission needs
+  (hosts.md, Codex notes 9). A commit refused after verification leaves the unit verified but not
+  committed. A refused worker or review launch leaves the unit incomplete: every change needs its
+  cross-vendor review.
+- Record the host in status.md.
 
 ## 1. Mission folder
 
@@ -26,21 +39,26 @@ Terms are defined only in AGENTS.md (section 6). The user's instructions overrid
 
 ## 3. Open the session pool (at the start of a phase)
 
-Open everything the phase needs on the user turn that starts it. If a new session is needed
-later, try to open it; if the host refuses, reuse a pool session by message, or ask on the
-next user turn. Try once per phase and note a refusal in status.md.
-[host: Claude Code desktop 2.1 refuses start_session in turns started by a worker's report,
-measured 2026-11-17 / re-test after a host update]
-- One session per role needed now: usually one design session and one or two implementation
-  sessions. A small mission with little design: the orchestrator designs, no design session.
-- Session or subagent: a mechanical edit, or a task that will clearly end soon, may go to
-  a subagent; its progress is not visible until it returns. When you cannot tell how long
-  a unit will take, use a session, which the user can watch and steer. Reuse a pool
-  session with the right model before opening a new one; do not open sessions per task.
-- Each session gets a fixed `model` and `effort` from the router (AGENTS.md section 1) and
+Open everything the phase needs on the user turn that starts it. If a new worker is needed
+later, try to open it; if the host refuses, reuse a pool worker by a follow-up, or ask on the
+next user turn. Try once per phase and note a refusal in status.md. The measured limits per
+host are in hosts.md. [host: Claude Code desktop 2.1 refuses start_session in turns started by
+a worker's report, measured 2026-11-17 / re-test after a host update]
+- One worker per role needed now: usually one design worker and one or two implementation
+  workers. A small mission with little design: the orchestrator designs, no design worker.
+- Open each worker the way the router's `launch.kind` says (`session`, `subagent` or `run`;
+  hosts.md). On Claude Code desktop, `also` may offer a subagent: a mechanical edit, or a task
+  that will clearly end soon, may go there; its progress is not visible until it returns. When
+  you cannot tell how long a unit will take, use a session, which the user can watch and steer.
+  Reuse a pool worker with the right model before opening a new one; do not open one per task.
+- Each worker gets a fixed `model` and `effort` from the router (AGENTS.md section 1) and
   keeps them for the whole mission; switching models discards the prompt cache.
 - The first prompt of every session contains the line `HARNESS ROLE: DELEGATE`. It cannot
-  be added later by message.
+  be added later by message. A Codex subagent is a worker by its `agent_id`; put the line in
+  its brief anyway, and spawn it with `fork_turns: "none"` so it does not inherit the
+  orchestrator's conversation.
+- Where running workers stop when the orchestrator's turn ends (Codex, hosts.md Codex notes 5),
+  wait for them before ending the turn.
 - Writers that run at the same time share the main checkout when their files do not overlap
   and their checks do not read each other's half-done files. Give a writer its own git
   worktree and branch only when that is not so, when a read-only review runs alongside, or
@@ -48,9 +66,11 @@ measured 2026-11-17 / re-test after a host update]
   A new worktree does not initialize git
   submodules; if the unit edits a submodule, the brief tells the worker to run
   `git submodule update --init <path>` first.
-- Record each session in status.md.
-- Later units reuse the pool by message (SendMessage). If the pool runs short, tell the
-  user in one line which session is needed and why, and continue independent work.
+- Record each worker in status.md (Codex: its `task_name`, which a resumed turn needs).
+- Later units reuse the pool by a follow-up (`SendMessage`, Codex `followup_task`; hosts.md).
+  This applies to sessions and subagents only. A `run` worker is one-shot: for a later unit,
+  launch it again with a fresh brief that carries the context it needs. If the pool runs short, tell the user in one line which worker is needed and why, and
+  continue independent work.
 
 ## 4. Brief format
 
@@ -73,6 +93,8 @@ latest message, not in edits to earlier context.
   cheaply. [fix: Fable's change summaries omitted small edits / remove when reports match diffs across a mission without misses]
 - Unexpected files, control-plane edits or a moved HEAD: stop that unit and inspect history
   before any recovery. Never reset blindly or revert unrelated work.
+- The model a worker really ran on: `run.py` prints `ACTUAL_MODEL`; a Codex subagent's is in
+  `<state folder>/agents.jsonl`. If it differs from the route, redo the unit through `run`.
 - Small finishing touches the orchestrator may do itself (AGENTS.md section 2 exception);
   anything larger goes back to the same worker with the delta only.
 - Update status.md.
@@ -95,7 +117,8 @@ latest message, not in edits to earlier context.
 ## 7. Merge and commit
 
 - The orchestrator merges worktree branches and resolves conflicts.
-- Commit per verified unit or batch, staging explicit paths. Workers never commit.
+- Commit per verified unit or batch, staging explicit paths. Workers never commit. On Codex,
+  git writes need an escalation request (hosts.md Codex notes 9).
 - Push according to Push mode in Project policy; report what was committed and pushed.
 - Remove a worktree only after its branch is merged and the user's data is safe.
 
@@ -118,7 +141,10 @@ reversible details yourself and continue. Waiting is not consent.
 ## 10. Resume after compaction or a new orchestrator session
 
 1. Re-read intent.md, spec.md, status.md and the latest design document.
-2. Compare status.md with `git log`, HEAD, open worktrees and branches.
+2. Compare status.md with `git log`, HEAD, open worktrees and branches, and with the
+   workers the host lists (hosts.md). In a turn resumed with `codex exec resume`, `list_agents`
+   showed no earlier subagents; use the recorded `task_name`s. [host: codex-cli 0.169.0 exec resume,
+   measured 2026-11-17 / re-test after a Codex update] Interactive Codex: unconfirmed.
 3. For each running or returned unit, check the actual files before trusting the record.
 4. Correct status.md, then continue with the next unit. Compact or replace the
    orchestrator session only when its context is stale or full, not at every phase.

@@ -15,12 +15,15 @@ most capable first.
 ## Steps
 
 0. **Worker check.** If this session is a worker, change nothing; report "model update proposal pending" in NOTES and stop.
-1. **Read the proposal.** Open `<state dir>/model-update.json` (state dir = the folder holding `sessions/`;
-   `.tagteam/` or `<git common dir>/tagteam`). Show the user the `changes` and any `cli` errors in a few lines.
+1. **Read the proposal.** Open `<state dir>/model-update.json` (state dir = the folder holding `sessions/`:
+   `.tagteam/` in the main checkout, see `.claude/tagteam/state.py`; an older install kept it in
+   `<git common dir>/tagteam` until `install.py --update` moved it). Show the user the `changes` and any `cli` errors in a few lines.
    A CLI error (logged out, missing CLI) is the user's to fix; say so, do not guess the missing list.
 2. **Route baseline.** Before editing, run `python .claude/tagteam/route.py --role R --host H --json`
    for the 5 roles x 2 hosts (claude, codex). For `review` add `--author-vendor` = the host's own vendor
-   (claude -> claude, codex -> openai). Keep the table.
+   (claude -> claude, codex -> openai) and `--grade` = the review role's grade (`roles.review.grade` in
+   models.json); the router refuses a review without the author's grade. Keep the table, and use the same
+   arguments for the comparison in step 5.
 3. **Benchmarks.** Artificial Analysis values come from the API, not the web: for `bench_changed` or `bench_added`
    (or `bench.local` = `missing`), run `python .claude/tagteam/models_collect.py --write-bench` (needs
    `TAGTEAM_AA_API_KEY`; keep a copy of the old file first). It rewrites bench.local.json and keeps entries from other
