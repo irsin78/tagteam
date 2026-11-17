@@ -1,0 +1,156 @@
+{
+ "_comment": "Real Codex CLI 0.169.0 hook payloads (Windows, 2026-11-17), with paths, prompts and task text replaced. tool_input.message of the collaboration tools arrives encrypted. Subagent events carry the root session_id plus agent_id and agent_type.",
+ "session_start": {
+  "session_id": "01a1e8f5-eea9-7282-bca9-6e82441f81d2",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e8f5-eea9-7282-bca9-6e82441f81d2.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "SessionStart",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "source": "startup"
+ },
+ "session_start_resume": {
+  "session_id": "01a1e8ff-e419-75c1-b7b7-de504f7043d7",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e8ff-e419-75c1-b7b7-de504f7043d7.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "SessionStart",
+  "model": "gpt-6.1-terra",
+  "permission_mode": "bypassPermissions",
+  "source": "resume"
+ },
+ "user_prompt_submit": {
+  "session_id": "01a1e8f5-eea9-7282-bca9-6e82441f81d2",
+  "turn_id": "01a1e8f5-efad-7443-9aa1-796aeac64604",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e8f5-eea9-7282-bca9-6e82441f81d2.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "UserPromptSubmit",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "prompt": "Example user prompt."
+ },
+ "spawn_custom": {
+  "session_id": "01a1e8ff-e419-75c1-b7b7-de504f7043d7",
+  "turn_id": "01a1e8ff-e657-7a93-844d-5cbd7e57cad1",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e8ff-e419-75c1-b7b7-de504f7043d7.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-terra",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "collaborationspawn_agent",
+  "tool_input": {
+   "agent_type": "reader",
+   "task_name": "q1",
+   "fork_turns": "none",
+   "message": "gAAAAAB<encrypted task text>"
+  },
+  "tool_use_id": "call_f142364fd6914fc69e10d69ab76e9fcc"
+ },
+ "spawn_custom_with_args": {
+  "session_id": "01a1e90a-e6be-75d3-8373-11460c1148c0",
+  "turn_id": "01a1e90a-eb99-7f10-985e-f88d749d44fd",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e90a-e6be-75d3-8373-11460c1148c0.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "collaborationspawn_agent",
+  "tool_input": {
+   "agent_type": "reader",
+   "task_name": "o1",
+   "fork_turns": "none",
+   "model": "gpt-5.6-luna",
+   "reasoning_effort": "medium",
+   "message": "gAAAAAB<encrypted task text>"
+  },
+  "tool_use_id": "call_8f5278051b034a1da77398929897fdc2"
+ },
+ "spawn_default_with_args": {
+  "session_id": "01a1e90a-e6be-75d3-8373-11460c1148c0",
+  "turn_id": "01a1e90a-eb99-7f10-985e-f88d749d44fd",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e90a-e6be-75d3-8373-11460c1148c0.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "collaborationspawn_agent",
+  "tool_input": {
+   "agent_type": "default",
+   "task_name": "o2",
+   "fork_turns": "none",
+   "model": "gpt-5.6-luna",
+   "reasoning_effort": "medium",
+   "message": "gAAAAAB<encrypted task text>"
+  },
+  "tool_use_id": "call_31b9c0ac4dc748789576b86f4dacec2e"
+ },
+ "followup_task": {
+  "session_id": "01a1e8ff-e419-75c1-b7b7-de504f7043d7",
+  "turn_id": "01a1e8ff-e657-7a93-844d-5cbd7e57cad1",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e8ff-e419-75c1-b7b7-de504f7043d7.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-terra",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "collaborationfollowup_task",
+  "tool_input": {
+   "target": "q1",
+   "message": "gAAAAAB<encrypted task text>"
+  },
+  "tool_use_id": "call_f6102f0e3636454ab70e7f5cfdf603aa"
+ },
+ "subagent_start": {
+  "session_id": "01a1e90a-e6be-75d3-8373-11460c1148c0",
+  "turn_id": "01a1e90b-1ede-7043-9250-c883373038cc",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e90a-e6be-75d3-8373-11460c1148c0.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "SubagentStart",
+  "model": "gpt-5.6-luna",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "01a1e90b-1de6-70f3-b9f9-bcc8c759509a",
+  "agent_type": "default"
+ },
+ "subagent_shell": {
+  "session_id": "01a1e922-bbe6-7010-93fe-a54c20fd7b10",
+  "turn_id": "01a1e922-d946-78b3-82a0-9c1fca40cef1",
+  "agent_id": "01a1e922-d88f-7471-8dc4-653f50f57b44",
+  "agent_type": "default",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e922-bbe6-7010-93fe-a54c20fd7b10.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-terra",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "git commit --allow-empty -m hooktest"
+  },
+  "tool_use_id": "exec-e4e91f80-6ca9-4c67-8c2b-bec6610cdbaa"
+ },
+ "root_shell": {
+  "session_id": "01a1e923-7577-7692-a320-0f362570f04d",
+  "turn_id": "01a1e923-76df-7f81-aa92-a3cab04a0865",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e923-7577-7692-a320-0f362570f04d.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-terra",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "git commit --allow-empty -m hooktest"
+  },
+  "tool_use_id": "exec-885c45e6-ca1c-4941-b335-2f28fb165793"
+ },
+ "apply_patch": {
+  "session_id": "01a1e918-b990-75a2-a101-929fd0dddbfb",
+  "turn_id": "01a1e918-bc3e-7900-8934-c9eced99394c",
+  "transcript_path": "C:/work/home/.codex/sessions/2026/11/17/rollout-01a1e918-b990-75a2-a101-929fd0dddbfb.jsonl",
+  "cwd": "C:/work/proj",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-terra",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "apply_patch",
+  "tool_input": {
+   "command": "*** Begin Patch\n*** Add File: x11-edit.txt\n+edited\n*** End Patch"
+  },
+  "tool_use_id": "exec-bdf3cbfb-2eab-4581-9f86-8570f52e064f"
+ }
+}

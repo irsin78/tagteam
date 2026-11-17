@@ -25,7 +25,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "mcp__ccd_session__start_session|Bash|PowerShell|Agent",
+        "matcher": "mcp__ccd_session__start_session|Bash|PowerShell|Agent|Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",

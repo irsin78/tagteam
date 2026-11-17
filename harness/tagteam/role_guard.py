@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """tagteam role guard: the single role hook (Claude Code and Codex).
 
-Usage: role_guard.py <SessionStart|UserPromptSubmit|PreToolUse> [--host claude|codex]
-Reads the hook JSON payload on stdin. Deny = exit 2 with a one-line reason on stderr.
-Any internal error fails open (exit 0 with a warning on stderr).
+Usage: role_guard.py <SessionStart|UserPromptSubmit|PreToolUse|SubagentStart> [--host claude|codex]
+Reads the hook JSON payload on stdin. A deny is written in the host's format:
+  claude: exit 2 with a one-line reason on stderr;
+  codex:  exit 0 with {"hookSpecificOutput": {..., "permissionDecision": "deny"}} on stdout
+          (Codex CLI 0.169.0 ignores exit 2 from PreToolUse hooks), the reason also on stderr.
+Any internal error fails open (exit 0 with a warning on stderr, nothing on stdout).
 State lives in <main work tree>/.tagteam/ (see state.py); TAGTEAM_STATE_DIR overrides it (tests).
 """
 import datetime
@@ -13,12 +16,25 @@ import re
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import state  # noqa: E402  (same folder)
+
+INSTALL_ROOT = os.path.dirname(os.path.dirname(HERE))  # <project>/.claude/tagteam -> <project>
 
 MARKER = "HARNESS ROLE: DELEGATE"
 START_SESSION = "mcp__ccd_session__start_session"
 SHELL_TOOLS = {"Bash", "PowerShell", "shell", "exec_command", "shell_command", "local_shell"}
+# Codex hook payloads join namespace and name without a separator (collaboration + spawn_agent);
+# the other two spellings are kept for other Codex versions.
+SPAWN_TOOLS = {"collaborationspawn_agent", "spawn_agent", "collaboration.spawn_agent"}
+DELEGATE_TOOLS = {"Agent", START_SESSION} | SPAWN_TOOLS
+EDIT_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
+PATCH_TOOLS = {"apply_patch"}
+PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): *(.+?)\s*$", re.M)
+CONTROL_DIRS = (".claude", ".codex", ".agents")
+CONTROL_FILES = ("agents.md", "claude.md")
+AGENT_NAME = re.compile(r"""^\s*name\s*=\s*["']([^"']+)["']""", re.M)
 
 # Accident check, not a security boundary: a worker can evade this with aliases,
 # variables, scripts, or other tools. It only catches the plain command forms.
@@ -28,9 +44,23 @@ GIT_WRITE = re.compile(
 )
 
 
+class Denied(Exception):
+    """Raised by a rule; main() writes it in the host's deny format."""
+
+
 def deny(reason):
-    sys.stderr.write("tagteam: " + " ".join(reason.split()) + "\n")
-    sys.exit(2)
+    raise Denied(" ".join(reason.split()))
+
+
+def emit_deny(reason, host):
+    """Write a deny for this host and return the exit code."""
+    line = "tagteam: " + reason
+    sys.stderr.write(line + "\n")
+    if host == "codex":
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": line}}) + "\n")
+        return 0
+    return 2
 
 
 def session_file(payload):
@@ -48,12 +78,19 @@ def read_role(path):
         return None
 
 
-def is_worker(payload):
-    """Worker = recorded worker session, launcher env var, or a subagent (agent_id)."""
+def role_of(payload):
+    """"worker", "orchestrator", or None while the first prompt has not decided it yet.
+
+    Worker = launcher env var, a subagent (agent_id: Codex sends the root session_id with it),
+    or a recorded worker session."""
     if os.environ.get("HARNESS_DELEGATE_RUN") == "1" or payload.get("agent_id"):
-        return True
+        return "worker"
     path = session_file(payload)
-    return bool(path) and read_role(path) == "worker"
+    return read_role(path) if path else None
+
+
+def is_worker(payload):
+    return role_of(payload) == "worker"
 
 
 def shell_command(tool_input):
@@ -64,9 +101,12 @@ def shell_command(tool_input):
 
 
 def on_session_start(payload, host):
-    role = "worker" if is_worker(payload) else "orchestrator"
-    print("TAGTEAM: role=%s host=%s" % (role, host))
-    if role == "orchestrator":
+    role = role_of(payload)
+    if role is None:  # a new session: its first prompt sets the role
+        print("TAGTEAM: role=pending host=%s (set by the first prompt: worker if it carries %s)" % (host, MARKER))
+    else:
+        print("TAGTEAM: role=%s host=%s" % (role, host))
+    if role != "worker":  # notices for the orchestrator; a pending session may become one
         try:
             note = model_update_notice(payload)
         except Exception:  # fail open: a notice bug must not block a session
@@ -131,6 +171,8 @@ def task_notice():
 
 
 def on_prompt(payload, host):
+    if payload.get("agent_id"):
+        return  # a subagent's prompt must not write the root session's record (Codex shares session_id)
     path = session_file(payload)
     if not path or os.path.exists(path):
         return  # record once on the first prompt; never change it afterwards
@@ -165,11 +207,92 @@ def on_pre_tool(payload, host):
         deny("workers may not run git commit or git push")
 
     # [role] Workers may not delegate again (subagents lose the Agent tool by definition).
-    if tool in ("Agent", "spawn_agent") and worker:
+    if tool in DELEGATE_TOOLS and worker:
         deny("worker sessions may not spawn subagents")
 
+    # [role] Codex spawn: a custom agent runs on its definition's model and effort and silently
+    # ignores spawn arguments; any other agent_type takes them and needs both.
+    if tool in SPAWN_TOOLS:
+        agent_type = tool_input.get("agent_type")
+        given = [k for k in ("model", "reasoning_effort") if tool_input.get(k)]
+        if agent_type and agent_type in custom_agents(payload):
+            if given:
+                deny("custom agent %s fixes model and effort in its definition; spawn arguments (%s) are ignored "
+                     "- omit them or use agent_type default" % (agent_type, ", ".join(given)))
+        elif len(given) < 2:
+            deny("spawn_agent without a custom agent_type needs explicit model and reasoning_effort")
 
-HANDLERS = {"SessionStart": on_session_start, "UserPromptSubmit": on_prompt, "PreToolUse": on_pre_tool}
+    # [role] Workers may not edit the control plane (plain edit tools only; shell writes are not seen).
+    if worker:
+        hit = control_plane_path(edit_paths(tool, tool_input), payload)
+        if hit:
+            deny("workers may not edit the control plane (%s)" % hit)
+
+
+def custom_agents(payload):
+    """Names of the project's Codex custom agents (.codex/agents/*.toml) in cwd and the install root."""
+    names = set()
+    for root in {payload.get("cwd") or os.getcwd(), INSTALL_ROOT}:
+        folder = os.path.join(root, ".codex", "agents")
+        try:
+            files = [f for f in os.listdir(folder) if f.endswith(".toml")]
+        except OSError:
+            continue
+        for f in files:
+            try:
+                with open(os.path.join(folder, f), encoding="utf-8") as fh:
+                    m = AGENT_NAME.search(fh.read())
+            except (OSError, ValueError):
+                continue
+            names.add(m.group(1) if m else f[:-len(".toml")])
+    return names
+
+
+def edit_paths(tool, tool_input):
+    if tool in EDIT_TOOLS:
+        path = tool_input.get(EDIT_TOOLS[tool])
+        return [path] if isinstance(path, str) and path else []
+    if tool in PATCH_TOOLS:
+        text = tool_input.get("command", tool_input.get("patch", tool_input.get("input", "")))
+        if isinstance(text, list):
+            text = "\n".join(str(t) for t in text)
+        return PATCH_PATH.findall(str(text or ""))
+    return []
+
+
+def control_plane_path(paths, payload):
+    """The first path inside the control plane of the project root (git top of cwd, or cwd) or the install root."""
+    if not paths:
+        return None
+    cwd = payload.get("cwd") or os.getcwd()
+    roots = {os.path.normpath(state._git(cwd, "rev-parse", "--show-toplevel") or cwd), os.path.normpath(INSTALL_ROOT)}
+    for path in paths:
+        full = os.path.normpath(path if os.path.isabs(path) else os.path.join(cwd, path))
+        for root in roots:
+            try:
+                rel = os.path.relpath(full, root)
+            except ValueError:  # another drive (Windows)
+                continue
+            parts = rel.replace("\\", "/").lower().split("/")
+            if parts[0] == ".." or parts[0] == ".":
+                continue
+            if parts[0] in CONTROL_DIRS or (len(parts) == 1 and parts[0] in CONTROL_FILES):
+                return path
+    return None
+
+
+def on_subagent_start(payload, host):
+    """Record which model a subagent really runs on (agents.jsonl), so the orchestrator can check it."""
+    rec = {"ts": int(time.time()), "host": host}
+    for key in ("session_id", "agent_id", "agent_type", "model"):
+        rec[key] = payload.get(key)
+    folder = state.ensure_writable(state.state_dir(payload.get("cwd")))
+    with open(os.path.join(folder, "agents.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+HANDLERS = {"SessionStart": on_session_start, "UserPromptSubmit": on_prompt, "PreToolUse": on_pre_tool,
+            "SubagentStart": on_subagent_start}
 
 
 def main(argv):
@@ -188,7 +311,10 @@ def main(argv):
     payload = json.loads(raw) if raw.strip() else {}
     if not isinstance(payload, dict):
         raise ValueError("hook payload is not an object")
-    HANDLERS[event](payload, host)
+    try:
+        HANDLERS[event](payload, host)
+    except Denied as d:
+        return emit_deny(str(d), host)
     return 0
 
 

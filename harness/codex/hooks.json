@@ -28,7 +28,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|PowerShell|shell|exec_command|shell_command|local_shell|mcp__ccd_session__start_session|Agent|spawn_agent",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
@@ -36,6 +36,19 @@
             "timeout": 10,
             "statusMessage": "tagteam role guard",
             "commandWindows": "python .claude/tagteam/role_guard.py PreToolUse --host codex"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/tagteam/role_guard.py SubagentStart --host codex",
+            "timeout": 10,
+            "statusMessage": "tagteam role guard",
+            "commandWindows": "python .claude/tagteam/role_guard.py SubagentStart --host codex"
           }
         ]
       }
