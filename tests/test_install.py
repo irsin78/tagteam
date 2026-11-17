@@ -4,6 +4,7 @@ import io
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 INSTALL = Path(__file__).resolve().parent.parent / "install.py"
+REAL_STATE = INSTALL.parent / "harness/tagteam/state.py"
 sys.path.insert(0, str(INSTALL.parent))
 import install  # noqa: E402
 
@@ -63,6 +65,7 @@ def build_source(root, guard=STUB):
         "claude/agents/a.md": "agent",
         "skills/s1/SKILL.md": "skill",
         "tagteam/role_guard.py": guard,
+        "tagteam/state.py": REAL_STATE.read_text(encoding="utf-8"),
         "tagteam/models.json": "{}",
         "tagteam/models_collect.py": FAKE_COLLECT,
         "tagteam/models.local.json.example": '{"plans": {}}',
@@ -89,7 +92,7 @@ class InstallTests(unittest.TestCase):
         env = mock.patch.dict(os.environ)  # no real key, no network: the collector here is a fake
         env.start()
         self.addCleanup(env.stop)
-        for k in ("TAGTEAM_AA_API_KEY", "TAGTEAM_CONFIG_DIR", "FAKE_COLLECT_FAIL"):
+        for k in ("TAGTEAM_AA_API_KEY", "TAGTEAM_CONFIG_DIR", "FAKE_COLLECT_FAIL", "TAGTEAM_STATE_DIR"):
             os.environ.pop(k, None)
         self.calls = self.dst / ".claude/tagteam/calls.log"
         self.bench = self.dst / ".claude/tagteam/bench.local.json"
@@ -110,6 +113,167 @@ class InstallTests(unittest.TestCase):
             self.assertTrue((self.dst / rel).is_file(), rel)
         self.assertIn("created", out)
         self.assertFalse((self.dst / ".claude/tagteam/models.local.json.example").exists())
+
+    def test_skills_installed_to_both_locations_with_the_same_content(self):
+        (self.src / "harness/skills/s1/extra.md").write_text("helper", encoding="utf-8")
+        self.run_install()
+        for root in (".claude/skills", ".agents/skills"):
+            self.assertEqual((self.dst / root / "s1/SKILL.md").read_text(encoding="utf-8"), "skill", root)
+            self.assertEqual((self.dst / root / "s1/extra.md").read_text(encoding="utf-8"), "helper", root)
+        self.assertEqual(install.skill_copy_errors(self.dst), [])
+        (self.src / "harness/skills/s1/SKILL.md").write_text("skill v2", encoding="utf-8")
+        self.run_install("--update")
+        for root in (".claude/skills", ".agents/skills"):
+            self.assertEqual((self.dst / root / "s1/SKILL.md").read_text(encoding="utf-8"), "skill v2", root)
+
+    def git_init(self, path):
+        subprocess.run(["git", "-C", str(path), "init", "-q"], check=True, capture_output=True)
+
+    def write_old(self, rel, text):
+        p = self.dst / ".git/tagteam" / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+
+    def test_install_and_update_move_the_old_state_folder(self):
+        self.git_init(self.dst)
+        self.write_old("exhausted.json", "old")
+        self.write_old("sessions/s1.json", "s1")
+        code, out = self.run_install("--update")
+        self.assertEqual(code, 0)
+        self.assertEqual((self.dst / ".tagteam/exhausted.json").read_text(encoding="utf-8"), "old")
+        self.assertEqual((self.dst / ".tagteam/sessions/s1.json").read_text(encoding="utf-8"), "s1")
+        self.assertFalse((self.dst / ".git/tagteam").exists())
+        self.assertTrue((self.dst / ".git/tagteam.moved/exhausted.json").is_file())
+        self.assertIn("state", out)
+        self.assertIn("tagteam.moved", out)
+        code, out = self.run_install("--update")  # once: nothing more to move
+        self.assertNotIn("tagteam.moved", out)
+
+    def test_conflicting_old_file_is_kept_aside_and_reported(self):
+        self.git_init(self.dst)
+        (self.dst / ".tagteam").mkdir()
+        (self.dst / ".tagteam/exhausted.json").write_text("new", encoding="utf-8")
+        self.write_old("exhausted.json", "old")
+        code, out = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertEqual((self.dst / ".tagteam/exhausted.json").read_text(encoding="utf-8"), "new")
+        self.assertEqual((self.dst / ".git/tagteam.moved/exhausted.json").read_text(encoding="utf-8"), "old")
+        self.assertIn("conflict", out)
+
+    def test_unwritable_new_state_folder_only_warns(self):
+        self.git_init(self.dst)
+        self.write_old("exhausted.json", "old")
+        (self.dst / ".tagteam").write_text("a file in the way", encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code, _ = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertIn("could not move the old state folder", err.getvalue())
+        self.assertEqual((self.dst / ".git/tagteam/exhausted.json").read_text(encoding="utf-8"), "old")
+
+    def test_nothing_is_moved_outside_git_or_with_the_override(self):
+        code, out = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertNotIn("tagteam.moved", out)
+        self.git_init(self.dst)
+        self.write_old("exhausted.json", "old")
+        os.environ["TAGTEAM_STATE_DIR"] = str(self.dst.parent / "elsewhere")
+        self.run_install("--update")
+        self.assertTrue((self.dst / ".git/tagteam/exhausted.json").is_file())
+
+    def test_old_source_without_state_py_installs_without_migrating(self):
+        (self.src / "harness/tagteam/state.py").unlink()
+        self.git_init(self.dst)
+        self.write_old("exhausted.json", "old")
+        code, _ = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertTrue((self.dst / ".git/tagteam/exhausted.json").is_file())
+
+    def tree(self, root):
+        return sorted(p.relative_to(root).as_posix() for p in Path(root).rglob("*") if ".git" not in p.relative_to(root).parts)
+
+    def test_install_and_check_leave_no_bytecode_in_the_project(self):
+        self.src = build_source(self.src.parent / "src2", guard="import state\n" + STUB)  # a guard that imports state.py
+        self.git_init(self.dst)
+        self.write_old("exhausted.json", "old")
+        self.run_install()
+        self.assertEqual([t for t in self.tree(self.dst) if "__pycache__" in t], [])
+        before = self.tree(self.dst)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(install.main([str(self.dst), "--check"]), 0, out.getvalue())
+        self.assertEqual(self.tree(self.dst), before)
+
+    def make_super(self):
+        """A superproject with the target as its submodule `libs/sub` (local paths only)."""
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t",
+                   GIT_COMMITTER_EMAIL="t@example.invalid", GIT_CONFIG_COUNT="1",
+                   GIT_CONFIG_KEY_0="protocol.file.allow", GIT_CONFIG_VALUE_0="always")
+
+        def git(cwd, *args):
+            subprocess.run(["git", "-C", str(cwd)] + list(args), check=True, capture_output=True, env=env)
+        base = self.dst.parent
+        sub, sup = base / "subsrc", base / "sup"
+        for d in (sub, sup):
+            d.mkdir()
+            git(d, "init", "-q")
+            git(d, "commit", "-q", "--allow-empty", "-m", "i")
+        git(sup, "submodule", "add", "-q", str(sub), "libs/sub")
+        git(sup, "commit", "-q", "-m", "sm")
+        return sup, sup / "libs" / "sub", git
+
+    def test_state_ignore_rule_goes_to_the_checkout_that_holds_the_state_folder(self):
+        sup, sub, git = self.make_super()
+        wt = self.dst.parent / "subwt"
+        git(sub, "worktree", "add", "-q", str(wt), "-b", "w")
+        main = self.dst.parent / "main"
+        main.mkdir()
+        git(main, "init", "-q")
+        git(main, "commit", "-q", "--allow-empty", "-m", "i")
+        mainwt = self.dst.parent / "mainwt"
+        git(main, "worktree", "add", "-q", str(mainwt), "-b", "w2")
+        for target, root in ((sub, sup), (wt, sup), (mainwt, main)):
+            code, out = self.run_install_into(target)
+            self.assertEqual(code, 0, out)
+            root_lines = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(root_lines.count(".tagteam/"), 1, target)
+            own = (target / ".gitignore").read_text(encoding="utf-8").splitlines()
+            self.assertIn(".claude/tagteam/models.local.json", own)
+            self.assertNotIn(".tagteam/", own, target)  # nothing is created in the target itself
+            self.run_install_into(target)  # again: no duplicate rule
+            self.assertEqual((root / ".gitignore").read_text(encoding="utf-8").splitlines().count(".tagteam/"), 1)
+
+    def run_install_into(self, target):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = install.main([str(target), "--source", str(self.src), "--yes"])
+        return code, out.getvalue()
+
+    def test_check_warns_about_an_old_state_folder_and_stops_after_update(self):
+        self.run_install()
+        self.git_init(self.dst)
+        self.write_old("exhausted.json", "old")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = install.main([str(self.dst), "--check"])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("old state folder", out.getvalue())
+        self.run_install("--update")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            install.main([str(self.dst), "--check"])
+        self.assertNotIn("old state folder", out.getvalue())
+
+    def test_check_fails_when_the_skill_copies_differ_or_one_is_missing(self):
+        self.run_install()
+        (self.dst / ".agents/skills/s1/SKILL.md").write_text("changed", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(install.main([str(self.dst), "--check"]), 1)
+        self.assertIn("differ", out.getvalue())
+        self.run_install("--update")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(install.main([str(self.dst), "--check"]), 0)
+        shutil.rmtree(self.dst / ".agents/skills")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(install.main([str(self.dst), "--check"]), 1)
+        self.assertIn("missing", out.getvalue())
 
     def test_codex_hooks_absolute_path(self):
         self.run_install()
@@ -172,7 +336,7 @@ class InstallTests(unittest.TestCase):
         self.run_install()
         self.assertEqual((self.dst / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\nextra\n")
 
-    def test_gitignore_local_files_always_state_dir_only_for_non_git(self):
+    def test_gitignore_lists_local_files_and_the_state_folder_in_every_project(self):
         local = [".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json"]
         self.run_install()
         text = (self.dst / ".gitignore").read_text(encoding="utf-8")
@@ -180,13 +344,13 @@ class InstallTests(unittest.TestCase):
             self.assertIn(line, text.splitlines())
         self.run_install("--update")
         self.assertEqual((self.dst / ".gitignore").read_text(encoding="utf-8"), text)
-        git_dst = self.dst.parent / "gitproj"
+        git_dst = self.dst.parent / "gitproj"  # a git project ignores .tagteam/ too (state is no longer inside .git)
         (git_dst / ".git").mkdir(parents=True)
         (git_dst / ".gitignore").write_text("node_modules\n.claude/tagteam/models.local.json", encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()):
             install.main([str(git_dst), "--source", str(self.src), "--yes"])
         lines = (git_dst / ".gitignore").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(lines, ["node_modules", local[0], local[1]])
+        self.assertEqual(lines, ["node_modules", local[0], local[1], ".tagteam/"])
 
     def test_bench_written_once_when_key_set_and_file_missing(self):
         os.environ["TAGTEAM_AA_API_KEY"] = "k-123"
@@ -266,7 +430,7 @@ class InstallTests(unittest.TestCase):
 
 
 SKILL = INSTALL.parent / "harness/skills/model-update/SKILL.md"
-GUARD_WITH_STATE = "import os\ndef state_dir(payload):\n    return os.environ['TAGTEAM_STATE_DIR']\n"
+STATE_STUB = "import os\ndef state_dir(cwd=None):\n    return os.environ['TAGTEAM_STATE_DIR']\n"
 
 
 class ScheduleTests(unittest.TestCase):
@@ -277,7 +441,7 @@ class ScheduleTests(unittest.TestCase):
         self.proj = (base / "proj").resolve()
         (self.proj / ".claude/tagteam").mkdir(parents=True)
         (self.proj / ".claude/tagteam/models_collect.py").write_text("# collector\n", encoding="utf-8")
-        (self.proj / ".claude/tagteam/role_guard.py").write_text(GUARD_WITH_STATE, encoding="utf-8")
+        (self.proj / ".claude/tagteam/state.py").write_text(STATE_STUB, encoding="utf-8")
         self.state = base / "state"
         self.state.mkdir()
         self.home = base / "home"
@@ -426,6 +590,29 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.calls[0][0], ["schtasks", "/Delete", "/TN", self.name(), "/F"])
         self.assertEqual(sorted(p.name for p in self.state.iterdir()), ["keep.txt"])
+
+    def test_unschedule_deletes_proposal_files_from_the_new_state_folder(self):
+        shutil.copy(REAL_STATE, self.proj / ".claude/tagteam/state.py")
+        subprocess.run(["git", "-C", str(self.proj), "init", "-q"], check=True, capture_output=True)
+        new = self.proj / ".tagteam"
+        new.mkdir()
+        old = self.proj / ".git/tagteam"
+        old.mkdir()
+        for folder in (new, old):
+            for fn in ("model-update.json", "keep.txt"):
+                (folder / fn).write_text("x", encoding="utf-8")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("TAGTEAM_STATE_DIR", None)
+            self.assertEqual(install.installed_state_dir(self.proj), self.proj / ".tagteam")
+            code, out = self.quiet(self.sched("windows").unschedule)
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(p.name for p in new.iterdir()), ["keep.txt"])
+        self.assertIn(str(new / "model-update.json"), out)
+        self.assertTrue((old / "model-update.json").exists())  # the old location is not this command's business
+
+    def test_installed_state_dir_is_none_without_an_installed_state_py(self):
+        (self.proj / ".claude/tagteam/state.py").unlink()
+        self.assertIsNone(install.installed_state_dir(self.proj))
 
     def test_main_flags(self):
         calls = []

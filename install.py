@@ -53,6 +53,7 @@ def put(rep, target, rel, data, *, keep_existing=False, note=""):
 
 
 GUARD_REL = ".claude/tagteam/role_guard.py"
+STATE_REL = ".claude/tagteam/state.py"
 
 
 def localize_hooks(src, guard):
@@ -141,25 +142,40 @@ def ask_tiers():
     return plans
 
 
-def is_git_repo(target):
-    return (target / ".git").exists()
-
-
 LOCAL_IGNORES = (".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json")
+STATE_IGNORE = ".tagteam/"
 BENCH_REL = Path(".claude/tagteam/bench.local.json")
+SKILL_ROOTS = (".claude/skills", ".agents/skills")  # Claude Code reads the first, Codex the second
 
 
-def ensure_gitignore(rep, target, git):
-    """Machine-local files are always ignored; .tagteam/ (state) only where the project is not a git repo."""
-    gi = target / ".gitignore"
+def add_ignores(rep, root, want):
+    """Append the missing lines of `want` to root/.gitignore."""
+    gi = root / ".gitignore"
     old = gi.read_text(encoding="utf-8") if gi.exists() else ""
     have = {ln.strip().rstrip("/") for ln in old.splitlines()}
-    want = list(LOCAL_IGNORES) + ([] if git else [".tagteam/"])
     add = [w for w in want if w.rstrip("/") not in have]
     if not add:
         return
     sep = "" if old.endswith("\n") or not old else "\n"
-    put(rep, target, Path(".gitignore"), (old + sep + "".join(w + "\n" for w in add)).encode("utf-8"))
+    data = (old + sep + "".join(w + "\n" for w in add)).encode("utf-8")
+    put(rep, root, Path(".gitignore"), data)
+
+
+def state_checkout(target):
+    """The checkout that holds the state folder: <main work tree> (a submodule's superproject, a linked
+    worktree's main checkout) or the target itself. Only a folder named .tagteam counts (not an override)."""
+    state = installed_state_dir(target)
+    if state is not None and state.name == ".tagteam" and state.parent.is_dir():
+        return state.parent
+    return target
+
+
+def ensure_gitignore(rep, target):
+    """Machine-local files are ignored in the target. The state folder (.tagteam/) is ignored in the checkout
+    that contains it, which is another one for a submodule or a linked worktree: the target's own .gitignore
+    gets no .tagteam/ rule then, because nothing is created there."""
+    add_ignores(rep, target, LOCAL_IGNORES)
+    add_ignores(rep, state_checkout(target), (STATE_IGNORE,))
 
 
 def ensure_bench(target):
@@ -216,7 +232,8 @@ def install(target, source, interactive):
     if (h / "claude" / "settings.json").is_file():
         merge_settings(rep, h / "claude" / "settings.json", target)
     copy_tree(rep, h / "claude" / "agents", target, ".claude/agents", "*.md")
-    copy_tree(rep, h / "skills", target, ".claude/skills")
+    for skills_root in SKILL_ROOTS:
+        copy_tree(rep, h / "skills", target, skills_root)
     copy_tree(rep, h / "tagteam", target, ".claude/tagteam")
     hooks = h / "codex" / "hooks.json"
     if hooks.is_file():
@@ -239,7 +256,7 @@ def install(target, source, interactive):
             put(rep, target, local, data)
         elif example:
             put(rep, target, local, example.read_bytes())
-    ensure_gitignore(rep, target, is_git_repo(target))
+    ensure_gitignore(rep, target)
     return rep
 
 
@@ -254,6 +271,7 @@ def smoke_test(target):
     with tempfile.TemporaryDirectory() as state:
         env = {k: v for k, v in os.environ.items() if k != "HARNESS_DELEGATE_RUN"}
         env["TAGTEAM_STATE_DIR"] = state
+        env["PYTHONDONTWRITEBYTECODE"] = "1"  # the installed guard imports state.py; leave no __pycache__
 
         def run(event, payload):
             try:
@@ -285,6 +303,23 @@ def smoke_test(target):
     return fails
 
 
+def skill_copy_errors(target):
+    """The two installed skill folders must hold the same files with the same content."""
+    trees = {}
+    for root in SKILL_ROOTS:
+        base = target / root
+        trees[root] = ({f.relative_to(base).as_posix(): f.read_bytes() for f in base.rglob("*") if f.is_file()}
+                       if base.is_dir() else None)
+    if all(t is None for t in trees.values()):
+        return []
+    first, second = SKILL_ROOTS
+    if trees[first] is None or trees[second] is None:
+        missing = first if trees[first] is None else second
+        return [f"skills: {missing} is missing; run install.py --update"]
+    diff = sorted(f for f in set(trees[first]) | set(trees[second]) if trees[first].get(f) != trees[second].get(f))
+    return [f"skills: {first} and {second} differ in {', '.join(diff[:5])}; run install.py --update"] if diff else []
+
+
 def check(target):
     errors, warnings = [], []
     for tool in ("python", "git", "claude", "codex", "agy"):
@@ -296,6 +331,14 @@ def check(target):
         if os.name == "nt" and "windowsapps" in path.lower():
             warnings.append(f"{tool}: resolves to a WindowsApps alias stub ({path})")
     errors += smoke_test(target)
+    errors += skill_copy_errors(target)
+    mod = load_installed_state(target)
+    try:
+        old = list(mod.legacy_dirs(str(target))) if mod else []
+    except Exception:  # noqa: BLE001 - a check must not crash on an old state.py
+        old = []
+    for path in old:
+        warnings.append(f"old state folder {path} still exists; run install.py --update to move it to .tagteam/")
     for w in warnings:
         print(f"  WARN     {w}")
     for e in errors:
@@ -345,16 +388,42 @@ def task_xml(argv, root):
 """
 
 
-def installed_state_dir(target):
-    """State dir via the installed role_guard (install.py has no state-dir logic of its own)."""
-    guard = target / GUARD_REL
+def load_installed_state(target):
+    """The installed state.py as a module (install.py has no state-folder logic of its own), or None.
+    Loaded without writing bytecode, so the project tree gets no __pycache__ from install or --check."""
+    keep = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
     try:
-        spec = importlib.util.spec_from_file_location("tagteam_installed_guard", guard)
+        spec = importlib.util.spec_from_file_location("tagteam_installed_state", target / STATE_REL)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return Path(mod.state_dir({"cwd": str(target)}))
-    except Exception:  # noqa: BLE001 - missing or old guard: nothing to clean
+        return mod
+    except Exception:  # noqa: BLE001 - missing or old install: no state module
         return None
+    finally:
+        sys.dont_write_bytecode = keep
+
+
+def installed_state_dir(target):
+    mod = load_installed_state(target)
+    try:
+        return Path(mod.state_dir(str(target))) if mod else None
+    except Exception:  # noqa: BLE001 - nothing to clean
+        return None
+
+
+def migrate_state(target):
+    """Move an old <git dir>/tagteam state folder to .tagteam/ (install and --update only). Never fails the install."""
+    mod = load_installed_state(target)
+    if mod is None or not hasattr(mod, "migrate"):
+        return
+    try:
+        lines = mod.migrate(str(target))
+    except Exception as exc:  # noqa: BLE001 - StateError: the old folder stays where it is
+        print(f"warning: could not move the old state folder ({exc})", file=sys.stderr)
+        return
+    for line in lines:
+        print("  state    " + line)
 
 
 class CronReadError(Exception):
@@ -496,6 +565,7 @@ def main(argv=None, runner=run_cmd, plat=None):
         rep = install(target, source, interactive)
         print(("Updated" if a.update else "Installed") + f" tagteam in {target}")
         rep.print()
+        migrate_state(target)
         ensure_bench(target)
         ensure_available(target)
     if not a.schedule and interactive and not a.update:
