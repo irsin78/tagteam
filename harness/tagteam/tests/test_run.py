@@ -71,6 +71,40 @@ class RunTestBase(unittest.TestCase):
         return [os.path.join(root, d) for d in os.listdir(root)] if os.path.isdir(root) else []
 
 
+class StateFolderTests(RunTestBase):
+    def test_unwritable_state_folder_is_a_usage_error_before_the_cli_starts(self):
+        blocker = os.path.join(self.tmp.name, "blocker")
+        with open(blocker, "w", encoding="utf-8") as fh:
+            fh.write("x")
+        target = os.path.join(blocker, "state")
+        os.environ["TAGTEAM_STATE_DIR"] = target
+        code, out, err = self.go("claude")
+        self.assertEqual(code, 2, out + err)
+        self.assertIn(target, err)
+        self.assertIn("TAGTEAM_STATE_DIR", err)
+        self.assertIn("Codex: run this command with escalated permissions", err)
+        self.assertFalse(os.path.exists(self.record))  # the CLI was never started
+
+    def test_default_state_folder_is_in_the_main_work_tree_even_from_a_worktree(self):
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+        repo = os.path.join(self.tmp.name, "main")
+        wt = os.path.join(self.tmp.name, "wt")
+        os.makedirs(repo)
+        with mock.patch.dict(os.environ, env):
+            for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "i"], ["worktree", "add", "-q", wt, "-b", "w"]):
+                subprocess.run(["git", "-C", repo] + args, check=True, capture_output=True)
+        os.environ["TAGTEAM_STATE_DIR"] = ""
+        run.statelib._cache.clear()
+        code, out, err = self.go("claude", cwd=wt)
+        run.statelib._cache.clear()
+        self.assertEqual(code, 0, out + err)
+        runs = os.path.join(repo, ".tagteam", "runs")
+        self.assertEqual(len(os.listdir(runs)), 1)
+        self.assertFalse(os.path.exists(os.path.join(wt, ".tagteam")))
+        self.assertFalse(os.path.exists(os.path.join(repo, ".git", "tagteam")))
+
+
 class CommandTests(unittest.TestCase):
     def build(self, vendor, read_only, windows=False, prompt="p", model_arg="m"):
         with mock.patch.object(run, "_is_windows", return_value=windows):

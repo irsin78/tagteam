@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import role_guard  # noqa: E402  (same folder; its CLI entry is behind a __main__ guard)
+import state as statelib  # noqa: E402  (same folder; `state` is a local name in main)
 
 MARKER = "HARNESS ROLE: DELEGATE"
 AGY_ARG_LIMIT = 30000  # characters of the serialized command; Windows stops near 32K
@@ -138,7 +138,7 @@ def update_exhausted(state, vendor, entry):
     else:
         vendors[vendor] = entry
     tmp = "%s.%s.tmp" % (path, secrets.token_hex(3))
-    os.makedirs(state, exist_ok=True)
+    statelib.ensure_writable(state)
     write_text(tmp, json.dumps({"schema": 1, "vendors": vendors}, indent=2) + "\n")
     os.replace(tmp, path)
 
@@ -462,7 +462,11 @@ def main(argv):
     if (prompt.splitlines() or [""])[0].strip() != MARKER:
         prompt = MARKER + "\n" + prompt
 
-    state = role_guard.state_dir({"cwd": cwd})
+    state = statelib.state_dir(cwd)
+    try:
+        statelib.ensure_writable(state)
+    except statelib.StateError as exc:
+        return fail(str(exc))
     start = utc_now()
     run_id = "%s-%s-%s" % (start.astimezone().strftime("%Y%m%d-%H%M%S"), args.vendor, secrets.token_hex(2))
     run_dir = os.path.join(state, "runs", run_id)

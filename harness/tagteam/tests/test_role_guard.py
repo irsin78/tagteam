@@ -13,10 +13,13 @@ class RoleGuardTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.state = self._tmp.name
+        self.state = os.path.join(self._tmp.name, "state")
+        os.makedirs(self.state)
+        self.cfg = os.path.join(self._tmp.name, "cfg")  # no models.local.json unless a test writes one
+        os.makedirs(self.cfg)
 
     def run_guard(self, event, payload=None, host=None, env=None, raw=None):
-        e = dict(os.environ, TAGTEAM_STATE_DIR=self.state)
+        e = dict(os.environ, TAGTEAM_STATE_DIR=self.state, TAGTEAM_CONFIG_DIR=self.cfg)
         e.pop("HARNESS_DELEGATE_RUN", None)
         e.update(env or {})
         cmd = [sys.executable, GUARD, event] + (["--host", host] if host else [])
@@ -121,6 +124,81 @@ class RoleGuardTest(unittest.TestCase):
     def test_record_written_under_state_dir(self):
         self.prompt("hello")
         self.assertTrue(os.path.exists(os.path.join(self.state, "sessions", "s1.json")))
+
+    def test_record_goes_to_the_work_tree_state_folder_by_default(self):
+        repo = os.path.join(self._tmp.name, "repo")
+        os.makedirs(repo)
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid")
+        subprocess.run(["git", "-C", repo, "init", "-q"], check=True, env=env)
+        r = self.run_guard("UserPromptSubmit", {"session_id": "g1", "prompt": "hi", "cwd": repo},
+                           env={"TAGTEAM_STATE_DIR": ""})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(repo, ".tagteam", "sessions", "g1.json")))
+        self.assertFalse(os.path.exists(os.path.join(repo, ".git", "tagteam")))
+        r = self.run_guard("SessionStart", {"session_id": "g1", "cwd": repo}, env={"TAGTEAM_STATE_DIR": ""})
+        self.assertEqual(r.stdout.strip(), "TAGTEAM: role=orchestrator host=claude")
+
+    def test_unwritable_state_folder_fails_open_with_the_fix(self):
+        blocker = os.path.join(self._tmp.name, "blocker")
+        with open(blocker, "w") as f:
+            f.write("x")
+        target = os.path.join(blocker, "state")
+        r = self.run_guard("UserPromptSubmit", {"session_id": "u1", "prompt": "hi"}, env={"TAGTEAM_STATE_DIR": target})
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("allowed", r.stderr)
+        self.assertIn(target, r.stderr)
+        self.assertIn("TAGTEAM_STATE_DIR", r.stderr)
+
+    # task notice (spec 3.9): one line per task in models.local.json
+    def tasks(self, tasks=None, raw=None):
+        with open(os.path.join(self.cfg, "models.local.json"), "w", encoding="utf-8") as f:
+            f.write(raw if raw is not None else json.dumps({"tasks": tasks}))
+
+    def test_task_notice_lines(self):
+        self.tasks({"html": {"about": "single-file HTML pages", "base": "implement", "vendor": "google"},
+                    "vision": {"about": "read  images\nand screenshots", "base": "read"}})
+        lines = self.start_lines()
+        self.assertEqual(lines, ["TAGTEAM: role=orchestrator host=claude",
+                                 "TAGTEAM: task html - single-file HTML pages (route.py --task html)",
+                                 "TAGTEAM: task vision - read images and screenshots (route.py --task vision)"])
+
+    def test_task_notice_only_for_the_orchestrator(self):
+        self.tasks({"html": {"about": "pages", "base": "implement"}})
+        self.make_worker()
+        self.assertEqual(self.start_lines(payload={"session_id": "s1"}), ["TAGTEAM: role=worker host=claude"])
+        r = self.run_guard("SessionStart", {"session_id": "s1"}, env={"HARNESS_DELEGATE_RUN": "1"})
+        self.assertEqual(r.stdout.strip(), "TAGTEAM: role=worker host=claude")
+
+    def test_task_notice_silent_when_file_missing_broken_or_malformed(self):
+        self.assertEqual(len(self.start_lines()), 1)  # no models.local.json
+        for raw in ("{broken", "[1]", "{}", '{"tasks": []}', '{"tasks": "x"}', '{"tasks": {"a": 1, "b": {}, "c": {"about": ""}}}'):
+            self.tasks(raw=raw)
+            r = self.run_guard("SessionStart", {"session_id": "n"})
+            self.assertEqual((r.returncode, len(r.stdout.strip().splitlines())), (0, 1), raw)
+            self.assertEqual(r.stderr, "", raw)
+
+    def test_task_notice_skips_entries_without_about(self):
+        self.tasks({"bad": {"base": "read"}, "good": {"about": "ok", "base": "read"}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: task good - ok (route.py --task good)"])
+
+    def test_task_notice_is_capped_at_ten_lines(self):
+        self.tasks({"t%d" % i: {"about": "task %d" % i, "base": "read"} for i in range(10)})
+        lines = self.start_lines()[1:]
+        self.assertEqual(len(lines), 10)  # exactly ten: all shown
+        self.assertEqual(lines[-1], "TAGTEAM: task t9 - task 9 (route.py --task t9)")
+        self.tasks({"t%d" % i: {"about": "task %d" % i, "base": "read"} for i in range(14)})
+        lines = self.start_lines()[1:]
+        self.assertEqual(len(lines), 10)
+        self.assertEqual(lines[8], "TAGTEAM: task t8 - task 8 (route.py --task t8)")
+        self.assertEqual(lines[9], "TAGTEAM: and 5 more")
+
+    def test_task_notice_comes_after_the_model_update_notice(self):
+        self.proposal()
+        self.tasks({"html": {"about": "pages", "base": "implement"}})
+        lines = self.start_lines()
+        self.assertEqual(len(lines), 3)
+        self.assertIn("model update proposal", lines[1])
+        self.assertTrue(lines[2].startswith("TAGTEAM: task html"))
 
     # model-update notice (P4)
     def proposal(self, created=None, digest="d1", changes=1, errors=0, applied=None):

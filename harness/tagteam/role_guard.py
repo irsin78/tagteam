@@ -4,16 +4,17 @@
 Usage: role_guard.py <SessionStart|UserPromptSubmit|PreToolUse> [--host claude|codex]
 Reads the hook JSON payload on stdin. Deny = exit 2 with a one-line reason on stderr.
 Any internal error fails open (exit 0 with a warning on stderr).
-State lives in <git common dir>/tagteam/ (or <project root>/.tagteam/ outside git);
-TAGTEAM_STATE_DIR overrides it (tests).
+State lives in <main work tree>/.tagteam/ (see state.py); TAGTEAM_STATE_DIR overrides it (tests).
 """
 import datetime
 import json
 import os
 import re
-import subprocess
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import state  # noqa: E402  (same folder)
 
 MARKER = "HARNESS ROLE: DELEGATE"
 START_SESSION = "mcp__ccd_session__start_session"
@@ -32,38 +33,11 @@ def deny(reason):
     sys.exit(2)
 
 
-def project_root(payload):
-    env = os.environ.get("CLAUDE_PROJECT_DIR")
-    if env:
-        return env
-    if payload.get("cwd"):
-        return payload["cwd"]
-    here = os.path.dirname(os.path.abspath(__file__))  # <root>/.claude/tagteam
-    return os.path.dirname(os.path.dirname(here))
-
-
-def state_dir(payload):
-    override = os.environ.get("TAGTEAM_STATE_DIR")
-    if override:
-        return override
-    cwd = payload.get("cwd") or os.getcwd()
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"], cwd=cwd, capture_output=True,
-            text=True, timeout=5,
-        )
-        if out.returncode == 0 and out.stdout.strip():
-            return os.path.join(os.path.abspath(os.path.join(cwd, out.stdout.strip())), "tagteam")
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return os.path.join(project_root(payload), ".tagteam")
-
-
 def session_file(payload):
     sid = re.sub(r"[^A-Za-z0-9_.-]", "_", str(payload.get("session_id") or ""))
     if not sid:
         return None
-    return os.path.join(state_dir(payload), "sessions", sid + ".json")
+    return os.path.join(state.state_dir(payload.get("cwd")), "sessions", sid + ".json")
 
 
 def read_role(path):
@@ -99,11 +73,17 @@ def on_session_start(payload, host):
             note = None
         if note:
             print(note)
+        try:
+            lines = task_notice()
+        except Exception:  # fail open
+            lines = []
+        for line in lines:
+            print(line)
 
 
 def model_update_notice(payload):
     """One line about a pending model-list proposal, or a stale-collection warning."""
-    base = state_dir(payload)
+    base = state.state_dir(payload.get("cwd"))
     with open(os.path.join(base, "model-update.json"), encoding="utf-8") as f:
         prop = json.load(f)
     created = datetime.datetime.strptime(prop["created"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
@@ -126,13 +106,37 @@ def model_update_notice(payload):
             "orchestrator: load skill model-update." % (changes, errors, prop["created"][:10]))
 
 
+TASK_LINES = 10
+
+
+def task_notice():
+    """One line per task in models.local.json `tasks`, 10 lines at most (the last one "and N more"); [] when unreadable."""
+    cdir = os.environ.get("TAGTEAM_CONFIG_DIR") or os.path.dirname(os.path.abspath(__file__))
+    try:
+        with open(os.path.join(cdir, "models.local.json"), encoding="utf-8") as f:
+            tasks = json.load(f).get("tasks")
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(tasks, dict):
+        return []
+    lines = []
+    for name, spec in tasks.items():
+        about = spec.get("about") if isinstance(spec, dict) else None
+        if isinstance(about, str) and about.strip():
+            lines.append("TAGTEAM: task %s - %s (route.py --task %s)" % (" ".join(str(name).split()), " ".join(about.split()), " ".join(str(name).split())))
+    if len(lines) > TASK_LINES:  # the whole notice stays within TASK_LINES lines
+        extra = len(lines) - (TASK_LINES - 1)
+        lines = lines[:TASK_LINES - 1] + ["TAGTEAM: and %d more" % extra]
+    return lines
+
+
 def on_prompt(payload, host):
     path = session_file(payload)
     if not path or os.path.exists(path):
         return  # record once on the first prompt; never change it afterwards
     prompt = payload.get("prompt") or ""
     marked = any(line.strip().startswith(MARKER) for line in prompt.splitlines())
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    state.ensure_writable(os.path.dirname(path))  # StateError: fail open with a message that says how to fix it
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"role": "worker" if marked else "orchestrator", "host": host,
                    "ts": int(time.time())}, f)

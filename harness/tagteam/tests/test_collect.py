@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -246,6 +247,33 @@ class CollectTest(unittest.TestCase):
         after = {n: digest_of(os.path.join(self.cfg, n)) for n in before}
         self.assertEqual(before, after)
         self.assertIn("exit=0", read(os.path.join(self.state, "collect.log")))
+
+    def test_unwritable_state_folder_is_a_usage_error_with_the_fix(self):
+        blocker = os.path.join(self.tmp, "blocker")
+        with open(blocker, "w", encoding="utf-8") as f:
+            f.write("x")
+        target = os.path.join(blocker, "state")
+        env = {"TAGTEAM_CONFIG_DIR": self.cfg, "TAGTEAM_STATE_DIR": target}
+        for extra in ([], ["--mark-applied"]):
+            err = io.StringIO()
+            with mock.patch.dict(os.environ, env), contextlib.redirect_stderr(err):
+                code = mc.main(["--project", self.tmp, *extra])
+            self.assertEqual(code, 2)
+            self.assertIn(target, err.getvalue())
+            self.assertIn("escalated permissions", err.getvalue())
+
+    def test_state_folder_comes_from_the_project_work_tree(self):
+        repo = os.path.join(self.tmp, "proj")
+        os.makedirs(repo)
+        subprocess.run(["git", "-C", repo, "init", "-q"], check=True, capture_output=True)
+        err = io.StringIO()
+        mc.statelib._cache.clear()
+        with mock.patch.dict(os.environ, {"TAGTEAM_CONFIG_DIR": self.cfg, "TAGTEAM_STATE_DIR": ""}),                 contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = mc.main(["--project", repo, "--mark-applied"])  # no proposal: exit 2, but the folder is made
+        mc.statelib._cache.clear()
+        self.assertEqual(code, 2)
+        self.assertTrue(os.path.isdir(os.path.join(repo, ".tagteam")))
+        self.assertFalse(os.path.exists(os.path.join(repo, ".git", "tagteam")))
 
     # 6
     def test_mark_applied_needs_proposal(self):

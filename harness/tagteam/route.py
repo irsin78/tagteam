@@ -9,7 +9,7 @@
 
 Exit: 0 chosen, 2 usage or config error, 3 no independent reviewer (incomplete),
 4 no model available. Config dir: next to this script (TAGTEAM_CONFIG_DIR in tests).
-State dir (exhausted.json): role_guard.state_dir (TAGTEAM_STATE_DIR in tests).
+State dir (exhausted.json): state.state_dir (TAGTEAM_STATE_DIR in tests).
 """
 import argparse
 import json
@@ -17,6 +17,9 @@ import os
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import state  # noqa: E402  (same folder)
 
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 GRADES = {"C": 0, "B": 1, "A": 2, "S": 3}
@@ -60,13 +63,7 @@ def config_dir():
 
 
 def exhausted_path():
-    if not os.environ.get("TAGTEAM_STATE_DIR"):
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        import role_guard
-        base = role_guard.state_dir({"cwd": os.getcwd()})
-    else:
-        base = os.environ["TAGTEAM_STATE_DIR"]
-    return os.path.join(base, "exhausted.json")
+    return os.path.join(state.state_dir(), "exhausted.json")
 
 
 def read_exhausted(path):
@@ -91,7 +88,7 @@ def read_exhausted(path):
 
 
 def write_exhausted(path, vendors):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    state.ensure_writable(os.path.dirname(path))  # StateError names the folder and the fix
     tmp = path + ".tmp%d" % os.getpid()
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"schema": 1, "vendors": vendors}, f, indent=1)
@@ -415,7 +412,7 @@ def main(argv=None):
         router = Router(models, local, read_exhausted(exhausted_path()), read_bench(cdir))
         result, code = router.route(args.role, args.host or default_host(), args.author_vendor, args.grade,
                                     args.orchestrator_model, args.orchestrator_effort)
-    except (ConfigError, KeyError, ValueError) as exc:
+    except (ConfigError, KeyError, ValueError, state.StateError) as exc:
         sys.stderr.write("route.py: %s: %s\n" % (type(exc).__name__, exc))
         return 2
     print(json.dumps(result, indent=1) if args.json else result["notice"])

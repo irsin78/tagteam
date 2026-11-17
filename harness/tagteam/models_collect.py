@@ -38,7 +38,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import role_guard  # noqa: E402
+import state as statelib  # noqa: E402  (`state` is a local name in main)
 import run  # noqa: E402  (resolve_cli, kill_tree; its CLI entry is behind a __main__ guard)
 
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
@@ -520,7 +520,12 @@ def main(argv):
     if args.write_available:
         return write_available(cdir, args.timeout)
     project = os.path.abspath(args.project or os.path.dirname(os.path.dirname(here)))
-    state = role_guard.state_dir({"cwd": project})
+    state = statelib.state_dir(project)
+    try:
+        statelib.ensure_writable(state)
+    except statelib.StateError as exc:
+        sys.stderr.write("models_collect: %s\n" % exc)
+        return 2
     proposal = os.path.join(state, "model-update.json")
     if args.mark_applied:
         try:
