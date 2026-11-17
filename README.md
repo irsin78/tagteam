@@ -13,4 +13,8 @@ Install into a project:
     python install.py <project dir>
     python install.py <project dir> --check
 
+Optional benchmark data: with an Artificial Analysis API key in the environment
+variable `TAGTEAM_AA_API_KEY`, the weekly model collector reads scores and prices
+from the free Data API. Model benchmark data: [Artificial Analysis](https://artificialanalysis.ai/).
+
 License: see LICENSE.

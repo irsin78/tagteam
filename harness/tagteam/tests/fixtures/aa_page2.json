@@ -1,0 +1,114 @@
+{
+ "tier": "free",
+ "intelligence_index_version": 5,
+ "pagination": {
+  "page": 2,
+  "page_size": 10,
+  "total_pages": 2,
+  "has_more": false
+ },
+ "data": [
+  {
+   "name": "Claude Fable 5.2 (High)",
+   "slug": "claude-fable-5-2-high",
+   "release_date": "2099-01-01",
+   "model_creator": {
+    "name": "Other Lab"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 1.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 1.0
+    }
+   }
+  },
+  {
+   "name": "Claude Impostor 1 (Max)",
+   "slug": "claude-impostor-1",
+   "release_date": "2099-01-01",
+   "model_creator": {
+    "name": "Other Lab"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 60.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 1.0
+    }
+   }
+  },
+  {
+   "name": "GPT 6.1 Sol (High)",
+   "slug": "gpt-6-1-sol-high",
+   "release_date": "2026-09-30",
+   "model_creator": {
+    "name": "OpenAI"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 50.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 0.32
+    }
+   }
+  },
+  {
+   "name": "GPT 6.1 Terra (Xhigh)",
+   "slug": "gpt-6-1-terra-xhigh",
+   "release_date": "2099-01-01",
+   "model_creator": {
+    "name": "OpenAI"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 46.5
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 0.19
+    }
+   }
+  },
+  {
+   "name": "GPT 6 Sol (High)",
+   "slug": "gpt-6-sol-high",
+   "release_date": "2099-01-01",
+   "model_creator": {
+    "name": "OpenAI"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 52.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 1.0
+    }
+   }
+  },
+  {
+   "name": "Gemini 4 Argon (High)",
+   "slug": "gemini-4-argon-high",
+   "release_date": "2026-10-14",
+   "model_creator": {
+    "name": "Google"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 53.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 1.99
+    }
+   }
+  }
+ ]
+}

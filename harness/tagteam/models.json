@@ -1,15 +1,16 @@
 {
   "schema": 1,
   "updated": "2026-11-17",
+  "aa_new_model_days": 120,
   "grades": {
     "S": "Vendor flagship; FrontierSWE pass@1 of 0.65 or more; for open-ended design judgment.",
     "A": "Artificial Analysis index of 50 or more and cheaper than S; for review and hard design.",
     "B": "Artificial Analysis index below 50, cheap and fast; for well-specified implementation, reading and translation."
   },
   "vendors": {
-    "claude": {"cli": "claude", "host": "claude", "model_arg": "{model}", "cooldown_minutes": 60},
-    "openai": {"cli": "codex", "host": "codex", "model_arg": "{model}", "cooldown_minutes": 60},
-    "google": {"cli": "agy", "host": null, "model_arg": "{model}-{effort}", "cooldown_minutes": 60}
+    "claude": {"cli": "claude", "host": "claude", "model_arg": "{model}", "aa_creator": "Anthropic", "cooldown_minutes": 60},
+    "openai": {"cli": "codex", "host": "codex", "model_arg": "{model}", "aa_creator": "OpenAI", "cooldown_minutes": 60},
+    "google": {"cli": "agy", "host": null, "model_arg": "{model}-{effort}", "aa_creator": "Google", "cooldown_minutes": 60}
   },
   "hosts": {
     "claude": ["claude", "openai", "google"],

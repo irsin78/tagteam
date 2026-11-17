@@ -6,7 +6,13 @@
 No LLM, no model run, no edit of models.json or models.local.json. Writes
 <state dir>/model-update.json (overwritten each run) and appends to collect.log.
 --mark-applied records the current proposal's digest in <state dir>/model-update.applied.
-Exit: 0 collected, 1 some vendor error or missing, 2 usage or config error, 3 every vendor failed.
+With env TAGTEAM_AA_API_KEY set, also reads the Artificial Analysis /free model list (urllib,
+max 10 pages) for vendors that have "aa_creator" in models.json: exact slug+effort matching,
+bench_changed and AA-sourced new_model changes, and a "bench" block in the proposal. Without
+the key bench.status is "skipped" and nothing is requested. The key is never written anywhere.
+Data source: Artificial Analysis (https://artificialanalysis.ai/).
+Exit: 0 collected, 1 some vendor error or missing (or key set and bench error), 2 usage or
+config error, 3 every vendor CLI failed.
 Config dir: next to this script (TAGTEAM_CONFIG_DIR in tests).
 """
 import argparse
@@ -16,7 +22,9 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import role_guard  # noqa: E402
@@ -24,6 +32,10 @@ import run  # noqa: E402  (resolve_cli, kill_tree; its CLI entry is behind a __m
 
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 SUFFIX = re.compile(r"^(.*)-(%s)$" % "|".join(EFFORTS))
+AA_URL = "https://artificialanalysis.ai/api/v2/language/models/free"
+AA_SOURCE = "Artificial Analysis (https://artificialanalysis.ai/)"
+AA_MAX_PAGES = 10
+NAME_EFFORT = re.compile(r"\(([^)]*)\)\s*$")
 LABEL_SUFFIX = re.compile(r"\s*\((?:%s)\)$" % "|".join(e.title() for e in EFFORTS), re.I)
 
 
@@ -132,8 +144,126 @@ def compare(vendor, listing, models, local):
     return changes
 
 
-def digest(changes, cli):
-    body = {"changes": changes, "cli": {v: c["status"] for v, c in sorted(cli.items())}}
+def aa_fetch_page(page, key, timeout):
+    """-> (parsed JSON, response headers with lowercase names). Raises urllib/OS/ValueError errors."""
+    req = urllib.request.Request("%s?page=%d" % (AA_URL, page),
+                                 headers={"x-api-key": key, "User-Agent": "tagteam-collect"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        return data, {k.lower(): v for k, v in resp.headers.items()}
+
+
+def aa_entries(rows):
+    """AA rows -> [{creator, base, effort, name, release, index, cost}]; rows without a usable effort are dropped."""
+    out = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("slug"):
+            raise ValueError("unexpected AA entry")
+        hit = NAME_EFFORT.search(row.get("name") or "")
+        effort = hit.group(1).split(",")[0].strip().lower() if hit else None
+        if effort not in EFFORTS:
+            continue
+        slug = row["slug"]
+        base = slug[:-len(effort) - 1] if slug.endswith("-" + effort) else slug
+        ev = row.get("evaluations") or {}
+        cost = ((row.get("artificial_analysis_intelligence_index_cost") or {}).get("cost_per_task") or {})
+        out.append({"creator": (row.get("model_creator") or {}).get("name"), "base": base, "effort": effort,
+                    "name": row.get("name"), "release": row.get("release_date"),
+                    "index": ev.get("artificial_analysis_intelligence_index"), "cost": cost.get("total_cost")})
+    return out
+
+
+def collect_bench(key, timeout):
+    """-> (bench status dict, entries). The key never reaches the status."""
+    if not key:
+        return {"status": "skipped"}, []
+    rows, version, remaining = [], None, None
+    try:
+        for page in range(1, AA_MAX_PAGES + 1):
+            data, headers = aa_fetch_page(page, key, timeout)
+            if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+                raise ValueError("unexpected AA payload")
+            rows += data["data"]
+            version = data.get("intelligence_index_version", version)
+            remaining = headers.get("x-ratelimit-remaining", remaining)
+            if not (data.get("pagination") or {}).get("has_more"):
+                break
+        else:
+            raise ValueError("still has_more after %d pages" % AA_MAX_PAGES)
+        entries = aa_entries(rows)
+    except urllib.error.HTTPError as exc:
+        detail = "HTTP %d" % exc.code
+        if exc.code == 429:
+            wait = str((exc.headers.get("Retry-After") if exc.headers else "") or "").strip()
+            detail += ", Retry-After %s" % (wait if wait.isdigit() else "?")
+        return {"status": "error", "detail": detail}, []
+    except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:  # URLError, timeouts, JSON, bad shapes
+        return {"status": "error", "detail": ("%s: %s" % (type(exc).__name__, exc)).replace(key, "***")[:200]}, []
+    return {"status": "ok", "index_version": version, "models_seen": len(rows), "remaining": remaining}, entries
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+
+def aa_slug(models, mid):
+    return models["models"][mid].get("aa_slug") or mid.replace(".", "-")
+
+
+def compare_bench(vendor, entries, models, version, now):
+    creator = models["vendors"][vendor].get("aa_creator")
+    if not creator:
+        return []
+    mine = [e for e in entries if e["creator"] == creator]
+    by = {(e["base"], e["effort"]): e for e in mine}
+    changes, known = [], set()
+    for mid, m in models["models"].items():
+        if m["vendor"] != vendor:
+            continue
+        known.add(aa_slug(models, mid))
+        for b in m.get("bench") or []:
+            if b.get("source") != "artificial_analysis" or b.get("metric") not in ("index", "cost_per_task"):
+                continue
+            e = by.get((aa_slug(models, mid), b.get("effort")))
+            new = e and e["index" if b["metric"] == "index" else "cost"]
+            if isinstance(new, (int, float)) and not isinstance(new, bool) and new != b.get("value"):
+                changes.append({"kind": "bench_changed", "vendor": vendor, "model": mid, "effort": b["effort"],
+                                "metric": b["metric"], "old": b.get("value"), "new": new, "index_version": version})
+    known |= {u.replace(".", "-") for u in (models.get("unregistered") or {}).get(vendor) or {}}
+    cutoff = (now - timedelta(days=models.get("aa_new_model_days", 120))).strftime("%Y-%m-%d")
+    groups = {}
+    for e in mine:
+        if e["base"] not in known:
+            groups.setdefault(e["base"], []).append(e)
+    for base, group in groups.items():
+        aa = {e["effort"]: {"index": e["index"], "cost_per_task": e["cost"]} for e in group if e["index"] is not None}
+        release = max([e["release"] for e in group if isinstance(e["release"], str)] or [""])
+        if aa and cutoff <= release <= now.strftime("%Y-%m-%d"):
+            label = re.sub(r"\s*\([^)]*\)\s*$", "", group[0]["name"] or base)
+            changes.append({"kind": "new_model", "vendor": vendor, "id": base, "label": label,
+                            "efforts": sorted(aa, key=EFFORTS.index), "source": "artificial_analysis",
+                            "aa": aa, "release_date": release})
+    return changes
+
+
+def merge_new_models(changes):
+    """One new_model per vendor and base slug: the CLI entry wins and gains the AA fields."""
+    out, seen = [], {}
+    for c in sorted(changes, key=lambda c: c.get("source") == "artificial_analysis"):
+        key = (c["vendor"], c["id"].replace(".", "-")) if c["kind"] == "new_model" else None
+        if key and key in seen and c.get("source") == "artificial_analysis":
+            seen[key].update({"aa": c["aa"], "release_date": c["release_date"]})
+            continue
+        out.append(c)
+        if key:
+            seen.setdefault(key, c)
+    return out
+
+
+def digest(changes, cli, bench=None):
+    bench = bench or {}
+    body = {"changes": changes, "cli": {v: c["status"] for v, c in sorted(cli.items())},
+            "bench": {"status": bench.get("status"), "index_version": bench.get("index_version")}}
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -210,14 +340,26 @@ def main(argv):
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             avail[vendor] = {"checked": today, "ids": listing["ids"]}
             changes += compare(vendor, listing, models, local)
-    changes.sort(key=lambda c: (c["kind"], c["vendor"], c.get("model") or c.get("id")))
+    key = os.environ.get("TAGTEAM_AA_API_KEY", "").strip()
+    bench, entries = collect_bench(key, args.timeout)
+    if bench["status"] == "ok":
+        now = utcnow()
+        for vendor in sorted(models["vendors"]):
+            changes += compare_bench(vendor, entries, models, bench["index_version"], now)
+        changes = merge_new_models(changes)
+    changes.sort(key=lambda c: (c["kind"], c["vendor"], c.get("model") or c.get("id"),
+                                c.get("metric") or "", c.get("effort") or ""))
     write_json(proposal, {"schema": 1, "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                           "project": project.replace("\\", "/"), "cli": cli, "available": avail,
-                          "changes": changes, "digest": digest(changes, cli)})
+                          "changes": changes, "bench": dict(bench, source=AA_SOURCE),
+                          "digest": digest(changes, cli, bench)})
     targets = [v for v, c in cli.items() if c["status"] in ("ok", "error", "missing")]
     failed = [v for v in targets if cli[v]["status"] != "ok"]
     code = 3 if targets and len(failed) == len(targets) else (1 if failed else 0)
-    summary = "exit=%d %s changes=%d" % (code, " ".join("%s=%s" % (v, c["status"]) for v, c in cli.items()), len(changes))
+    if key and bench["status"] == "error":
+        code = max(code, 1)
+    summary = "exit=%d %s bench=%s changes=%d" % (
+        code, " ".join("%s=%s" % (v, c["status"]) for v, c in cli.items()), bench["status"], len(changes))
     log(state, summary)
     print(summary)
     return code

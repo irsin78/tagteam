@@ -1,0 +1,172 @@
+{
+ "tier": "free",
+ "intelligence_index_version": 5,
+ "pagination": {
+  "page": 1,
+  "page_size": 10,
+  "total_pages": 2,
+  "has_more": true
+ },
+ "data": [
+  {
+   "name": "Claude Fable 5.2 (High, Default Fallback)",
+   "slug": "claude-fable-5-2-high",
+   "release_date": "2026-11-09",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 61.8
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 9.0784
+    }
+   }
+  },
+  {
+   "name": "Claude Fable 5.2 (Max, Default Fallback)",
+   "slug": "claude-fable-5-2",
+   "release_date": "2026-11-09",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 64.6
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 26.5386
+    }
+   }
+  },
+  {
+   "name": "Claude Fable 5.2 (Non-reasoning)",
+   "slug": "claude-fable-5-2-non-reasoning",
+   "release_date": "2026-11-09",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 20.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 0.5
+    }
+   }
+  },
+  {
+   "name": "Claude Sonnet 5.5 (High)",
+   "slug": "claude-sonnet-5-5-high",
+   "release_date": "2026-10-19",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": null
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 0.9
+    }
+   }
+  },
+  {
+   "name": "Claude Sonnet 5 (Max)",
+   "slug": "claude-sonnet-5",
+   "release_date": "2020-01-01",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 33.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 2.0
+    }
+   }
+  },
+  {
+   "name": "Claude Nova 6 (Max)",
+   "slug": "claude-nova-6",
+   "release_date": "2099-01-01",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 70.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 5.0
+    }
+   }
+  },
+  {
+   "name": "Claude Nova 6 (Low)",
+   "slug": "claude-nova-6-low",
+   "release_date": "2099-01-01",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 50.0
+   },
+   "artificial_analysis_intelligence_index_cost": null
+  },
+  {
+   "name": "Claude Ghost 7 (Max)",
+   "slug": "claude-ghost-7",
+   "release_date": "2099-01-01",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": null
+   },
+   "artificial_analysis_intelligence_index_cost": null
+  },
+  {
+   "name": "Claude Old 3 (Max)",
+   "slug": "claude-old-3",
+   "release_date": "2020-01-01",
+   "model_creator": {
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 30.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 1.0
+    }
+   }
+  },
+  {
+   "name": "Muse Wonder Full (Max)",
+   "slug": "muse-wonder-full",
+   "release_date": "2099-01-01",
+   "model_creator": {
+    "name": "Meta"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 40.0
+   },
+   "artificial_analysis_intelligence_index_cost": {
+    "total_cost": 1.0,
+    "cost_per_task": {
+     "total_cost": 3.0
+    }
+   }
+  }
+ ]
+}

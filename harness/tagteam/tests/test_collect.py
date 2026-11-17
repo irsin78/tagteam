@@ -60,14 +60,19 @@ class CollectTest(unittest.TestCase):
         with open(os.path.join(self.cfg, "models.local.json"), "w", encoding="utf-8") as f:
             json.dump(data, f)
 
-    def collect(self, openai=None, google=None, extra=()):
-        env = {"TAGTEAM_CONFIG_DIR": self.cfg, "TAGTEAM_STATE_DIR": self.state,
+    def collect(self, openai=None, google=None, extra=(), key="", fetch=None):
+        env = {"TAGTEAM_CONFIG_DIR": self.cfg, "TAGTEAM_STATE_DIR": self.state, "TAGTEAM_AA_API_KEY": key,
                "TAGTEAM_CLI_OPENAI": openai or self.cli(os.path.join(FIX, "codex_models.json")),
                "TAGTEAM_CLI_GOOGLE": google or self.cli(os.path.join(FIX, "agy_models.txt"))}
-        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()), \
-                contextlib.redirect_stderr(io.StringIO()):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, env), mock.patch.object(mc, "aa_fetch_page", fetch or self.no_fetch), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = mc.main(["--project", self.tmp, *extra])
+        self.printed = out.getvalue() + err.getvalue()
         return code, (json.loads(read(self.proposal)) if os.path.exists(self.proposal) else None)
+
+    def no_fetch(self, page, key, timeout):
+        raise AssertionError("AA must not be requested here")
 
     def kinds(self, prop):
         return sorted({c["kind"] for c in prop["changes"]})
@@ -208,6 +213,236 @@ class CollectTest(unittest.TestCase):
         with open(os.path.join(self.cfg, "models.json"), "w") as f:
             f.write("{nope")
         self.assertEqual(self.collect()[0], 2)
+
+
+AA_KEY = "secret-key-123"
+
+
+def aa_fixture(n):
+    with open(os.path.join(FIX, "aa_page%d.json" % n), encoding="utf-8") as f:
+        return json.load(f)
+
+
+class FakeAA:
+    """Stands in for mc.aa_fetch_page: serves pages, records calls."""
+    def __init__(self, pages=None, headers=None, fail=None):
+        self.pages = pages or [aa_fixture(1), aa_fixture(2)]
+        self.headers = headers or {"x-ratelimit-remaining": "96"}
+        self.fail, self.calls = fail, []
+
+    def __call__(self, page, key, timeout):
+        self.calls.append((page, key, timeout))
+        if self.fail:
+            raise self.fail
+        return copy.deepcopy(self.pages[page - 1]), dict(self.headers)
+
+
+class BenchTest(CollectTest):
+    def setUp(self):
+        super().setUp()
+        clock = mock.patch.object(mc, "utcnow", return_value=mc.datetime(2099, 1, 10, tzinfo=mc.timezone.utc))
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def aa(self, **kw):
+        self.fake = FakeAA(**kw)
+        return self.fake
+
+    def with_meta(self):
+        self.models["vendors"]["meta"] = {"cli": "x", "host": None, "model_arg": "{model}", "aa_creator": "Meta"}
+        self.models["models"]["muse-wonder"] = {"vendor": "meta", "grade": "B", "efforts": ["max"], "bench": [
+            {"source": "artificial_analysis", "metric": "index", "value": 10, "effort": "max", "date": "2026-11-01"}]}
+        self.write_models()
+
+    def write_models(self):
+        with open(os.path.join(self.cfg, "models.json"), "w", encoding="utf-8") as f:
+            json.dump(self.models, f)
+
+    def run_aa(self, **kw):
+        return self.collect(key=AA_KEY, fetch=self.aa(**kw))
+
+    def by(self, prop, kind):
+        return [c for c in prop["changes"] if c["kind"] == kind]
+
+    def test_no_key_is_skipped_without_request(self):
+        code, prop = self.collect()
+        self.assertEqual((code, prop["bench"]["status"]), (0, "skipped"))
+        self.assertEqual(prop["bench"]["source"], mc.AA_SOURCE)
+        self.assertFalse(self.by(prop, "bench_changed"))
+
+    def test_models_json_has_aa_keys(self):
+        self.assertEqual({v: c["aa_creator"] for v, c in self.models["vendors"].items()},
+                         {"claude": "Anthropic", "openai": "OpenAI", "google": "Google"})
+        self.assertEqual(self.models["aa_new_model_days"], 120)
+
+    def test_pages_and_bench_block(self):
+        code, prop = self.run_aa()
+        self.assertEqual(code, 0)
+        self.assertEqual([c[0] for c in self.fake.calls], [1, 2])
+        self.assertEqual(self.fake.calls[0][1], AA_KEY)
+        self.assertEqual(prop["bench"], {"status": "ok", "index_version": 5, "models_seen": 16, "remaining": "96",
+                                         "source": mc.AA_SOURCE})
+
+    def test_bench_changed_exact_match_and_null_ignored(self):
+        _, prop = self.run_aa()
+        got = {(c["model"], c["effort"], c["metric"]): (c["old"], c["new"]) for c in self.by(prop, "bench_changed")}
+        self.assertEqual(got, {
+            ("claude-fable-5-2", "high", "index"): (62, 61.8),
+            ("claude-fable-5-2", "high", "cost_per_task"): (9.08, 9.0784),
+            ("claude-sonnet-5-5", "high", "cost_per_task"): (0.88, 0.9),  # its index is null: ignored
+            ("gpt-6.1-terra", "xhigh", "index"): (45, 46.5)})
+        self.assertTrue(all(c["index_version"] == 5 for c in self.by(prop, "bench_changed")))
+
+    def test_effort_parsing(self):
+        by = {(e["base"], e["effort"]) for e in mc.aa_entries(aa_fixture(1)["data"])}
+        self.assertIn(("claude-fable-5-2", "high"), by)    # (High, Default Fallback), suffix stripped
+        self.assertIn(("claude-fable-5-2", "max"), by)     # (Max, ...), no suffix
+        self.assertIn(("claude-nova-6", "low"), by)
+        self.assertFalse([b for b in by if "non-reasoning" in b[0]])  # (Non-reasoning) has no effort
+        self.assertEqual(mc.aa_entries([{"name": "X (High)", "slug": "x-max"}])[0]["base"], "x-max")
+        self.assertEqual(mc.aa_entries([{"name": "X", "slug": "x-high"}]), [])
+
+    def test_aa_new_model_rules(self):
+        _, prop = self.run_aa()
+        news = {c["id"]: c for c in self.by(prop, "new_model") if c.get("source") == "artificial_analysis"}
+        self.assertEqual(sorted(news), ["claude-nova-6"])  # old, null-index, creator-mismatch, unregistered: none
+        nova = news["claude-nova-6"]
+        self.assertEqual(nova["aa"], {"low": {"index": 50.0, "cost_per_task": None},
+                                      "max": {"index": 70.0, "cost_per_task": 5.0}})
+        self.assertEqual((nova["efforts"], nova["label"], nova["release_date"], nova["vendor"]),
+                         (["low", "max"], "Claude Nova 6", "2099-01-01", "claude"))
+
+    def test_new_model_days_window(self):
+        e = {"creator": "Anthropic", "base": "claude-x", "effort": "max", "name": "X (Max)", "index": 1.0, "cost": 1.0}
+        now = mc.datetime(2026, 11, 17, tzinfo=mc.timezone.utc)
+        models = copy.deepcopy(self.models)
+
+        def ids(rel):
+            return [c["id"] for c in mc.compare_bench("claude", [dict(e, release=rel)], models, 5, now)]
+        self.assertEqual(ids("2026-07-20"), ["claude-x"])
+        self.assertEqual(ids("2026-07-19"), [])
+        self.assertEqual(ids("2026-11-17"), ["claude-x"])
+        self.assertEqual(ids("2026-11-18"), [])  # future dates are bad data, not recent
+        models["aa_new_model_days"] = 10
+        self.assertEqual(ids("2026-07-20"), [])
+
+    def test_prefix_never_matches(self):
+        self.with_meta()
+        _, prop = self.run_aa()
+        self.assertFalse([c for c in self.by(prop, "bench_changed") if c["model"] == "muse-wonder"])
+        self.assertIn("muse-wonder-full", [c["id"] for c in self.by(prop, "new_model")])
+        # claude-sonnet-5 (old) must not feed claude-sonnet-5-5
+        sonnet = [c for c in self.by(prop, "bench_changed") if c["model"] == "claude-sonnet-5-5"]
+        self.assertEqual([c["metric"] for c in sonnet], ["cost_per_task"])
+
+    def test_vendor_without_creator_is_skipped(self):
+        del self.models["vendors"]["claude"]["aa_creator"]
+        self.write_models()
+        _, prop = self.run_aa()
+        self.assertFalse([c for c in prop["changes"] if c["vendor"] == "claude"])
+
+    def test_aa_slug_override(self):
+        e = {"creator": "Anthropic", "base": "other-slug", "effort": "high", "name": "X (High)",
+             "index": 70.0, "cost": 1.0, "release": "2020-01-01"}
+        models = copy.deepcopy(self.models)
+        now = mc.datetime(2026, 11, 17, tzinfo=mc.timezone.utc)
+        self.assertEqual(mc.compare_bench("claude", [e], models, 5, now), [])
+        models["models"]["claude-fable-5-2"]["aa_slug"] = "other-slug"
+        got = mc.compare_bench("claude", [e], models, 5, now)
+        self.assertEqual([(c["model"], c["new"]) for c in got], [("claude-fable-5-2", 70.0), ("claude-fable-5-2", 1.0)])
+
+    def test_cli_new_model_merges_with_aa(self):
+        del self.models["models"]["gpt-6.1-terra"]
+        self.write_models()
+        _, prop = self.run_aa()
+        terra = [c for c in self.by(prop, "new_model") if c["vendor"] == "openai"]
+        self.assertEqual(len(terra), 1)
+        self.assertEqual(terra[0]["id"], "gpt-6.1-terra")
+        self.assertIn("label", terra[0])
+        self.assertEqual(terra[0]["aa"], {"xhigh": {"index": 46.5, "cost_per_task": 0.19}})
+        self.assertNotIn("source", terra[0])
+        self.assertNotIn("gpt-6-sol", [c["id"] for c in self.by(prop, "new_model")])  # unregistered
+
+    def test_applying_values_leaves_zero_bench_changed(self):
+        _, prop = self.run_aa()
+        self.assertTrue(self.by(prop, "bench_changed"))
+        for c in self.by(prop, "bench_changed"):
+            for b in self.models["models"][c["model"]]["bench"]:
+                if (b["source"], b["metric"], b.get("effort")) == ("artificial_analysis", c["metric"], c["effort"]):
+                    b["value"] = c["new"]
+        self.write_models()
+        self.assertFalse(self.by(self.run_aa()[1], "bench_changed"))
+
+    def test_digest_ignores_remaining_and_models_seen(self):
+        _, a = self.run_aa(headers={"x-ratelimit-remaining": "90"})
+        pages = [aa_fixture(1), aa_fixture(2)]
+        pages[1]["data"].append(dict(pages[1]["data"][-1], slug="extra", name="Extra"))
+        _, b = self.run_aa(pages=pages, headers={"x-ratelimit-remaining": "10"})
+        self.assertNotEqual((a["bench"]["remaining"], a["bench"]["models_seen"]),
+                            (b["bench"]["remaining"], b["bench"]["models_seen"]))
+        self.assertEqual(a["digest"], b["digest"])
+        pages[0]["intelligence_index_version"] = pages[1]["intelligence_index_version"] = 6
+        _, c = self.run_aa(pages=pages)
+        self.assertNotEqual(a["digest"], c["digest"])
+        self.assertNotEqual(a["digest"], self.collect()[1]["digest"])  # skipped vs ok
+
+    def test_page_cap_is_error(self):
+        code, prop = self.run_aa(pages=[aa_fixture(1)] * 10)
+        self.assertEqual((code, prop["bench"]["status"]), (1, "error"))
+        self.assertIn("has_more", prop["bench"]["detail"])
+        self.assertEqual(len(self.fake.calls), 10)
+        self.assertFalse(self.by(prop, "bench_changed"))
+
+    def test_http_errors_are_error_and_exit_1(self):
+        for exc, text in ((mc.urllib.error.HTTPError("u", 500, "x", {}, None), "HTTP 500"),
+                          (mc.urllib.error.HTTPError("u", 429, "x", {"Retry-After": "3600"}, None), "Retry-After 3600"),
+                          (TimeoutError("timed out"), "timed out"),
+                          (ValueError("bad json"), "bad json")):
+            code, prop = self.run_aa(fail=exc)
+            self.assertEqual((code, prop["bench"]["status"]), (1, "error"))
+            self.assertIn(text, prop["bench"]["detail"])
+        code, prop = self.run_aa(pages=[{"data": 3}])
+        self.assertEqual((code, prop["bench"]["status"]), (1, "error"))
+
+    def test_cli_all_failed_still_3_with_bench_error(self):
+        err = self.cli(os.path.join(FIX, "agy_error.txt"), code=1, err="not logged in")
+        code, _ = self.collect(openai=self.cli(code=2, err="x"), google=err, key=AA_KEY,
+                               fetch=self.aa(fail=ValueError("x")))
+        self.assertEqual(code, 3)
+
+    def test_key_never_appears_anywhere(self):
+        for kw in ({}, {"fail": ValueError("rejected key " + AA_KEY)}):
+            self.run_aa(**kw)
+            blob = read(self.proposal) + read(os.path.join(self.state, "collect.log")) + self.printed
+            self.assertNotIn(AA_KEY, blob)
+        self.assertIn("bench=error", read(os.path.join(self.state, "collect.log")))
+
+        self.run_aa(fail=mc.urllib.error.HTTPError("u", 429, "x", {"Retry-After": AA_KEY}, None))
+        self.assertNotIn(AA_KEY, read(self.proposal))
+        self.assertIn("Retry-After ?", read(self.proposal))
+
+    def test_malformed_nested_aa_data_is_error(self):
+        row = aa_fixture(1)["data"][0]
+        for bad in ({"name": 5}, {"evaluations": [1]}, {"model_creator": [1]},
+                    {"artificial_analysis_intelligence_index_cost": {"cost_per_task": [1]}}):
+            page = {"data": [dict(row, **bad)], "pagination": {"has_more": False}}
+            code, prop = self.run_aa(pages=[page])
+            self.assertEqual((code, prop["bench"]["status"]), (1, "error"), bad)
+        code, prop = self.run_aa(pages=[{"data": [], "pagination": [1]}])
+        self.assertEqual((code, prop["bench"]["status"]), (1, "error"))
+
+    def test_merge_keeps_colliding_cli_entries(self):
+        a = {"kind": "new_model", "vendor": "openai", "id": "gpt-9.1"}
+        b = {"kind": "new_model", "vendor": "openai", "id": "gpt-9-1"}
+        aa = {"kind": "new_model", "vendor": "openai", "id": "gpt-9-1", "source": "artificial_analysis",
+              "aa": {"high": {}}, "release_date": "2099-01-01"}
+        out = mc.merge_new_models([a, b, aa])
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]["aa"], {"high": {}})
+
+
+for _name in [n for n in dir(CollectTest) if n.startswith("test_")]:
+    setattr(BenchTest, _name, None)  # run only the bench tests here; the base tests already ran
 
 
 if __name__ == "__main__":
