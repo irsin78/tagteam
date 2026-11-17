@@ -13,7 +13,7 @@ are in the project you installed into.
 |---|---|
 | [1. Install and update](#1-install-and-update) | What is overwritten? What else does the installer do? 1.1 is it working? 1.2 Codex trust after a move |
 | [2. Where things live](#2-where-things-live) | Which file holds what; which are committed; the state folder |
-| [3. Running a mission](#3-running-a-mission) | How a mission runs; why sessions open on a user turn (3.1); worker definitions (3.2) |
+| [3. Running a mission](#3-running-a-mission) | How a mission runs; when sessions open and what to do if the host refuses (3.1); worker definitions (3.2) |
 | [4. Verification and review](#4-verification-and-review) | Who reviews; how a review is made read-only |
 | [5. The router](#5-the-router) | How a model is chosen (5.1); grades; pin or hide a model (5.2); mark a vendor exhausted (5.3) |
 | [6. The role hook](#6-the-role-hook) | What the hook does; fix a wrong session role |
@@ -131,12 +131,14 @@ run at chosen cut points.
 
 ### 3.1 The session pool and automatic turns
 
-**Rule: open the sessions a phase needs while you are present; afterwards reuse them by message.** A turn that starts
-because a worker reported back is an *automatic turn*. Measured on Claude Code 2.1: `start_session` is refused in an
-automatic turn, but a message to an already open session works. Consequences:
+**Rule: open the sessions a phase needs at its start; when another is needed later, try first, and if the host refuses,
+reuse one by message.** A turn that starts because a worker reported back is an *automatic turn*. Measured on Claude Code
+desktop 2.1 (2026-11-17): `start_session` is refused in an automatic turn, but a message to an already open session works.
+This is a host limit, not a harness rule; the instructions tag it `[host: ...]` so it is re-tested after host updates.
+Consequences:
 
-- Say "go" on a user turn when new roles are needed; otherwise the orchestrator can only continue with sessions it
-  already has.
+- While the host refuses new sessions in automatic turns, say "go" on a user turn when new roles are needed; until then
+  the orchestrator continues with the sessions it already has.
 - A reused session keeps the cache of its prompt for 1 hour. After a longer pause the next task pays for the prompt
   again; a brand-new session costs roughly 90,000 tokens of system and tool prompt before any work starts. Keep sessions per
   role, not per task.

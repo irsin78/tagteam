@@ -24,10 +24,13 @@ Terms are defined only in AGENTS.md (section 6). The user's instructions overrid
 - After confirmation, continue unit by unit to acceptance without asking again.
 - A change to scope or acceptance criteria needs a new confirmation.
 
-## 3. Open the session pool (on a user turn)
+## 3. Open the session pool (at the start of a phase)
 
-Sessions can be opened only on a turn the user started; turns started by a worker's report
-cannot open them. So open everything the phase needs while the user is present.
+Open everything the phase needs on the user turn that starts it. If a new session is needed
+later, try to open it; if the host refuses, reuse a pool session by message, or ask on the
+next user turn. Try once per phase and note a refusal in status.md.
+[host: Claude Code desktop 2.1 refuses start_session in turns started by a worker's report,
+measured 2026-11-17 / re-test after a host update]
 - One session per role needed now: usually one design session and one or two implementation
   sessions. A small mission with little design: the orchestrator designs, no design session.
 - Session or subagent: a mechanical edit, or a task that will clearly end soon, may go to

@@ -62,8 +62,12 @@ Procedure: skill `cycle` (load it for any mission with more than one unit).
 1. Large work gets a mission folder `docs/missions/<purpose>/` with intent.md and
    spec.md. No implementation before the user confirms the spec; after that,
    continue to acceptance without re-approval per step.
-2. On a user turn, open the *session pool* (design and implementation sessions,
-   fixed models). Automatic turns cannot open sessions; they reuse the pool by message.
+2. On the user turn that starts a phase, open the *session pool* the whole phase needs
+   (design and implementation sessions, fixed models). When a new session is needed
+   later, try to open it; if the host refuses, reuse a pool session by message, else
+   ask on the next user turn. Try once per phase and note a refusal in status.md.
+   [host: Claude Code desktop 2.1 refuses start_session in automatic turns, measured
+   2026-11-17 / re-test after a host update]
 3. Design session writes the design document in the mission folder and reports
    its path. The orchestrator checks it and sends units to implementation sessions.
 4. Independent units may run at once (no shared files, no waiting on each other),
@@ -114,13 +118,15 @@ batch covers so a failure can be narrowed down.
 | launcher | `.claude/tagteam/run.py`: runs another vendor's CLI (claude, codex, agy) once as a worker |
 | router | `.claude/tagteam/route.py`: picks model and effort for a role |
 | control plane | Files that run the harness itself: `.claude/`, `.codex/`, AGENTS.md, CLAUDE.md |
-| session pool | Worker sessions opened on a user turn, one model per role, reused by message for later units |
+| session pool | Worker sessions opened for a phase, one model per role, reused by message for later units |
 | exhaustion | A vendor temporarily unusable (usage limit, out of credit); the router substitutes the same grade |
 | batched verification | Expensive checks (full suite, cross-vendor review) run once over several units |
 | model-compensation rule | A rule that covers a model's repeated mistake; tagged `[fix: ...]` and removed when a newer model no longer needs it |
 
 Rules tagged `[fix: ...]` are model-compensation rules; list them with
-`grep -rn "\[fix:" AGENTS.md .claude .codex`. Untagged rules are harness structure.
+`grep -rn "\[fix:" AGENTS.md .claude .codex`. Rules tagged `[host: ...]` record a measured
+host limit; list them with `grep -rn "\[host:" AGENTS.md .claude .codex` and re-test them
+after a host update. Untagged rules are harness structure.
 
 ## Project policy
 
