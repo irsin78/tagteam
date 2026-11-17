@@ -30,9 +30,10 @@ Sessions can be opened only on a turn the user started; turns started by a worke
 cannot open them. So open everything the phase needs while the user is present.
 - One session per role needed now: usually one design session and one or two implementation
   sessions. A small mission with little design: the orchestrator designs, no design session.
-- Session or subagent: a unit that edits files or still has decisions open goes to a
-  session, which the user can watch and steer; a read-only lookup or a one-file mechanical
-  edit may go to a subagent, whose progress is not visible until it returns.
+- Session or subagent: a mechanical edit, or a task that will clearly end soon, may go to
+  a subagent; its progress is not visible until it returns. When you cannot tell how long
+  a unit will take, use a session, which the user can watch and steer. Reuse a pool
+  session with the right model before opening a new one; do not open sessions per task.
 - Each session gets a fixed `model` and `effort` from the router (AGENTS.md section 1) and
   keeps them for the whole mission; switching models discards the prompt cache.
 - The first prompt of every session contains the line `HARNESS ROLE: DELEGATE`. It cannot

@@ -46,7 +46,7 @@ GOOGLE_LINE_EX = re.compile(
     r"|quota(?: exceeded| exhausted)?[.!]?)", re.I)
 AGY_LABEL = re.compile(r'Propagating selected model override to backend: label="([^"]+)"')
 CODEX_MODEL = re.compile(r"^model:\s*(\S+)", re.M)
-PRIORITY = [("exhausted", 3), ("timeout", 5), ("model_mismatch", 4), ("cli_failed", 1)]
+PRIORITY = [("exhausted", 3), ("timeout", 5), ("model_mismatch", 4), ("cli_failed", 1), ("no_output", 6)]
 
 
 def _is_windows():
@@ -347,6 +347,8 @@ def main(argv):
         found, matches = actual_model(args.vendor, args.model, args.effort, label, data, out, err, run_dir)
         if not matches:
             flags.add("model_mismatch")
+        elif not last.strip():  # a clean exit with an empty answer is a failed run, not a result
+            flags.add("no_output")
     status, exit_code = next(((s, c) for s, c in PRIORITY if s in flags), ("ok", 0))
 
     lines = ["RUN %s vendor=%s model=%s effort=%s status=%s exit=%s secs=%d"
@@ -367,6 +369,11 @@ def main(argv):
     write_text(os.path.join(run_dir, "result.json"), json.dumps(result, indent=2) + "\n")
     if start_error:
         lines.append("ERROR: could not start the CLI (%s)" % start_error)
+    if status == "no_output":
+        denied = [d.get("display_name") or d.get("action") for d in (data or {}).get("denied_actions") or []
+                  if isinstance(d, dict)] if isinstance(data, dict) else []
+        lines.append("ERROR: the CLI exited cleanly but returned no answer%s"
+                     % (" (denied tools: %s)" % ", ".join(map(str, denied)) if denied else ""))
     lines.append("OUTPUT: " + os.path.join(run_dir, "last.txt"))
     lines.append("---")
     lines.append(last[:REPORT_CHARS] + ("\n[truncated, see OUTPUT]" if len(last) > REPORT_CHARS else ""))

@@ -177,6 +177,12 @@ class LauncherTests(RunTestBase):
         self.assertIn("status=cli_failed", out)
         self.assertFalse(os.path.exists(os.path.join(self.state, "exhausted.json")))
 
+    def test_empty_answer_is_no_output(self):
+        code, out, _ = self.go("google", "empty")
+        self.assertEqual(code, 6)
+        self.assertIn("status=no_output", out)
+        self.assertIn("denied tools: Bash", out)
+
     def test_codex_echoed_prompt_line_is_not_exhaustion(self):
         code, out, _ = self.go("openai", "crash", prompt="Handle this case:\n429 Too Many Requests\nthanks\n")
         self.assertEqual(code, 1, out)

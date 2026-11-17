@@ -340,7 +340,8 @@ wrong one.
     <first 4000 characters of the final text>
 
 Exit codes: 0 ok; 1 CLI failed; 2 usage, configuration or pre-run check; 3 vendor
-exhausted; 4 model differs or cannot be confirmed; 5 timeout. A CLI error that is not a usage-limit message (for example a
+exhausted; 4 model differs or cannot be confirmed; 5 timeout; 6 the CLI exited cleanly with
+an empty answer (the report names any tools the CLI denied in headless mode). A CLI error that is not a usage-limit message (for example a
 short-lived authentication failure) counts as `cli_failed`, not as exhaustion; run it again.
 
 The launcher is an accident check, not a sandbox: `--read-only` asks the CLI for its

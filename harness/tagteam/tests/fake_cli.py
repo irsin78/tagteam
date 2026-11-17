@@ -2,7 +2,7 @@
 """Stand-in for the claude, codex and agy CLIs. Usage: fake_cli.py <claude|openai|google> [CLI args...]
 
 Records argv, stdin, HARNESS_DELEGATE_RUN and pid to FAKE_RECORD (JSON), then behaves per FAKE_MODE:
-ok, wrong_model, no_model_field, exhausted, exhausted_epoch, quota_text_in_prompt, crash, sleep.
+ok, wrong_model, no_model_field, exhausted, exhausted_epoch, quota_text_in_prompt, crash, sleep, empty (google).
 """
 import json
 import os
@@ -65,6 +65,9 @@ def google(args, mode, model_arg):
         fh.write("\n".join(log) + "\n")
     if mode in ("exhausted", "exhausted_epoch"):
         emit(1, json.dumps({"error": "RESOURCE_EXHAUSTED: quota exceeded"}))
+    if mode == "empty":
+        emit(0, json.dumps({"status": "SUCCESS", "response": "",
+                            "denied_actions": [{"action": "command", "display_name": "Bash"}]}))
     emit(0, json.dumps({"response": QUOTA_TEXT if mode == "quota_text_in_prompt" else "OK"}))
 
 
