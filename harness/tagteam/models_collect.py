@@ -2,13 +2,18 @@
 """Collect the model lists the vendor CLIs offer and write a proposal file.
 
   models_collect.py [--project DIR] [--timeout 60] [--mark-applied]
+  models_collect.py --write-bench [--timeout 60]
 
-No LLM, no model run, no edit of models.json or models.local.json. Writes
+No LLM, no model run, no edit of models.json or models.local.json. --write-bench rewrites
+bench.local.json (next to models.json, machine-local, git-ignored) from Artificial Analysis for
+every registered model and effort that has a value; entries of other sources are kept. Without a
+key it writes nothing and exits 0; on an AA error it exits 1 and leaves the file alone. Writes
 <state dir>/model-update.json (overwritten each run) and appends to collect.log.
 --mark-applied records the current proposal's digest in <state dir>/model-update.applied.
 With env TAGTEAM_AA_API_KEY set, also reads the Artificial Analysis /free model list (urllib,
 max 10 pages) for vendors that have "aa_creator" in models.json: exact slug+effort matching,
-bench_changed and AA-sourced new_model changes, and a "bench" block in the proposal. Without
+bench_changed/bench_added (compared with bench.local.json; no file = no bench changes and
+bench.local "missing") and AA-sourced new_model changes, and a "bench" block in the proposal. Without
 the key bench.status is "skipped" and nothing is requested. The key is never written anywhere.
 Data source: Artificial Analysis (https://artificialanalysis.ai/).
 Exit: 0 collected, 1 some vendor error or missing (or key set and bench error), 2 usage or
@@ -35,6 +40,8 @@ SUFFIX = re.compile(r"^(.*)-(%s)$" % "|".join(EFFORTS))
 AA_URL = "https://artificialanalysis.ai/api/v2/language/models/free"
 AA_SOURCE = "Artificial Analysis (https://artificialanalysis.ai/)"
 AA_MAX_PAGES = 10
+METRICS = ("index", "cost_per_task")
+BENCH_FILE = "bench.local.json"
 NAME_EFFORT = re.compile(r"\(([^)]*)\)\s*$")
 LABEL_SUFFIX = re.compile(r"\s*\((?:%s)\)$" % "|".join(e.title() for e in EFFORTS), re.I)
 
@@ -210,7 +217,17 @@ def aa_slug(models, mid):
     return models["models"][mid].get("aa_slug") or mid.replace(".", "-")
 
 
-def compare_bench(vendor, entries, models, version, now):
+def aa_num(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def aa_value(by, models, mid, effort, metric):
+    e = by.get((aa_slug(models, mid), effort))
+    return aa_num(e and e["index" if metric == "index" else "cost"])
+
+
+def compare_bench(vendor, entries, models, version, now, stored=None):
+    """stored: bench.local.json "models" mapping, or None when the file is missing (no bench changes)."""
     creator = models["vendors"][vendor].get("aa_creator")
     if not creator:
         return []
@@ -221,14 +238,23 @@ def compare_bench(vendor, entries, models, version, now):
         if m["vendor"] != vendor:
             continue
         known.add(aa_slug(models, mid))
-        for b in m.get("bench") or []:
-            if b.get("source") != "artificial_analysis" or b.get("metric") not in ("index", "cost_per_task"):
+        if stored is None:
+            continue
+        have = set()
+        for b in stored.get(mid) or []:
+            if not isinstance(b, dict) or b.get("source") != "artificial_analysis"                     or b.get("metric") not in METRICS or b.get("effort") not in m["efforts"]:
                 continue
-            e = by.get((aa_slug(models, mid), b.get("effort")))
-            new = e and e["index" if b["metric"] == "index" else "cost"]
-            if isinstance(new, (int, float)) and not isinstance(new, bool) and new != b.get("value"):
+            have.add((b["effort"], b["metric"]))
+            new = aa_value(by, models, mid, b["effort"], b["metric"])
+            if new is not None and new != b.get("value"):
                 changes.append({"kind": "bench_changed", "vendor": vendor, "model": mid, "effort": b["effort"],
                                 "metric": b["metric"], "old": b.get("value"), "new": new, "index_version": version})
+        for effort in m["efforts"]:
+            for metric in METRICS:
+                new = aa_value(by, models, mid, effort, metric)
+                if new is not None and (effort, metric) not in have:
+                    changes.append({"kind": "bench_added", "vendor": vendor, "model": mid, "effort": effort,
+                                    "metric": metric, "new": new, "index_version": version})
     known |= {u.replace(".", "-") for u in (models.get("unregistered") or {}).get(vendor) or {}}
     cutoff = (now - timedelta(days=models.get("aa_new_model_days", 120))).strftime("%Y-%m-%d")
     groups = {}
@@ -258,6 +284,39 @@ def merge_new_models(changes):
         if key:
             seen.setdefault(key, c)
     return out
+
+
+def load_bench(cdir):
+    """bench.local.json as a dict, or None when it is missing or unreadable."""
+    try:
+        data = load(os.path.join(cdir, BENCH_FILE), False)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data.get("models"), dict) else None
+
+
+def build_bench(models, entries, version, today, old):
+    """New bench.local.json content: fresh AA values for registered models and their efforts,
+    plus every old entry whose source is not artificial_analysis."""
+    out = {mid: [b for b in (old or {}).get(mid) or [] if isinstance(b, dict) and b.get("source") != "artificial_analysis"]
+           for mid in (old or {})}
+    for vendor, cfg in models["vendors"].items():
+        creator = cfg.get("aa_creator")
+        if not creator:
+            continue
+        by = {(e["base"], e["effort"]): e for e in entries if e["creator"] == creator}
+        for mid, m in models["models"].items():
+            if m["vendor"] != vendor:
+                continue
+            for effort in m["efforts"]:
+                for metric in METRICS:
+                    value = aa_value(by, models, mid, effort, metric)
+                    if value is not None:
+                        out.setdefault(mid, []).append({"source": "artificial_analysis", "metric": metric,
+                                                        "value": value, "effort": effort, "date": today,
+                                                        "version": version})
+    return {"schema": 1, "source": AA_SOURCE, "fetched": today, "index_version": version,
+            "models": {k: v for k, v in out.items() if v}}
 
 
 def digest(changes, cli, bench=None):
@@ -296,13 +355,58 @@ def log(state, text):
         pass
 
 
+def load_config(cdir):
+    models = load(os.path.join(cdir, "models.json"), True)
+    local = load(os.path.join(cdir, "models.local.json"), False)
+    for key in ("vendors", "models"):
+        if not isinstance(models.get(key), dict):
+            raise ValueError("models.json: %r must be an object" % key)
+    for mid, m in models["models"].items():
+        if not (isinstance(m, dict) and m.get("vendor") in models["vendors"]
+                and isinstance(m.get("efforts"), list)):
+            raise ValueError("models.json: model %s needs a known vendor and an efforts list" % mid)
+    if any(not isinstance(v, dict) or "model_arg" not in v for v in models["vendors"].values()):
+        raise ValueError("models.json: every vendor needs a model_arg")
+    return models, local
+
+
+def write_bench(cdir, timeout):
+    """--write-bench: 0 written or no key, 1 AA error (file untouched), 2 config error."""
+    try:
+        models, _ = load_config(cdir)
+    except (OSError, ValueError) as exc:
+        sys.stderr.write("models_collect: %s\n" % exc)
+        return 2
+    key = os.environ.get("TAGTEAM_AA_API_KEY", "").strip()
+    if not key:
+        print("no TAGTEAM_AA_API_KEY set: bench.local.json not written")
+        return 0
+    bench, entries = collect_bench(key, timeout)
+    if bench["status"] != "ok":
+        sys.stderr.write("models_collect: AA error: %s; %s unchanged\n" % (bench.get("detail"), BENCH_FILE))
+        return 1
+    path = os.path.join(cdir, BENCH_FILE)
+    old = (load_bench(cdir) or {}).get("models")
+    if old is None and os.path.exists(path):
+        sys.stderr.write("models_collect: %s exists but is unreadable or invalid; fix or delete it first\n" % BENCH_FILE)
+        return 1
+    data = build_bench(models, entries, bench["index_version"], utcnow().strftime("%Y-%m-%d"), old)
+    write_json(path, data)
+    print("wrote %s: %d models, index_version %s" % (BENCH_FILE, len(data["models"]), bench["index_version"]))
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description="Collect vendor model lists into a proposal file.")
     ap.add_argument("--project")
     ap.add_argument("--timeout", type=int, default=60)
     ap.add_argument("--mark-applied", action="store_true")
+    ap.add_argument("--write-bench", action="store_true")
     args = ap.parse_args(argv)
     here = os.path.dirname(os.path.abspath(__file__))
+    cdir = os.environ.get("TAGTEAM_CONFIG_DIR") or here
+    if args.write_bench:
+        return write_bench(cdir, args.timeout)
     project = os.path.abspath(args.project or os.path.dirname(os.path.dirname(here)))
     state = role_guard.state_dir({"cwd": project})
     proposal = os.path.join(state, "model-update.json")
@@ -317,18 +421,7 @@ def main(argv):
         print("marked applied: %s" % current.get("digest"))
         return 0
     try:
-        cdir = os.environ.get("TAGTEAM_CONFIG_DIR") or here
-        models = load(os.path.join(cdir, "models.json"), True)
-        local = load(os.path.join(cdir, "models.local.json"), False)
-        for key in ("vendors", "models"):
-            if not isinstance(models.get(key), dict):
-                raise ValueError("models.json: %r must be an object" % key)
-        for mid, m in models["models"].items():
-            if not (isinstance(m, dict) and m.get("vendor") in models["vendors"]
-                    and isinstance(m.get("efforts"), list)):
-                raise ValueError("models.json: model %s needs a known vendor and an efforts list" % mid)
-        if any(not isinstance(v, dict) or "model_arg" not in v for v in models["vendors"].values()):
-            raise ValueError("models.json: every vendor needs a model_arg")
+        models, local = load_config(cdir)
     except (OSError, ValueError) as exc:
         sys.stderr.write("models_collect: %s\n" % exc)
         log(state, "config error: %s" % exc)
@@ -344,8 +437,13 @@ def main(argv):
     bench, entries = collect_bench(key, args.timeout)
     if bench["status"] == "ok":
         now = utcnow()
+        stored = load_bench(cdir)
+        stored = stored["models"] if stored else None
+        if stored is None:
+            bench["local"] = "missing"
+            bench["hint"] = "run models_collect.py --write-bench to create %s" % BENCH_FILE
         for vendor in sorted(models["vendors"]):
-            changes += compare_bench(vendor, entries, models, bench["index_version"], now)
+            changes += compare_bench(vendor, entries, models, bench["index_version"], now, stored)
         changes = merge_new_models(changes)
     changes.sort(key=lambda c: (c["kind"], c["vendor"], c.get("model") or c.get("id"),
                                 c.get("metric") or "", c.get("effort") or ""))

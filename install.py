@@ -137,13 +137,41 @@ def is_git_repo(target):
     return (target / ".git").exists()
 
 
-def ensure_gitignore(rep, target):
+LOCAL_IGNORES = (".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json")
+BENCH_REL = Path(".claude/tagteam/bench.local.json")
+
+
+def ensure_gitignore(rep, target, git):
+    """Machine-local files are always ignored; .tagteam/ (state) only where the project is not a git repo."""
     gi = target / ".gitignore"
     old = gi.read_text(encoding="utf-8") if gi.exists() else ""
-    if any(ln.strip().rstrip("/") == ".tagteam" for ln in old.splitlines()):
+    have = {ln.strip().rstrip("/") for ln in old.splitlines()}
+    want = list(LOCAL_IGNORES) + ([] if git else [".tagteam/"])
+    add = [w for w in want if w.rstrip("/") not in have]
+    if not add:
         return
     sep = "" if old.endswith("\n") or not old else "\n"
-    put(rep, target, Path(".gitignore"), (old + sep + ".tagteam/\n").encode("utf-8"))
+    put(rep, target, Path(".gitignore"), (old + sep + "".join(w + "\n" for w in add)).encode("utf-8"))
+
+
+def ensure_bench(target):
+    """With an AA key and no bench.local.json yet, write it once. Never fails the install."""
+    collector = target / COLLECTOR_REL
+    if (target / BENCH_REL).exists() or not os.environ.get("TAGTEAM_AA_API_KEY", "").strip() \
+            or not collector.is_file():
+        return
+    env = {k: v for k, v in os.environ.items() if k != "TAGTEAM_CONFIG_DIR"}
+    try:
+        p = subprocess.run([sys.executable, str(collector), "--write-bench", "--timeout", "15"],
+                           capture_output=True, text=True, env=env, timeout=90)
+        ok, text = p.returncode == 0, (p.stdout + p.stderr).strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        ok, text = False, str(exc)
+    if ok:
+        print("  bench    " + BENCH_REL.as_posix() + " written from Artificial Analysis")
+    else:
+        print("warning: could not write %s (%s); run models_collect.py --write-bench later"
+              % (BENCH_REL.as_posix(), text.splitlines()[-1][:200] if text else "no output"), file=sys.stderr)
 
 
 def install(target, source, interactive):
@@ -175,8 +203,7 @@ def install(target, source, interactive):
             put(rep, target, local, data)
         elif example:
             put(rep, target, local, example.read_bytes())
-    if not is_git_repo(target):
-        ensure_gitignore(rep, target)
+    ensure_gitignore(rep, target, is_git_repo(target))
     return rep
 
 
@@ -433,6 +460,7 @@ def main(argv=None, runner=run_cmd, plat=None):
         rep = install(target, source, interactive)
         print(("Updated" if a.update else "Installed") + f" tagteam in {target}")
         rep.print()
+        ensure_bench(target)
     if not a.schedule and interactive and not a.update:
         a.schedule = input("Register a weekly model-list check (scheduled task, no LLM)? [y/N]: ").strip().lower() == "y"
     if a.schedule:

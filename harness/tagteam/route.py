@@ -98,11 +98,18 @@ def write_exhausted(path, vendors):
     os.replace(tmp, path)
 
 
-def bench(model, metric):
-    for b in model.get("bench") or []:
-        if b.get("source") == "artificial_analysis" and b.get("metric") == metric:
-            return b.get("value")
-    return None
+def read_bench(cdir):
+    """bench.local.json -> {model id: [entries]}. Missing or broken file = empty."""
+    try:
+        with open(os.path.join(cdir, "bench.local.json"), encoding="utf-8") as f:
+            models = json.load(f).get("models")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {k: v for k, v in models.items() if isinstance(v, list)} if isinstance(models, dict) else {}
+
+
+def num(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def clamp_effort(model, want):
@@ -123,8 +130,16 @@ def cli_present(vendor, cfg):
 
 
 class Router:
-    def __init__(self, models, local, exhausted):
-        self.m, self.local, self.exh = models, local, exhausted
+    def __init__(self, models, local, exhausted, bench=None):
+        self.m, self.local, self.exh, self.bench_data = models, local, exhausted, bench or {}
+        self.order = {mid: i for i, mid in enumerate(models["models"])}
+
+    def bench(self, mid, metric, effort):
+        """Artificial Analysis value at exactly this effort, else None (other efforts would skew comparisons)."""
+        for b in self.bench_data.get(mid) or []:
+            if isinstance(b, dict) and b.get("source") == "artificial_analysis" and b.get("metric") == metric                     and b.get("effort") == effort and num(b.get("value")) is not None:
+                return b["value"]
+        return None
 
     def plan(self, vendor):
         return (self.local.get("plans") or {}).get(vendor, "pro")
@@ -195,11 +210,14 @@ class Router:
                 cands.append((mid, effort, clamped))
         if not cands:
             return None
-        if spec.get("pick") == "cheap":
-            key = lambda c: (bench(self.m["models"][c[0]], "cost_per_task") is None,
-                             bench(self.m["models"][c[0]], "cost_per_task") or 0, c[0])
-        else:
-            key = lambda c: (-(bench(self.m["models"][c[0]], "index") or -1), c[0])
+        cheap = spec.get("pick") == "cheap"
+        metric = "cost_per_task" if cheap else "index"
+
+        def key(c):
+            v = self.bench(c[0], metric, c[1])
+            # models.json lists models most capable first: best takes the front, cheap takes the back.
+            return (v is None, (v if cheap else -v) if v is not None else 0,
+                    -self.order[c[0]] if cheap else self.order[c[0]])
         return sorted(cands, key=key)[0]
 
     def over_cap(self, mid, effort, orch_model, orch_effort):
@@ -273,6 +291,8 @@ class Router:
         vendor, cfg = model["vendor"], self.m["vendors"][model["vendor"]]
         if clamped:
             reason.append("effort_clamped")
+        metric = "cost_per_task" if self.m["roles"][role].get("pick") == "cheap" else "index"
+        reason.append("bench:local" if self.bench(mid, metric, effort) is not None else "bench:none")
         native = cfg["host"] == host
         extra = ""
         if native and host == "claude":
@@ -349,7 +369,7 @@ def main(argv=None):
         if args.author_vendor and args.author_vendor not in models["vendors"]:
             raise ConfigError("unknown vendor: %s" % args.author_vendor)
         local = load_json(os.path.join(cdir, "models.local.json"), False)
-        router = Router(models, local, read_exhausted(exhausted_path()))
+        router = Router(models, local, read_exhausted(exhausted_path()), read_bench(cdir))
         result, code = router.route(args.role, args.host or default_host(), args.author_vendor, args.grade,
                                     args.orchestrator_model, args.orchestrator_effort)
     except (ConfigError, KeyError, ValueError) as exc:

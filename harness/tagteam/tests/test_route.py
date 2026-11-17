@@ -34,6 +34,14 @@ class RouteTest(unittest.TestCase):
         with open(os.path.join(self.cfg, "models.local.json"), "w", encoding="utf-8") as f:
             json.dump(data, f)
 
+    def bench(self, models):
+        with open(os.path.join(self.cfg, "bench.local.json"), "w", encoding="utf-8") as f:
+            json.dump({"schema": 1, "models": models}, f)
+
+    @staticmethod
+    def b(metric, value, effort):
+        return {"source": "artificial_analysis", "metric": metric, "value": value, "effort": effort}
+
     def exhausted(self, **vendors):
         with open(self.exh_path, "w", encoding="utf-8") as f:
             json.dump({"schema": 1, "vendors": vendors}, f)
@@ -77,7 +85,7 @@ class RouteTest(unittest.TestCase):
         self.assertIn("--read-only", r["launch"]["command"])
         self.assertIn("author_vendor_excluded:claude", r["reason"])
         self.assertIn("differs from author vendor claude", r["notice"])
-        r = self.assertPick(self.route("read"), "claude-haiku-5-5", "low", "native")
+        r = self.assertPick(self.route("read"), "claude-haiku-5-5", "low", "native")  # no bench file: cheap takes the last in order
         r = self.assertPick(self.route("translate"), "gemini-3.8-flash", "medium", "run")
         self.assertNotIn("--read-only", r["launch"]["command"])
 
@@ -92,11 +100,11 @@ class RouteTest(unittest.TestCase):
     def test_user_override(self):
         self.local({"roles": {"implement": {"model": "claude-opus-5-5", "effort": "xhigh"}}})
         r = self.assertPick(self.route("implement"), "claude-opus-5-5", "xhigh")
-        self.assertEqual(r["reason"], ["user_override"])
+        self.assertEqual(r["reason"], ["user_override", "bench:none"])
         self.local({"roles": {"implement": {"model": "claude-opus-5-5"}},
                     "models": {"claude-opus-5-5": {"enabled": False}}})
         r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")
-        self.assertEqual(sorted(r["reason"]), ["default", "override_unusable"])
+        self.assertEqual(sorted(r["reason"]), ["bench:none", "default", "override_unusable"])
 
     # 4
     def test_override_same_vendor_as_author(self):
@@ -229,9 +237,44 @@ class RouteTest(unittest.TestCase):
         self.assertPick(self.route("implement"), "claude-haiku-5-5", "medium")
         self.local({"roles": {"implement": {"model": "claude-sonnet-5-5"}}})
         r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")
-        self.assertEqual(r["reason"], ["user_override"])
+        self.assertEqual(r["reason"], ["user_override", "bench:none"])
 
     # 13
+    def test_bench_local_orders_within_grade(self):
+        self.assertPick(self.route("read"), "claude-haiku-5-5", "low")
+        self.bench({"claude-sonnet-5-5": [self.b("cost_per_task", 0.05, "low")],
+                    "claude-haiku-5-5": [self.b("cost_per_task", 0.9, "low")]})
+        r = self.assertPick(self.route("read"), "claude-sonnet-5-5", "low")  # prices beat order
+        self.assertIn("bench:local", r["reason"])
+        # best: higher index first; a model with a score beats one without
+        self.bench({"claude-haiku-5-5": [self.b("index", 30, "medium")]})
+        r = self.assertPick(self.route("implement"), "claude-haiku-5-5", "medium")
+        self.assertIn("bench:local", r["reason"])
+        self.bench({"claude-haiku-5-5": [self.b("index", 30, "medium")], "claude-sonnet-5-5": [self.b("index", 40, "medium")]})
+        self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")
+
+    def test_bench_uses_only_the_actual_effort(self):
+        # the role runs at medium; a high-effort value must not count
+        self.bench({"claude-haiku-5-5": [self.b("index", 99, "high")], "claude-sonnet-5-5": [self.b("index", 40, "medium")]})
+        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")
+        self.assertIn("bench:local", r["reason"])
+        self.bench({"claude-haiku-5-5": [self.b("index", 99, "high")]})
+        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")  # nobody scored at medium
+        self.assertIn("bench:none", r["reason"])
+
+    def test_bench_uses_clamped_effort(self):
+        self.local({"roles": {"implement": {"effort": "max"}}})  # clamps to high for the B models
+        self.bench({"claude-haiku-5-5": [self.b("index", 30, "high")], "claude-sonnet-5-5": [self.b("index", 20, "max")]})
+        r = self.assertPick(self.route("implement"), "claude-haiku-5-5", "high")
+        self.assertIn("effort_clamped", r["reason"])
+
+    def test_broken_bench_file_is_empty(self):
+        for text in ("{not json", "[1]", '{"models": 3}', '{"models": {"claude-haiku-5-5": 5}}'):
+            with open(os.path.join(self.cfg, "bench.local.json"), "w", encoding="utf-8") as f:
+                f.write(text)
+            r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")
+            self.assertIn("bench:none", r["reason"])
+
     def test_registry(self):
         with open(os.path.join(TAGTEAM, "models.json"), encoding="utf-8") as f:
             data = json.load(f)
@@ -243,8 +286,7 @@ class RouteTest(unittest.TestCase):
             self.assertNotIn("ultra", json.dumps(m.get("effort_by_role", {})), mid)
             if m["vendor"] == "google":
                 self.assertTrue(m.get("label"), mid)
-            for b in m["bench"]:
-                self.assertTrue({"source", "metric", "value", "date"} <= set(b), mid)
+            self.assertNotIn("bench", m, mid)
         for v, cfg in data["vendors"].items():
             self.assertTrue({"cli", "host", "model_arg", "cooldown_minutes"} <= set(cfg), v)
         for host, order in data["hosts"].items():

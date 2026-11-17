@@ -2,6 +2,7 @@
 # Machine-local settings and state
 .claude/settings.local.json
 .claude/tagteam/models.local.json
+.claude/tagteam/bench.local.json
 .tagteam/
 __pycache__/
 

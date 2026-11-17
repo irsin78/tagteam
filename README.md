@@ -14,7 +14,9 @@ Install into a project:
     python install.py <project dir> --check
 
 Optional benchmark data: with an Artificial Analysis API key in the environment
-variable `TAGTEAM_AA_API_KEY`, the weekly model collector reads scores and prices
-from the free Data API. Model benchmark data: [Artificial Analysis](https://artificialanalysis.ai/).
+variable `TAGTEAM_AA_API_KEY`, install writes scores and prices from the free Data API
+to `.claude/tagteam/bench.local.json` (machine-local, git-ignored), and the weekly
+collector proposes updates. Without a key, routes follow the model order in
+`models.json`. Model benchmark data: [Artificial Analysis](https://artificialanalysis.ai/).
 
 License: see LICENSE.

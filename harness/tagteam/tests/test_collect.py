@@ -243,6 +243,33 @@ class BenchTest(CollectTest):
         clock = mock.patch.object(mc, "utcnow", return_value=mc.datetime(2099, 1, 10, tzinfo=mc.timezone.utc))
         clock.start()
         self.addCleanup(clock.stop)
+        self.write_local_bench({
+            "claude-fable-5-2": [self.entry("index", 62, "high"), self.entry("cost_per_task", 9.08, "high"),
+                                 {"source": "frontierswe", "metric": "pass1", "value": 0.699, "date": "2026-11-10"}],
+            "claude-sonnet-5-5": [self.entry("index", 47, "high"), self.entry("cost_per_task", 0.88, "high")],
+            "gpt-6.1-terra": [self.entry("index", 45, "xhigh"), self.entry("cost_per_task", 0.19, "xhigh")]})
+
+    @staticmethod
+    def entry(metric, value, effort):
+        return {"source": "artificial_analysis", "metric": metric, "value": value, "effort": effort,
+                "date": "2026-10-01", "version": 5}
+
+    def write_local_bench(self, models):
+        with open(os.path.join(self.cfg, "bench.local.json"), "w", encoding="utf-8") as f:
+            json.dump({"schema": 1, "models": models}, f)
+
+    def local_bench(self):
+        return json.loads(read(os.path.join(self.cfg, "bench.local.json")))
+
+    def write_bench(self, **kw):
+        """Run --write-bench with a fake AA; -> (exit code, printed text)."""
+        key = kw.pop("key", AA_KEY)
+        out, err = io.StringIO(), io.StringIO()
+        env = {"TAGTEAM_CONFIG_DIR": self.cfg, "TAGTEAM_STATE_DIR": self.state, "TAGTEAM_AA_API_KEY": key}
+        with mock.patch.dict(os.environ, env), mock.patch.object(mc, "aa_fetch_page", self.aa(**kw)), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = mc.main(["--write-bench"])
+        return code, out.getvalue() + err.getvalue()
 
     def aa(self, **kw):
         self.fake = FakeAA(**kw)
@@ -250,9 +277,11 @@ class BenchTest(CollectTest):
 
     def with_meta(self):
         self.models["vendors"]["meta"] = {"cli": "x", "host": None, "model_arg": "{model}", "aa_creator": "Meta"}
-        self.models["models"]["muse-wonder"] = {"vendor": "meta", "grade": "B", "efforts": ["max"], "bench": [
-            {"source": "artificial_analysis", "metric": "index", "value": 10, "effort": "max", "date": "2026-11-01"}]}
+        self.models["models"]["muse-wonder"] = {"vendor": "meta", "grade": "B", "efforts": ["max"]}
         self.write_models()
+        stored = self.local_bench()["models"]
+        stored["muse-wonder"] = [self.entry("index", 10, "max")]
+        self.write_local_bench(stored)
 
     def write_models(self):
         with open(os.path.join(self.cfg, "models.json"), "w", encoding="utf-8") as f:
@@ -282,6 +311,7 @@ class BenchTest(CollectTest):
         self.assertEqual(self.fake.calls[0][1], AA_KEY)
         self.assertEqual(prop["bench"], {"status": "ok", "index_version": 5, "models_seen": 16, "remaining": "96",
                                          "source": mc.AA_SOURCE})
+        self.assertFalse(any("bench" in m for m in self.models["models"].values()))
 
     def test_bench_changed_exact_match_and_null_ignored(self):
         _, prop = self.run_aa()
@@ -348,7 +378,8 @@ class BenchTest(CollectTest):
         now = mc.datetime(2026, 11, 17, tzinfo=mc.timezone.utc)
         self.assertEqual(mc.compare_bench("claude", [e], models, 5, now), [])
         models["models"]["claude-fable-5-2"]["aa_slug"] = "other-slug"
-        got = mc.compare_bench("claude", [e], models, 5, now)
+        stored = {"claude-fable-5-2": [self.entry("index", 60, "high"), self.entry("cost_per_task", 0.5, "high")]}
+        got = mc.compare_bench("claude", [e], models, 5, now, stored)
         self.assertEqual([(c["model"], c["new"]) for c in got], [("claude-fable-5-2", 70.0), ("claude-fable-5-2", 1.0)])
 
     def test_cli_new_model_merges_with_aa(self):
@@ -366,12 +397,85 @@ class BenchTest(CollectTest):
     def test_applying_values_leaves_zero_bench_changed(self):
         _, prop = self.run_aa()
         self.assertTrue(self.by(prop, "bench_changed"))
+        stored = self.local_bench()["models"]
         for c in self.by(prop, "bench_changed"):
-            for b in self.models["models"][c["model"]]["bench"]:
+            for b in stored[c["model"]]:
                 if (b["source"], b["metric"], b.get("effort")) == ("artificial_analysis", c["metric"], c["effort"]):
                     b["value"] = c["new"]
-        self.write_models()
-        self.assertFalse(self.by(self.run_aa()[1], "bench_changed"))
+        for c in self.by(prop, "bench_added"):
+            stored.setdefault(c["model"], []).append(self.entry(c["metric"], c["new"], c["effort"]))
+        self.write_local_bench(stored)
+        again = self.run_aa()[1]
+        self.assertFalse(self.by(again, "bench_changed") + self.by(again, "bench_added"))
+
+    def test_bench_added_for_effort_without_stored_value(self):
+        _, prop = self.run_aa()
+        added = {(c["model"], c["effort"], c["metric"]) for c in self.by(prop, "bench_added")}
+        self.assertIn(("claude-fable-5-2", "max", "index"), added)
+        self.assertNotIn(("claude-fable-5-2", "high", "index"), added)  # stored
+        self.assertTrue(all("old" not in c for c in self.by(prop, "bench_added")))
+
+    def test_missing_local_file_means_no_bench_changes(self):
+        os.remove(os.path.join(self.cfg, "bench.local.json"))
+        code, prop = self.run_aa()
+        self.assertEqual(code, 0)
+        self.assertEqual(prop["bench"]["local"], "missing")
+        self.assertIn("--write-bench", prop["bench"]["hint"])
+        self.assertFalse(self.by(prop, "bench_changed") + self.by(prop, "bench_added"))
+        self.assertTrue([c for c in self.by(prop, "new_model") if c.get("source") == "artificial_analysis"])
+
+    def test_write_bench_writes_all_registered_efforts(self):
+        os.remove(os.path.join(self.cfg, "bench.local.json"))
+        code, text = self.write_bench()
+        self.assertEqual(code, 0, text)
+        data = self.local_bench()
+        self.assertEqual((data["schema"], data["source"], data["index_version"]), (1, mc.AA_SOURCE, 5))
+        self.assertRegex(data["fetched"], r"^\d{4}-\d\d-\d\d$")
+        got = {(m, b["effort"], b["metric"]): b["value"] for m, bs in data["models"].items() for b in bs}
+        self.assertEqual(got[("claude-fable-5-2", "high", "index")], 61.8)
+        self.assertEqual(got[("claude-fable-5-2", "high", "cost_per_task")], 9.0784)
+        self.assertIn(("claude-fable-5-2", "max", "index"), got)
+        self.assertNotIn(("claude-sonnet-5-5", "high", "index"), got)  # null at AA
+        self.assertNotIn("claude-nova-6", data["models"])  # not registered
+        self.assertTrue(all(b["version"] == 5 and b["source"] == "artificial_analysis"
+                            for bs in data["models"].values() for b in bs))
+        self.assertEqual([c[0] for c in self.fake.calls], [1, 2])
+        self.assertFalse(os.path.exists(self.proposal))
+        self.assertFalse([f for f in os.listdir(self.cfg) if ".tmp" in f])
+        again = self.run_aa()[1]  # a fresh file leaves nothing to propose
+        self.assertFalse(self.by(again, "bench_changed") + self.by(again, "bench_added"))
+
+    def test_write_bench_keeps_other_sources_and_replaces_aa(self):
+        self.write_bench()
+        mine = self.local_bench()["models"]["claude-fable-5-2"]
+        self.assertIn({"source": "frontierswe", "metric": "pass1", "value": 0.699, "date": "2026-11-10"}, mine)
+        high = [b for b in mine if b.get("effort") == "high" and b["metric"] == "index"]
+        self.assertEqual([b["value"] for b in high], [61.8])
+
+    def test_write_bench_without_key_writes_nothing(self):
+        os.remove(os.path.join(self.cfg, "bench.local.json"))
+        code, text = self.write_bench(key="")
+        self.assertEqual(code, 0)
+        self.assertIn("TAGTEAM_AA_API_KEY", text)
+        self.assertFalse(os.path.exists(os.path.join(self.cfg, "bench.local.json")))
+        self.assertEqual(self.fake.calls, [])
+
+    def test_write_bench_aa_error_keeps_file(self):
+        before = read(os.path.join(self.cfg, "bench.local.json"))
+        code, text = self.write_bench(fail=mc.urllib.error.HTTPError("u", 500, "x", {}, None))
+        self.assertEqual(code, 1)
+        self.assertIn("HTTP 500", text)
+        self.assertNotIn(AA_KEY, text)
+        self.assertEqual(read(os.path.join(self.cfg, "bench.local.json")), before)
+
+    def test_write_bench_refuses_broken_existing_file(self):
+        path = os.path.join(self.cfg, "bench.local.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"models": {"x": [{"source": "frontierswe"')
+        code, text = self.write_bench()
+        self.assertEqual(code, 1)
+        self.assertIn("unreadable or invalid", text)
+        self.assertEqual(read(path), '{"models": {"x": [{"source": "frontierswe"')
 
     def test_digest_ignores_remaining_and_models_seen(self):
         _, a = self.run_aa(headers={"x-ratelimit-remaining": "90"})

@@ -33,6 +33,15 @@ if event == "PreToolUse":
         sys.stderr.write("deny"); sys.exit(2)
 sys.exit(0)
 '''
+FAKE_COLLECT = '''import os, sys
+cfg = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(cfg, "calls.log"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "|" + os.environ.get("TAGTEAM_AA_API_KEY", "") + "\\n")
+if os.environ.get("FAKE_COLLECT_FAIL"):
+    sys.stderr.write("AA error: HTTP 500\\n")
+    sys.exit(1)
+open(os.path.join(cfg, "bench.local.json"), "w").write("{}")
+'''
 ALLOW_ALL = "import sys\nsys.exit(0)\n"
 
 TEMPLATE_AGENTS = "# Agents\n\nintro v2\n\n## Project policy\n\ntemplate placeholder\n"
@@ -46,6 +55,7 @@ def build_source(root, guard=STUB):
         "claude/skills/s1/SKILL.md": "skill",
         "tagteam/role_guard.py": guard,
         "tagteam/models.json": "{}",
+        "tagteam/models_collect.py": FAKE_COLLECT,
         "tagteam/models.local.json.example": '{"plans": {}}',
         "codex/hooks.json": json.dumps({"hooks": {"PreToolUse": [{"command": "python3 .claude/tagteam/role_guard.py PreToolUse --host codex", "commandWindows": "python .claude/tagteam/role_guard.py PreToolUse --host codex"}]}}),
         "codex/agents/b.toml": "x = 1",
@@ -67,6 +77,13 @@ class InstallTests(unittest.TestCase):
         self.src = build_source(base / "src")
         self.dst = base / "proj"
         self.dst.mkdir()
+        env = mock.patch.dict(os.environ)  # no real key, no network: the collector here is a fake
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("TAGTEAM_AA_API_KEY", "TAGTEAM_CONFIG_DIR", "FAKE_COLLECT_FAIL"):
+            os.environ.pop(k, None)
+        self.calls = self.dst / ".claude/tagteam/calls.log"
+        self.bench = self.dst / ".claude/tagteam/bench.local.json"
 
     def run_install(self, *extra):
         out = io.StringIO()
@@ -131,16 +148,54 @@ class InstallTests(unittest.TestCase):
         self.run_install()
         self.assertEqual((self.dst / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\nextra\n")
 
-    def test_gitignore_only_for_non_git(self):
+    def test_gitignore_local_files_always_state_dir_only_for_non_git(self):
+        local = [".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json"]
         self.run_install()
-        self.assertIn(".tagteam/", (self.dst / ".gitignore").read_text(encoding="utf-8"))
+        text = (self.dst / ".gitignore").read_text(encoding="utf-8")
+        for line in local + [".tagteam/"]:
+            self.assertIn(line, text.splitlines())
         self.run_install("--update")
-        self.assertEqual((self.dst / ".gitignore").read_text(encoding="utf-8").count(".tagteam/"), 1)
+        self.assertEqual((self.dst / ".gitignore").read_text(encoding="utf-8"), text)
         git_dst = self.dst.parent / "gitproj"
         (git_dst / ".git").mkdir(parents=True)
+        (git_dst / ".gitignore").write_text("node_modules\n.claude/tagteam/models.local.json", encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()):
             install.main([str(git_dst), "--source", str(self.src), "--yes"])
-        self.assertFalse((git_dst / ".gitignore").exists())
+        lines = (git_dst / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines, ["node_modules", local[0], local[1]])
+
+    def test_bench_written_once_when_key_set_and_file_missing(self):
+        os.environ["TAGTEAM_AA_API_KEY"] = "k-123"
+        code, out = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertTrue(self.bench.is_file())
+        self.assertEqual(self.calls.read_text().splitlines(), ["--write-bench --timeout 15|k-123"])
+        self.assertNotIn("k-123", out)
+        self.run_install("--update")  # file exists: not touched again
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_bench_not_written_without_key(self):
+        self.run_install()
+        self.assertFalse(self.bench.exists() or self.calls.exists())
+
+    def test_bench_failure_only_warns(self):
+        os.environ["TAGTEAM_AA_API_KEY"] = "k-123"
+        os.environ["FAKE_COLLECT_FAIL"] = "1"
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code, _ = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertFalse(self.bench.exists())
+        self.assertIn("warning", err.getvalue())
+        self.assertIn("HTTP 500", err.getvalue())
+
+    def test_check_and_dry_run_do_not_fetch_or_need_the_file(self):
+        self.run_install()
+        os.environ["TAGTEAM_AA_API_KEY"] = "k-123"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(install.main([str(self.dst), "--check"]), 0)
+            install.main([str(self.dst), "--source", str(self.src), "--schedule", "--dry-run"])
+        self.assertFalse(self.bench.exists() or self.calls.exists())
 
     def test_check_passes_with_stub(self):
         self.run_install()
