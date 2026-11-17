@@ -1,22 +1,36 @@
 #!/usr/bin/env python3
 """Router: pick model, effort and launch method for a role.
 
-  route.py --role design|implement|review|read|translate [--host claude|codex]
-           [--author-vendor V] [--grade S|A|B|C] [--orchestrator-model M]
-           [--orchestrator-effort E] [--json]
+  route.py --role design|implement|review|read|translate [--task NAME]
+           [--host claude-desktop|claude|codex|agy]
+           [--author-vendor V] [--author-model M --author-effort E] [--grade S|A|B|C]
+           [--orchestrator-model M] [--orchestrator-effort E] [--json]
+  route.py --task NAME [...]        (the role comes from the task's `base`)
   route.py --mark-exhausted VENDOR --evidence TEXT [--until ISO8601]
   route.py --clear-exhausted VENDOR
 
+launch.kind: session (Claude desktop), subagent (a definition's name, only when its pinned model and effort
+equal the pick; Codex without a matching definition: agent "default" with model arguments) or run (a run.py
+command; "escalate": true on Codex hosts). A review needs the author's grade (--grade, or --author-model with
+--author-effort). Tasks (models.local.json "tasks") layer a per-task preference over the role's rules.
+
 Exit: 0 chosen, 2 usage or config error, 3 no independent reviewer (incomplete),
-4 no model available. Config dir: next to this script (TAGTEAM_CONFIG_DIR in tests).
+4 no model available. Config dir: next to this script (TAGTEAM_CONFIG_DIR in tests). Install root for the
+agent definitions: three folders above this script (TAGTEAM_ROOT in tests).
 State dir (exhausted.json): state.state_dir (TAGTEAM_STATE_DIR in tests).
 """
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
+
+try:
+    import tomllib  # Python 3.11+; the harness also supports 3.9, which gets the small parser below
+except ImportError:
+    tomllib = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import state  # noqa: E402  (same folder)
@@ -25,6 +39,7 @@ EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 GRADES = {"C": 0, "B": 1, "A": 2, "S": 3}
 ROLES = ["design", "implement", "review", "read", "translate"]
 TS = "%Y-%m-%dT%H:%M:%SZ"
+HOSTS = ["claude-desktop", "claude", "codex", "agy"]
 
 
 class ConfigError(Exception):
@@ -124,7 +139,105 @@ def clamp_effort(model, want):
 
 
 def default_host():
-    return "claude" if os.environ.get("CLAUDECODE") == "1" else "codex"
+    """A guess (Codex started from Claude inherits CLAUDECODE): the notice shows host=<value>, so a wrong guess is visible."""
+    if os.environ.get("CLAUDECODE") == "1":
+        return "claude-desktop" if os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop" else "claude"
+    return "codex"
+
+
+def host_family(host):
+    """The vendor-side name of a host: claude-desktop is a Claude host like claude."""
+    return "claude" if host == "claude-desktop" else host
+
+
+def root_dir():
+    return os.environ.get("TAGTEAM_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def toml_top_level(text):
+    """The top-level `key = "string"` assignments of a TOML document (tomllib when available).
+
+    Lines inside multi-line strings (developer_instructions may quote example settings) and everything
+    after the first [table] header are ignored. Returns {} when the document cannot be read."""
+    if tomllib is not None:
+        try:
+            return {k: v for k, v in tomllib.loads(text).items() if isinstance(v, str)}
+        except (ValueError, TypeError):
+            return {}
+    out, closing = {}, None
+    for line in text.splitlines():
+        if closing:
+            if closing in line:
+                closing = None
+            continue
+        st = line.strip()
+        if not st or st.startswith("#"):
+            continue
+        if st.startswith("["):
+            break
+        m = re.match(r"^([A-Za-z0-9_-]+)\s*=\s*(.*)$", st)
+        if not m:
+            continue
+        key, val = m.groups()
+        multi = next((d for d in ('"""', "'''") if val.startswith(d)), None)
+        if multi:
+            if multi not in val[3:]:
+                closing = multi
+            continue
+        sm = re.match(r'^"((?:[^"\\]|\\.)*)"|^\'([^\']*)\'', val)
+        if sm:
+            out[key] = sm.group(1) if sm.group(1) is not None else sm.group(2)
+    return out
+
+
+def read_definition(root, family, agent):
+    """(model, effort) pinned by .claude/agents/<agent>.md (front matter) or .codex/agents/<agent>.toml, else None."""
+    rel = {"claude": (".claude", "agents", agent + ".md"), "codex": (".codex", "agents", agent + ".toml")}.get(family)
+    if not rel:
+        return None
+    try:
+        with open(os.path.join(root, *rel), encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    if family == "claude":
+        head = text.split("\n---", 1)[0] if text.startswith("---") else ""
+        found = [re.search(p, head) for p in (r"(?m)^model:\s*(.+?)\s*$", r"(?m)^effort:\s*(.+?)\s*$")]
+        if not all(found):
+            return None
+        return tuple(m.group(1).strip().strip("\"'") for m in found)
+    top = toml_top_level(text)
+    if not top.get("model") or not top.get("model_reasoning_effort"):
+        return None
+    return top["model"].strip(), top["model_reasoning_effort"].strip()
+
+
+def load_task(local, name, models):
+    """The validated `tasks.<name>` entry of models.local.json. ConfigError (exit 2) when missing or malformed."""
+    tasks = local.get("tasks")
+    tasks = tasks if isinstance(tasks, dict) else {}
+    entry = tasks.get(name)
+    if entry is None:
+        raise ConfigError("unknown task %r (tasks in models.local.json: %s)" % (name, ", ".join(sorted(tasks)) or "none"))
+    bad = lambda why: ConfigError("task %s: %s" % (name, why))  # noqa: E731
+    if not isinstance(entry, dict):
+        raise bad("not an object")
+    if not isinstance(entry.get("about"), str) or not entry["about"].strip():
+        raise bad("'about' is required")
+    if entry.get("base") not in ROLES:
+        raise bad("'base' must be one of %s" % ", ".join(ROLES))
+    model, vendor = entry.get("model"), entry.get("vendor")
+    if model is not None and model not in models["models"]:
+        raise bad("unknown model: %s" % model)
+    if vendor is not None and vendor not in models["vendors"]:
+        raise bad("unknown vendor: %s" % vendor)
+    if model and vendor and models["models"][model]["vendor"] != vendor:
+        raise bad("model %s belongs to %s, not %s" % (model, models["models"][model]["vendor"], vendor))
+    if entry.get("effort") is not None and entry["effort"] not in EFFORTS:
+        raise bad("unknown effort: %s" % entry["effort"])
+    if entry.get("grade") is not None and entry["grade"] not in GRADES:
+        raise bad("unknown grade: %s" % entry["grade"])
+    return entry
 
 
 def cli_present(vendor, cfg):
@@ -132,8 +245,9 @@ def cli_present(vendor, cfg):
 
 
 class Router:
-    def __init__(self, models, local, exhausted, bench=None):
+    def __init__(self, models, local, exhausted, bench=None, root=None):
         self.m, self.local, self.exh, self.bench_data = models, local, exhausted, bench or {}
+        self.root = root or root_dir()
         self.order = {mid: i for i, mid in enumerate(models["models"])}
 
     def bench(self, mid, metric, effort):
@@ -171,7 +285,7 @@ class Router:
                 return hit[0], False
         return efforts[-1], False
 
-    def spec(self, role, grade):
+    def spec(self, role, grade, task=None):
         spec = dict(self.m["roles"][role])
         lr = (self.local.get("roles") or {}).get(role) or {}
         for key in ("model", "vendor", "grade"):
@@ -181,6 +295,21 @@ class Router:
                     spec["grade"] = lr[key]
         if lr.get("effort"):
             spec["user_effort"] = lr["effort"]
+        if task:  # the task's keys override the role's: a model or vendor choice replaces the role-level pins
+            if task.get("model") or task.get("vendor"):
+                for key in ("user_model", "user_vendor", "user_effort"):
+                    spec.pop(key, None)
+            if task.get("model"):
+                spec["user_model"] = task["model"]
+                spec["user_vendor"] = self.m["models"][task["model"]]["vendor"]
+            elif task.get("vendor"):
+                spec["user_vendor"] = task["vendor"]
+            if task.get("effort"):
+                spec["user_effort"] = task["effort"]
+            if task.get("grade"):
+                spec["grade"] = task["grade"]
+                if not task.get("effort"):  # the grade table chooses the effort, not a role-level pin
+                    spec.pop("user_effort", None)
         if grade:
             spec["grade"] = grade
         for key, table in (("user_model", self.m["models"]), ("user_vendor", self.m["vendors"]), ("grade", GRADES)):
@@ -262,15 +391,121 @@ class Router:
             return True
         return oe in EFFORTS and EFFORTS.index(effort) > EFFORTS.index(oe)
 
-    def needs_run_cli(self, mid, effort, host, cap):
-        """The launch will go through run.py (not native) but the vendor CLI is missing."""
-        v = self.m["models"][mid]["vendor"]
-        cfg = self.m["vendors"][v]
-        via_run = cfg["host"] != host or (host == "claude" and self.over_cap(mid, effort, *cap))
-        return via_run and not cli_present(v, cfg)
+    def definition(self, vendor, role):
+        """(agent name, pinned (model, effort) or None) of the vendor host's definition for this role."""
+        agent = self.m["roles"][role].get("agent")
+        if not agent:
+            return None, None
+        return agent, read_definition(self.root, self.m["vendors"][vendor]["host"], agent)
 
-    def route(self, role, host, author=None, grade=None, orch_model=None, orch_effort=None):
-        spec = self.spec(role, grade)
+    def run_launch(self, role, vendor, mid, effort, host):
+        cmd = ["python", ".claude/tagteam/run.py", "--vendor", vendor, "--model", mid,
+               "--effort", effort, "--prompt-file", "<PROMPT_FILE>"]
+        if self.m["roles"][role].get("read_only"):
+            cmd.append("--read-only")
+        launch = {"kind": "run", "command": cmd}
+        if host == "codex":  # a sandboxed Codex session needs approval to run run.py, whatever the vendor
+            launch["escalate"] = True
+        return launch
+
+    def make_launch(self, role, mid, effort, host, cap, reason):
+        """How to start the pick on this host: session / subagent / run (see the module docstring)."""
+        vendor = self.m["models"][mid]["vendor"]
+        same = self.m["vendors"][vendor]["host"] == host_family(host)
+        agent, pinned = self.definition(vendor, role)
+        matches = bool(agent) and pinned == (mid, effort)  # an alias or a different pin never matches
+        if same and host == "claude-desktop":
+            if self.over_cap(mid, effort, *cap):
+                reason.append("native_model_cap")
+                return self.run_launch(role, vendor, mid, effort, host)
+            launch = {"kind": "session", "model": mid, "effort": effort}
+            if matches:
+                launch["also"] = {"kind": "subagent", "host": "claude", "agent": agent}
+            return launch
+        if same and host == "claude" and matches:
+            return {"kind": "subagent", "host": "claude", "agent": agent}
+        if same and host == "codex" and role != "review":  # a subagent cannot be read-only (X11)
+            if matches:
+                return {"kind": "subagent", "host": "codex", "agent": agent, "fork_turns": "none"}
+            return {"kind": "subagent", "host": "codex", "agent": "default", "model": mid,
+                    "reasoning_effort": effort, "fork_turns": "none"}
+        return self.run_launch(role, vendor, mid, effort, host)
+
+    def cli_missing(self, role, mid, effort, host, cap):
+        """The launch goes through run.py but the vendor CLI is missing."""
+        vendor = self.m["models"][mid]["vendor"]
+        launch = self.make_launch(role, mid, effort, host, cap, [])
+        return launch["kind"] == "run" and not cli_present(vendor, self.m["vendors"][vendor])
+
+    def stronger(self, mid, effort, orch_model, orch_effort):
+        """(ask_user, reason): does the pick outrank (or cost more than) the orchestrator? None = unknown."""
+        oe = orch_effort or os.environ.get("CLAUDE_EFFORT")
+        om = self.m["models"].get(orch_model)
+        if not om or oe not in EFFORTS:
+            return None, "orchestrator model or effort unknown"
+        model = self.m["models"][mid]
+        if model["vendor"] == om["vendor"] and self.order[mid] < self.order[orch_model]:
+            return True, "listed before the orchestrator's model (stronger)"
+        mine, theirs = model["grades"].get(effort), om["grades"].get(oe)
+        if mine and theirs and GRADES[mine] > GRADES[theirs]:
+            return True, "grade %s is above the orchestrator's %s" % (mine, theirs)
+        cost, orch_cost = self.bench(mid, "cost_per_task", effort), self.bench(orch_model, "cost_per_task", oe)
+        if cost is not None and orch_cost is not None and cost > orch_cost:
+            return True, "costs more per task than the orchestrator (bench)"
+        return False, "not stronger or costlier than the orchestrator"
+
+    def route(self, role, host, author=None, grade=None, orch_model=None, orch_effort=None, task=None, task_name=None):
+        if not task:
+            return self._route(role, host, author, self.spec(role, grade), orch_model, orch_effort)
+        spec = self.spec(role, grade, task)
+        result, code = self._route(role, host, author, spec, orch_model, orch_effort)
+        if code == 0 and self.honors(task, result):
+            result.update({"task": task_name, "task_applied": True})
+            return result, code
+        cause = self.task_cause(role, host, author, spec, task, (orch_model, orch_effort), result)
+        base, code = self._route(role, host, author, self.spec(role, grade), orch_model, orch_effort)
+        base.setdefault("reason", []).append("task_fallback:" + cause)
+        base["notice"] += " task %s preference unusable (%s), routed as %s." % (task_name, cause, role)
+        base.update({"task": task_name, "task_applied": False})
+        return base, code
+
+    @staticmethod
+    def honors(task, result):
+        if task.get("model"):
+            return result["model"] == task["model"]
+        if task.get("vendor") and result["vendor"] != task["vendor"]:
+            return False
+        if task.get("effort") and result["effort"] != task["effort"] and "effort_clamped" not in result["reason"]:
+            return False
+        return not task.get("grade") or result["grade"] == task["grade"]
+
+    def task_cause(self, role, host, author, spec, task, cap, result):
+        """Why the task's preference was not used (design 2.3.6: exhausted, plan_none, unavailable, cli_missing, author_vendor)."""
+        mid = task.get("model")
+        vendor = self.m["models"][mid]["vendor"] if mid else task.get("vendor")
+        if not vendor:
+            return "unavailable:task"
+        if self.plan(vendor) == "none":
+            return "plan_none:" + vendor
+        if vendor in self.exh:
+            return "exhausted:" + vendor
+        if role == "review" and vendor == author:
+            return "author_vendor"
+        grade = spec["grade"]
+        if mid:
+            effort = self.model_effort(mid, spec, grade)[0]
+            if not self.usable(mid, effort):
+                return "unavailable:" + mid
+        else:
+            hit = self.pick(role, spec, vendor, grade, cap, False)
+            if hit is None:
+                return "unavailable:" + vendor
+            mid, effort = hit[0], hit[1]
+        if self.cli_missing(role, mid, effort, host, cap):
+            return "cli_missing:" + vendor
+        return "unavailable:" + (task.get("model") or vendor)
+
+    def _route(self, role, host, author, spec, orch_model, orch_effort):
         grade = spec["grade"]
         reason, notes = [], []
         cap = (orch_model, orch_effort)
@@ -285,7 +520,7 @@ class Router:
                 reason.append("override_exhausted")
             elif role == "review" and vendor == author:
                 reason.append("override_same_vendor_as_author")
-            elif self.needs_run_cli(um, effort, host, cap):
+            elif self.cli_missing(role, um, effort, host, cap):
                 reason.append("cli_missing:" + vendor)
             else:
                 choice = (um, effort, clamped)
@@ -304,12 +539,12 @@ class Router:
                     until = parse_ts(self.exh[v]["until"]).strftime("%H:%M")
                     notes.append("%s exhausted until %s UTC, substituted" % (v, until))
                     continue
-                if cfg["host"] != host and not cli_present(v, cfg):
+                if cfg["host"] != host_family(host) and not cli_present(v, cfg):
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
                     continue
-                choice = self.pick(role, spec, v, grade, cap, cfg["host"] == host and host == "claude")
-                if choice and self.needs_run_cli(choice[0], choice[1], host, cap):
+                choice = self.pick(role, spec, v, grade, cap, cfg["host"] == "claude" and host == "claude-desktop")
+                if choice and self.cli_missing(role, choice[0], choice[1], host, cap):
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
                     choice = None
@@ -320,45 +555,42 @@ class Router:
                     break
             if choice is None:
                 incomplete = role == "review"
-                return {"status": "incomplete" if incomplete else "none", "role": role, "reason": reason,
+                return {"status": "incomplete" if incomplete else "none", "role": role, "host": host, "reason": reason,
                         "notice": "%s: %s." % (role, "no independent reviewer available, review incomplete"
                                                if incomplete else "no usable model found")}, 3 if incomplete else 4
             if not any(r.startswith("substituted") for r in reason):
                 reason.insert(0, "default")
         mid, effort, clamped = choice
         model = self.m["models"][mid]
-        vendor, cfg = model["vendor"], self.m["vendors"][model["vendor"]]
+        vendor = model["vendor"]
         if clamped:
             reason.append("effort_clamped")
         grade = model["grades"][effort]
         known = any(self.bench(mid, metric, effort) is not None for metric in ("index", "cost_per_task"))
         reason.append("bench:local" if known else "bench:none")
-        native = cfg["host"] == host
+        launch = self.make_launch(role, mid, effort, host, cap, reason)
         extra = ""
-        if native and host == "claude":
-            if self.over_cap(mid, effort, orch_model, orch_effort):
-                native = False
-                reason.append("native_model_cap")
-                extra = " Orchestrator cap exceeded, launching via run.py."
-            elif not (orch_model in self.m["models"] and (orch_effort or os.environ.get("CLAUDE_EFFORT")) in EFFORTS):
+        if launch["kind"] == "session":
+            if not (orch_model in self.m["models"] and (orch_effort or os.environ.get("CLAUDE_EFFORT")) in EFFORTS):
                 extra = " Check orchestrator cap."
-        if native:
-            launch = {"kind": "native"}
-        else:
-            cmd = ["python", ".claude/tagteam/run.py", "--vendor", vendor, "--model", mid,
-                   "--effort", effort, "--prompt-file", "<PROMPT_FILE>"]
-            if self.m["roles"][role].get("read_only"):
-                cmd.append("--read-only")
-            launch = {"kind": "run", "command": cmd}
-        notice = "%s -> %s (%s, %s, grade %s) via %s." % (
-            role, mid, effort, vendor, grade, "native session" if native else "run.py")
+        elif "native_model_cap" in reason:
+            extra = " Orchestrator cap exceeded, launching via run.py."
+        ask, ask_reason = (False, "not a design role") if role != "design" else \
+            self.stronger(mid, effort, orch_model, orch_effort)
+        via = {"session": "session", "subagent": "subagent " + str(launch.get("agent")), "run": "run.py"}[launch["kind"]]
+        notice = "%s -> %s (%s, %s, grade %s) via %s, host=%s." % (role, mid, effort, vendor, grade, via, host)
         if role == "review":
             notice += " Reviewer differs from author vendor %s." % author
         for n in notes:
             notice += " " + n + "."
         notice += extra
-        return {"status": "ok", "role": role, "model": mid, "effort": effort, "vendor": vendor,
-                "grade": grade, "launch": launch, "reason": reason, "notice": notice}, 0
+        if ask:
+            notice += " Ask the user before launching: %s." % ask_reason
+        elif ask is None:
+            notice += " Pass --orchestrator-model/--orchestrator-effort so the router can compare."
+        return {"status": "ok", "role": role, "host": host, "model": mid, "effort": effort, "vendor": vendor,
+                "grade": grade, "launch": launch, "ask_user": ask, "ask_reason": ask_reason,
+                "reason": reason, "notice": notice}, 0
 
 
 def mark(args, models, path):
@@ -378,8 +610,11 @@ def mark(args, models, path):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Pick model, effort and launch method for a role.")
     ap.add_argument("--role", choices=ROLES)
-    ap.add_argument("--host", choices=["claude", "codex"])
+    ap.add_argument("--task", metavar="NAME", help="a task from models.local.json; its base is the role")
+    ap.add_argument("--host", choices=HOSTS)
     ap.add_argument("--author-vendor")
+    ap.add_argument("--author-model")
+    ap.add_argument("--author-effort", choices=EFFORTS)
     ap.add_argument("--grade", choices=list(GRADES))
     ap.add_argument("--orchestrator-model")
     ap.add_argument("--orchestrator-effort", choices=EFFORTS)
@@ -390,8 +625,8 @@ def main(argv=None):
     ap.add_argument("--until")
     args = ap.parse_args(argv)
     try:
-        if not (args.role or args.mark_exhausted or args.clear_exhausted):
-            ap.error("one of --role, --mark-exhausted, --clear-exhausted is required")
+        if not (args.role or args.task or args.mark_exhausted or args.clear_exhausted):
+            ap.error("one of --role, --task, --mark-exhausted, --clear-exhausted is required")
         cdir = config_dir()
         models = load_json(os.path.join(cdir, "models.json"), True)
         if args.mark_exhausted:
@@ -404,14 +639,35 @@ def main(argv=None):
                   "no active entry for %s" % args.clear_exhausted)
             write_exhausted(path, vendors)
             return 0
-        if args.role == "review" and not args.author_vendor:
-            ap.error("--author-vendor is required with --role review")
-        if args.author_vendor and args.author_vendor not in models["vendors"]:
-            raise ConfigError("unknown vendor: %s" % args.author_vendor)
         local = load_json(os.path.join(cdir, "models.local.json"), False)
+        task = load_task(local, args.task, models) if args.task else None
+        role = args.role or task["base"]
+        if task and role != task["base"]:
+            raise ConfigError("--role %s does not match task %s (base %s)" % (role, args.task, task["base"]))
+        author, grade = args.author_vendor, args.grade
+        if args.author_effort and not args.author_model:
+            raise ConfigError("--author-effort needs --author-model")
+        if args.author_model:
+            if args.author_model not in models["models"]:
+                raise ConfigError("unknown model: %s" % args.author_model)
+            amodel = models["models"][args.author_model]
+            if author and author != amodel["vendor"]:
+                raise ConfigError("--author-vendor %s does not match --author-model %s" % (author, args.author_model))
+            author = amodel["vendor"]
+            if not grade and args.author_effort:
+                if args.author_effort not in amodel["grades"]:
+                    raise ConfigError("%s has no effort %s" % (args.author_model, args.author_effort))
+                grade = amodel["grades"][args.author_effort]
+        if role == "review":
+            if not author:
+                ap.error("--author-vendor is required with --role review")
+            if not grade:
+                raise ConfigError("--role review needs the author's grade: --grade, or --author-model with --author-effort")
+        if author and author not in models["vendors"]:
+            raise ConfigError("unknown vendor: %s" % author)
         router = Router(models, local, read_exhausted(exhausted_path()), read_bench(cdir))
-        result, code = router.route(args.role, args.host or default_host(), args.author_vendor, args.grade,
-                                    args.orchestrator_model, args.orchestrator_effort)
+        result, code = router.route(role, args.host or default_host(), author, grade,
+                                    args.orchestrator_model, args.orchestrator_effort, task, args.task)
     except (ConfigError, KeyError, ValueError, state.StateError) as exc:
         sys.stderr.write("route.py: %s: %s\n" % (type(exc).__name__, exc))
         return 2

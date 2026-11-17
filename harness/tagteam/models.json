@@ -7,17 +7,19 @@
   "vendors": {
     "claude": {"cli": "claude", "host": "claude", "model_arg": "{model}", "aa_creator": "Anthropic", "cooldown_minutes": 60},
     "openai": {"cli": "codex", "host": "codex", "model_arg": "{model}", "aa_creator": "OpenAI", "cooldown_minutes": 60},
-    "google": {"cli": "agy", "host": null, "model_arg": "{model}-{effort}", "aa_creator": "Google", "cooldown_minutes": 60}
+    "google": {"cli": "agy", "host": "agy", "model_arg": "{model}-{effort}", "aa_creator": "Google", "cooldown_minutes": 60}
   },
   "hosts": {
+    "claude-desktop": ["claude", "openai", "google"],
     "claude": ["claude", "openai", "google"],
-    "codex": ["openai", "claude", "google"]
+    "codex": ["openai", "claude", "google"],
+    "agy": ["google", "openai", "claude"]
   },
   "roles": {
-    "design": {"grade": "A"},
-    "implement": {"grade": "B"},
+    "design": {"grade": "A", "agent": "designer"},
+    "implement": {"grade": "B", "agent": "implementer"},
     "review": {"grade": "A", "read_only": true},
-    "read": {"grade": "C", "read_only": true},
+    "read": {"grade": "C", "read_only": true, "agent": "reader"},
     "translate": {"grade": "B", "vendors": ["google", "openai", "claude"]}
   },
   "defaults": {

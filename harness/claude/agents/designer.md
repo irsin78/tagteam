@@ -1,7 +1,7 @@
 ---
 name: designer
 description: "Design worker. Writes one design document (approach, units, interfaces, acceptance checks) at the path given in the brief; writes no code or tests. Runs on the most capable and most expensive model, so use it only for a design decision the orchestrator cannot settle cheaply. Do not use it for small fixes, implementation, reviews or plain reading."
-model: opus
+model: claude-opus-5-5
 effort: high
 tools: Read, Grep, Glob, Write
 ---
