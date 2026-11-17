@@ -15,6 +15,8 @@ max 10 pages) for vendors that have "aa_creator" in models.json: exact slug+effo
 bench_changed/bench_added (compared with bench.local.json; no file = no bench changes and
 bench.local "missing") and AA-sourced new_model changes, and a "bench" block in the proposal. Without
 the key bench.status is "skipped" and nothing is requested. The key is never written anywhere.
+grade_changed: bench.local.json index values put against grading.floors give another grade than models.json
+grades (needs the file, not the key); AA-sourced new_model changes carry proposed grades from the floors.
 Data source: Artificial Analysis (https://artificialanalysis.ai/).
 Exit: 0 collected, 1 some vendor error or missing (or key set and bench error), 2 usage or
 config error, 3 every vendor CLI failed.
@@ -44,6 +46,20 @@ METRICS = ("index", "cost_per_task")
 BENCH_FILE = "bench.local.json"
 NAME_EFFORT = re.compile(r"\(([^)]*)\)\s*$")
 LABEL_SUFFIX = re.compile(r"\s*\((?:%s)\)$" % "|".join(e.title() for e in EFFORTS), re.I)
+
+
+def efforts_of(model):
+    """Efforts a registered model offers: the keys of its grades table, in EFFORTS order."""
+    keys = list(model.get("grades") or {})
+    return sorted(keys, key=lambda e: EFFORTS.index(e) if e in EFFORTS else len(EFFORTS))
+
+
+def grade_for(index, floors):
+    """Grade of an AA index value under grading.floors (S, A, B; below B is C)."""
+    for g in ("S", "A", "B"):
+        if index >= floors[g]:
+            return g
+    return "C"
 
 
 def parse_codex(text):
@@ -135,19 +151,40 @@ def compare(vendor, listing, models, local):
                             "efforts": sorted(i["efforts"], key=EFFORTS.index)})
     for mid, m in registered.items():
         arg = models["vendors"][vendor]["model_arg"]
-        cli_ids = sorted({arg.format(model=mid, effort=e) for e in m["efforts"]})
+        cli_ids = sorted({arg.format(model=mid, effort=e) for e in efforts_of(m)})
         now = [c for c in cli_ids if c in ids and c not in had]
         gone = [c for c in cli_ids if c not in ids and c in had]
         for kind, found in (("now_available", now), ("no_longer_available", gone)):
             if found:
                 changes.append({"kind": kind, "vendor": vendor, "model": mid, "cli_ids": found})
         if mid in info:
-            dropped = [e for e in m["efforts"] if e not in info[mid]["efforts"]]
+            dropped = [e for e in efforts_of(m) if e not in info[mid]["efforts"]]
             if dropped:
                 changes.append({"kind": "efforts_dropped", "vendor": vendor, "model": mid, "efforts": dropped})
         elif vendor == "openai" and not m.get("candidate") \
                 and ((local.get("models") or {}).get(mid) or {}).get("enabled") is not False:
             changes.append({"kind": "missing_registered", "vendor": vendor, "model": mid})
+    return changes
+
+
+def grade_changes(models, stored):
+    """grade_changed: index in bench.local.json ("models" mapping) puts a registered (model, effort)
+    into another grade than models.json grades says. No bench file = no changes."""
+    if not stored:
+        return []
+    floors = (models.get("grading") or {}).get("floors")
+    if not floors:
+        return []
+    changes = []
+    for mid, m in models["models"].items():
+        for effort in efforts_of(m):
+            for b in stored.get(mid) or []:
+                if isinstance(b, dict) and b.get("source") == "artificial_analysis" and b.get("metric") == "index"                         and b.get("effort") == effort and aa_num(b.get("value")) is not None:
+                    new = grade_for(b["value"], floors)
+                    if new != m["grades"][effort]:
+                        changes.append({"kind": "grade_changed", "vendor": m["vendor"], "model": mid, "effort": effort,
+                                        "old": m["grades"][effort], "new": new, "index": b["value"]})
+                    break
     return changes
 
 
@@ -242,14 +279,14 @@ def compare_bench(vendor, entries, models, version, now, stored=None):
             continue
         have = set()
         for b in stored.get(mid) or []:
-            if not isinstance(b, dict) or b.get("source") != "artificial_analysis"                     or b.get("metric") not in METRICS or b.get("effort") not in m["efforts"]:
+            if not isinstance(b, dict) or b.get("source") != "artificial_analysis"                     or b.get("metric") not in METRICS or b.get("effort") not in efforts_of(m):
                 continue
             have.add((b["effort"], b["metric"]))
             new = aa_value(by, models, mid, b["effort"], b["metric"])
             if new is not None and new != b.get("value"):
                 changes.append({"kind": "bench_changed", "vendor": vendor, "model": mid, "effort": b["effort"],
                                 "metric": b["metric"], "old": b.get("value"), "new": new, "index_version": version})
-        for effort in m["efforts"]:
+        for effort in efforts_of(m):
             for metric in METRICS:
                 new = aa_value(by, models, mid, effort, metric)
                 if new is not None and (effort, metric) not in have:
@@ -257,6 +294,7 @@ def compare_bench(vendor, entries, models, version, now, stored=None):
                                     "metric": metric, "new": new, "index_version": version})
     known |= {u.replace(".", "-") for u in (models.get("unregistered") or {}).get(vendor) or {}}
     cutoff = (now - timedelta(days=models.get("aa_new_model_days", 120))).strftime("%Y-%m-%d")
+    floors = (models.get("grading") or {}).get("floors") or {"S": 54, "A": 48, "B": 30}
     groups = {}
     for e in mine:
         if e["base"] not in known:
@@ -268,7 +306,8 @@ def compare_bench(vendor, entries, models, version, now, stored=None):
             label = re.sub(r"\s*\([^)]*\)\s*$", "", group[0]["name"] or base)
             changes.append({"kind": "new_model", "vendor": vendor, "id": base, "label": label,
                             "efforts": sorted(aa, key=EFFORTS.index), "source": "artificial_analysis",
-                            "aa": aa, "release_date": release})
+                            "aa": aa, "release_date": release,
+                            "grades": {e: grade_for(aa[e]["index"], floors) for e in sorted(aa, key=EFFORTS.index)}})
     return changes
 
 
@@ -278,7 +317,7 @@ def merge_new_models(changes):
     for c in sorted(changes, key=lambda c: c.get("source") == "artificial_analysis"):
         key = (c["vendor"], c["id"].replace(".", "-")) if c["kind"] == "new_model" else None
         if key and key in seen and c.get("source") == "artificial_analysis":
-            seen[key].update({"aa": c["aa"], "release_date": c["release_date"]})
+            seen[key].update({"aa": c["aa"], "release_date": c["release_date"], "grades": c["grades"]})
             continue
         out.append(c)
         if key:
@@ -292,7 +331,10 @@ def load_bench(cdir):
         data = load(os.path.join(cdir, BENCH_FILE), False)
     except (OSError, ValueError):
         return None
-    return data if isinstance(data.get("models"), dict) else None
+    if not isinstance(data.get("models"), dict):
+        return None
+    data["models"] = {k: v for k, v in data["models"].items() if isinstance(v, list)}
+    return data
 
 
 def build_bench(models, entries, version, today, old):
@@ -308,7 +350,7 @@ def build_bench(models, entries, version, today, old):
         for mid, m in models["models"].items():
             if m["vendor"] != vendor:
                 continue
-            for effort in m["efforts"]:
+            for effort in efforts_of(m):
                 for metric in METRICS:
                     value = aa_value(by, models, mid, effort, metric)
                     if value is not None:
@@ -363,8 +405,8 @@ def load_config(cdir):
             raise ValueError("models.json: %r must be an object" % key)
     for mid, m in models["models"].items():
         if not (isinstance(m, dict) and m.get("vendor") in models["vendors"]
-                and isinstance(m.get("efforts"), list)):
-            raise ValueError("models.json: model %s needs a known vendor and an efforts list" % mid)
+                and isinstance(m.get("grades"), dict)):
+            raise ValueError("models.json: model %s needs a known vendor and a grades table" % mid)
     if any(not isinstance(v, dict) or "model_arg" not in v for v in models["vendors"].values()):
         raise ValueError("models.json: every vendor needs a model_arg")
     return models, local
@@ -435,10 +477,15 @@ def main(argv):
             changes += compare(vendor, listing, models, local)
     key = os.environ.get("TAGTEAM_AA_API_KEY", "").strip()
     bench, entries = collect_bench(key, args.timeout)
+    stored = load_bench(cdir)
+    stored = stored["models"] if stored else None
+    if bench["status"] == "ok":  # judge grades on the fresh values the apply step will write
+        fresh = build_bench(models, entries, bench["index_version"], "", None)["models"]
+        changes += grade_changes(models, fresh)
+    else:
+        changes += grade_changes(models, stored)
     if bench["status"] == "ok":
         now = utcnow()
-        stored = load_bench(cdir)
-        stored = stored["models"] if stored else None
         if stored is None:
             bench["local"] = "missing"
             bench["hint"] = "run models_collect.py --write-bench to create %s" % BENCH_FILE

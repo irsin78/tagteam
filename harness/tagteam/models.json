@@ -2,12 +2,8 @@
   "schema": 1,
   "updated": "2026-11-17",
   "aa_new_model_days": 120,
-  "_order": "Within a vendor and grade, list models most capable first. Without bench.local.json, pick best takes the first and pick cheap the last.",
-  "grades": {
-    "S": "Vendor flagship; FrontierSWE pass@1 of 0.65 or more; for open-ended design judgment.",
-    "A": "Artificial Analysis index of 50 or more and cheaper than S; for review and hard design.",
-    "B": "Artificial Analysis index below 50, cheap and fast; for well-specified implementation, reading and translation."
-  },
+  "_order": "Models are listed most capable first within a vendor: an earlier model is stronger than a later one of the same vendor (route.py uses this for the orchestrator cap and as the last tie-break). Grades are per (model, effort) and follow grading.floors applied to Artificial Analysis index values. Without bench.local.json the route takes the first usable entry of defaults[vendor][grade], else the first model in this order at its lowest effort of that grade.",
+  "grading": {"floors": {"S": 54, "A": 48, "B": 30}, "caps": {"S": 10, "A": 4, "B": 2, "C": 0.2}},
   "vendors": {
     "claude": {"cli": "claude", "host": "claude", "model_arg": "{model}", "aa_creator": "Anthropic", "cooldown_minutes": 60},
     "openai": {"cli": "codex", "host": "codex", "model_arg": "{model}", "aa_creator": "OpenAI", "cooldown_minutes": 60},
@@ -18,13 +14,37 @@
     "codex": ["openai", "claude", "google"]
   },
   "roles": {
-    "design": {"grade": "A", "effort": "high", "pick": "best"},
-    "implement": {"grade": "B", "effort": "medium", "pick": "best"},
-    "review": {"grade": "A", "effort": "high", "pick": "best", "read_only": true},
-    "read": {"grade": "B", "effort": "low", "pick": "cheap", "read_only": true},
-    "translate": {"grade": "B", "effort": "medium", "pick": "best", "vendors": ["google", "openai", "claude"]}
+    "design": {"grade": "A"},
+    "implement": {"grade": "B"},
+    "review": {"grade": "A", "read_only": true},
+    "read": {"grade": "C", "read_only": true},
+    "translate": {"grade": "B", "vendors": ["google", "openai", "claude"]}
+  },
+  "defaults": {
+    "claude": {
+      "S": ["claude-fable-5-2:high", "claude-opus-5-5:xhigh"],
+      "A": ["claude-fable-5-2:low", "claude-opus-5-5:high", "claude-opus-5-5:medium"],
+      "B": ["claude-sonnet-5-5:high", "claude-haiku-5-5:max"],
+      "C": ["claude-haiku-5-5:high"]
+    },
+    "openai": {
+      "S": ["gpt-6-astra:max", "gpt-6-astra:high"],
+      "A": ["gpt-6.1-sol:xhigh", "gpt-6.1-sol:high"],
+      "B": ["gpt-6.1-sol:medium", "gpt-6.1-terra:high"],
+      "C": ["gpt-6.1-terra:low", "gpt-6-luna:medium"]
+    },
+    "google": {
+      "S": ["gemini-4-carbon:high"],
+      "A": ["gemini-4-hydrogen:xhigh", "gemini-4-hydrogen:high", "gemini-4-argon:high"],
+      "B": ["gemini-4-hydrogen:medium", "gemini-4-argon:medium", "gemini-3.8-flash:medium"],
+      "C": ["gemini-3.8-flash:low", "gemini-4-hydrogen:low"]
+    }
   },
   "unregistered": {
+    "claude": {
+      "claude-fable-5-1": "superseded by a registered newer version 2026-11-17",
+      "claude-opus-5": "superseded by a registered newer version 2026-11-17"
+    },
     "openai": {
       "gpt-6-sol": "no benchmark in hand 2026-11-17",
       "gpt-5.6-sol": "no benchmark in hand 2026-11-17",
@@ -39,35 +59,40 @@
   },
   "models": {
     "claude-fable-5-2": {
-      "vendor": "claude", "grade": "S", "efforts": ["low", "medium", "high", "xhigh", "max"]
+      "vendor": "claude", "grades": {"low": "A", "medium": "S", "high": "S", "xhigh": "S", "max": "S"}
     },
     "claude-opus-5-5": {
-      "vendor": "claude", "grade": "A", "efforts": ["low", "medium", "high", "xhigh", "max"]
+      "vendor": "claude", "grades": {"low": "B", "medium": "A", "high": "A", "xhigh": "S", "max": "S"}
     },
     "claude-sonnet-5-5": {
-      "vendor": "claude", "grade": "B", "efforts": ["low", "medium", "high", "xhigh", "max"]
+      "vendor": "claude", "grades": {"low": "C", "medium": "B", "high": "B", "xhigh": "A", "max": "S"}
     },
     "claude-haiku-5-5": {
-      "vendor": "claude", "grade": "B", "efforts": ["low", "medium", "high", "xhigh", "max"]
+      "vendor": "claude", "grades": {"low": "C", "medium": "C", "high": "C", "xhigh": "B", "max": "B"}
     },
     "gpt-6-astra": {
-      "vendor": "openai", "grade": "S", "efforts": ["low", "medium", "high", "xhigh", "max"],
-      "effort_by_role": {"design": "medium"}
+      "vendor": "openai", "grades": {"low": "B", "medium": "A", "high": "S", "xhigh": "S", "max": "S"}
     },
     "gpt-6.1-sol": {
-      "vendor": "openai", "grade": "A", "efforts": ["low", "medium", "high", "xhigh"]
+      "vendor": "openai", "grades": {"low": "B", "medium": "B", "high": "A", "xhigh": "A"}
     },
     "gpt-6.1-terra": {
-      "vendor": "openai", "grade": "B", "efforts": ["low", "medium", "high", "xhigh"]
+      "vendor": "openai", "grades": {"low": "C", "medium": "B", "high": "B", "xhigh": "B"}
     },
     "gpt-6-luna": {
-      "vendor": "openai", "grade": "B", "efforts": ["low", "medium", "high", "xhigh"]
+      "vendor": "openai", "grades": {"low": "C", "medium": "C", "high": "C", "xhigh": "C"}
+    },
+    "gemini-4-carbon": {
+      "vendor": "google", "grades": {"low": "S", "medium": "S", "high": "S"}, "label": "Gemini 4 Carbon"
+    },
+    "gemini-4-hydrogen": {
+      "vendor": "google", "grades": {"low": "C", "medium": "B", "high": "A", "xhigh": "A"}, "label": "Gemini 4 Hydrogen"
     },
     "gemini-4-argon": {
-      "vendor": "google", "grade": "A", "efforts": ["low", "medium", "high"], "label": "Gemini 4 Argon"
+      "vendor": "google", "grades": {"low": "C", "medium": "B", "high": "A"}, "label": "Gemini 4 Argon"
     },
     "gemini-3.8-flash": {
-      "vendor": "google", "grade": "B", "efforts": ["low", "medium", "high"], "label": "Gemini 3.8 Flash"
+      "vendor": "google", "grades": {"low": "C", "medium": "B", "high": "B"}, "label": "Gemini 3.8 Flash"
     }
   }
 }

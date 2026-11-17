@@ -12,8 +12,8 @@ Every call that opens a session or a worker (`start_session`, a launcher run, a
 subagent without a fixed definition) passes `model` and `effort` explicitly. Take
 both from `python .claude/tagteam/route.py --role <role>` (roles: design,
 implement, review, read, translate; add `--json` for the launch command). A review
-needs `--author-vendor <vendor of the author>` and, to match the author's grade,
-`--grade <grade>`; pass `--orchestrator-model`/`--orchestrator-effort` so the
+needs `--author-vendor <vendor of the author>` and, to match the author's grade
+(the grade of its model at its effort, in models.json), `--grade <grade>`; pass `--orchestrator-model`/`--orchestrator-effort` so the
 router knows what a session may inherit. A `run` result goes through
 `.claude/tagteam/run.py`; a `native` result opens a session or subagent with
 those values. Left empty, a session inherits the orchestrator's model; sessions

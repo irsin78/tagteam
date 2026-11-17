@@ -7,8 +7,10 @@ description: "Orchestrator procedure for applying a pending model-list proposal 
 
 Terms are defined only in AGENTS.md (section 6). The user's instructions override this skill.
 The collector never edits models.json, never commits and never runs a model; this procedure does.
-Benchmark values live only in `.claude/tagteam/bench.local.json` (machine-local, never committed); models.json holds
-vendors, roles, models and grades, and its model order is the preference order within a grade.
+Benchmark values live only in `.claude/tagteam/bench.local.json` (machine-local, never committed). models.json holds
+vendors, roles, models with a grade per effort (`grades`), the grading rule (`grading.floors` on the index,
+`grading.caps` on cost per task) and `defaults`, the picks used when no benchmark file exists. Its model order is
+most capable first.
 
 ## Steps
 
@@ -30,10 +32,11 @@ vendors, roles, models and grades, and its model order is the preference order w
    | Change | Handling |
    |---|---|
    | Score or price (`bench_changed`, `bench_added`) | Automatic: step 3 rewrites bench.local.json. If `index_version` changed major, hold any grade change and report it: grade thresholds are on one index scale |
-   | New model | Automatic: register in models.json with `candidate: true`, `grade` by the `grades` rules, `efforts`, `label` for google and `aa_slug` if its AA slug is not the id with `.` -> `-`; place it in the preference order. Then rerun `--write-bench`. No benchmark found: do not register; add to `unregistered` with a reason |
+   | New model | Register in models.json with `grades` (the proposal's, from `grading.floors`), `label` for google and `aa_slug` if its AA slug is not the id with `.` -> `-`; place it by capability. Then rerun `--write-bench`. Machines whose plan or CLI does not offer it drop it through availability. If it would take a route cell on this machine, register it with `candidate: true` first, then clear the flag only through the default route change row (probe included). An older version of a registered model goes to `unregistered` ("superseded"). No benchmark found: do not register; add to `unregistered` with a reason |
+   | `grade_changed` | A default route change (row below). When accepted, update `grades` and, if a pick moved, the matching `defaults` list |
    | Machine availability | Automatic: copy the proposal's `available` into models.local.json (never committed) |
-   | `efforts_dropped` | Automatic: remove from `efforts` in models.json |
-   | Default route change (clear `candidate`, change a grade) | Only with two agreeing sources, a probe, and passing route tests. Probe: `run.py` with the prompt "Reply with exactly: OK", `--read-only --effort low`, actual model must match. Otherwise hold and report |
+   | `efforts_dropped` | Automatic: remove those efforts from the model's `grades` and from `defaults` |
+   | Default route change (clear `candidate`, change a grade, a new model taking a route) | Only with two agreeing sources, a probe, and passing route tests. Probe: `run.py` with the prompt "Reply with exactly: OK", `--read-only --effort low`, actual model must match. Otherwise hold and report |
    | Deletion (`missing_registered`, or `no_longer_available` for every effort) | Hold and report |
 
 5. **Verify.** Re-run the route table from step 2 and report every cell that changed. Score updates alone can
@@ -50,6 +53,6 @@ vendors, roles, models and grades, and its model order is the preference order w
 
 ## Limits
 
-- Never run a probe for a model that is not registered (run.py refuses it); register it as `candidate` first.
+- Never run a probe for a model that is not registered (run.py refuses it); a `candidate` registration is enough for the probe.
 - Do not remove a `candidate` flag or change a default route on one source alone.
 - If the proposal is older than the latest `model-update.applied` digest, there is nothing to do.

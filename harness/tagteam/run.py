@@ -286,8 +286,9 @@ def main(argv):
     info = cfg.get("models", {}).get(args.model)
     if not info or info.get("vendor") != args.vendor:
         return fail("model %s is not registered for vendor %s" % (args.model, args.vendor))
-    if args.effort not in info.get("efforts", []):
-        return fail("effort %s is not allowed for %s (allowed: %s)" % (args.effort, args.model, ", ".join(info.get("efforts", []))))
+    allowed = [e for e in ("low", "medium", "high", "xhigh", "max") if e in (info.get("grades") or {})]
+    if args.effort not in allowed:
+        return fail("effort %s is not allowed for %s (allowed: %s)" % (args.effort, args.model, ", ".join(allowed)))
     label = info.get("label")
     if args.vendor == "google" and not label:
         return fail("google model %s has no label in models.json" % args.model)

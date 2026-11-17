@@ -2,7 +2,7 @@
 """Router: pick model, effort and launch method for a role.
 
   route.py --role design|implement|review|read|translate [--host claude|codex]
-           [--author-vendor V] [--grade S|A|B] [--orchestrator-model M]
+           [--author-vendor V] [--grade S|A|B|C] [--orchestrator-model M]
            [--orchestrator-effort E] [--json]
   route.py --mark-exhausted VENDOR --evidence TEXT [--until ISO8601]
   route.py --clear-exhausted VENDOR
@@ -19,7 +19,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
-GRADES = {"B": 0, "A": 1, "S": 2}
+GRADES = {"C": 0, "B": 1, "A": 2, "S": 3}
 ROLES = ["design", "implement", "review", "read", "translate"]
 TS = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -112,8 +112,13 @@ def num(value):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
+def model_efforts(model):
+    """Efforts a model offers: the keys of its grades table, in EFFORTS order."""
+    return [e for e in EFFORTS if e in (model.get("grades") or {})]
+
+
 def clamp_effort(model, want):
-    efforts = model["efforts"]
+    efforts = model_efforts(model)
     if want in efforts:
         return want, False
     lower = [e for e in efforts if EFFORTS.index(e) < EFFORTS.index(want)]
@@ -157,10 +162,17 @@ class Router:
             return self.m["vendors"][v]["model_arg"].format(model=mid, effort=effort) in avail.get("ids", [])
         return True
 
-    def role_effort(self, role, mid, spec):
+    def model_effort(self, mid, spec, grade):
+        """Effort for a user-pinned model: the user effort (clamped), else its lowest effort at the grade."""
         model = self.m["models"][mid]
-        want = spec.get("user_effort") or model.get("effort_by_role", {}).get(role) or spec["effort"]
-        return clamp_effort(model, want)
+        if spec.get("user_effort"):
+            return clamp_effort(model, spec["user_effort"])
+        efforts = model_efforts(model)
+        for ok in (lambda g: g == grade, lambda g: GRADES[g] > GRADES[grade]):
+            hit = [e for e in efforts if ok(model["grades"][e])]
+            if hit:
+                return hit[0], False
+        return efforts[-1], False
 
     def spec(self, role, grade):
         spec = dict(self.m["roles"][role])
@@ -200,30 +212,56 @@ class Router:
             order.append(v)
         return order
 
-    def pick(self, role, spec, vendor, grade):
+    def pick(self, role, spec, vendor, grade, cap=(None, None), native=False):
+        """Best (model, effort, clamped) of this vendor whose grades[effort] is the role grade, or None.
+
+        Tiers: 0 cost known and within caps[grade] -> highest index; 1 no cost, index known -> highest index;
+        2 cost above the cap -> lowest cost; 3 nothing known -> defaults[vendor][grade], else models.json order
+        at the lowest effort. A later tier is used only when the earlier ones are empty.
+        """
+        want = spec.get("user_effort")
         cands = []
         for mid, m in self.m["models"].items():
-            if m["vendor"] != vendor or m["grade"] != grade or m.get("candidate"):
+            if m["vendor"] != vendor or m.get("candidate"):
                 continue
-            effort, clamped = self.role_effort(role, mid, spec)
-            if self.usable(mid, effort):
-                cands.append((mid, effort, clamped))
+            for effort in model_efforts(m):
+                if m["grades"][effort] == grade and (not want or effort == want) and self.usable(mid, effort):
+                    cands.append((mid, effort))
+        if native and cap[0] in self.m["models"]:
+            within = [c for c in cands if not self.over_cap(c[0], c[1], *cap)]
+            cands = within or cands
         if not cands:
             return None
-        cheap = spec.get("pick") == "cheap"
-        metric = "cost_per_task" if cheap else "index"
-
-        def key(c):
-            v = self.bench(c[0], metric, c[1])
-            # models.json lists models most capable first: best takes the front, cheap takes the back.
-            return (v is None, (v if cheap else -v) if v is not None else 0,
-                    -self.order[c[0]] if cheap else self.order[c[0]])
-        return sorted(cands, key=key)[0]
+        limit = (self.m.get("grading") or {}).get("caps", {}).get(grade)
+        tiers = ([], [], [], [])
+        for c in cands:
+            idx, cost = self.bench(c[0], "index", c[1]), self.bench(c[0], "cost_per_task", c[1])
+            order = self.order[c[0]]
+            if cost is not None and limit is not None and cost <= limit:
+                tiers[0].append(((idx is None, -(idx or 0), cost, order), c))
+            elif cost is None and idx is not None:
+                tiers[1].append(((-idx, order), c))
+            elif cost is not None and limit is not None:
+                tiers[2].append(((cost, -(idx or 0), order), c))
+            else:
+                tiers[3].append(((order, EFFORTS.index(c[1])), c))
+        for tier in tiers[:3]:
+            if tier:
+                return min(tier, key=lambda t: t[0])[1] + (False,)
+        wanted = ((self.m.get("defaults") or {}).get(vendor) or {}).get(grade) or []
+        for entry in wanted:
+            mid, _, effort = entry.rpartition(":")
+            if (mid, effort) in cands:
+                return mid, effort, False
+        return min(tiers[3], key=lambda t: t[0])[1] + (False,)
 
     def over_cap(self, mid, effort, orch_model, orch_effort):
-        """True when a native Claude session cannot take this model or effort."""
+        """True when a native Claude session cannot take this model or effort.
+
+        A model listed earlier in models.json than the orchestrator's (same vendor) counts as stronger."""
         model, oe = self.m["models"][mid], orch_effort or os.environ.get("CLAUDE_EFFORT")
-        if orch_model in self.m["models"] and GRADES[model["grade"]] > GRADES[self.m["models"][orch_model]["grade"]]:
+        om = self.m["models"].get(orch_model)
+        if om and om["vendor"] == model["vendor"] and self.order[mid] < self.order[orch_model]:
             return True
         return oe in EFFORTS and EFFORTS.index(effort) > EFFORTS.index(oe)
 
@@ -242,7 +280,7 @@ class Router:
         um = spec.get("user_model")
         if um:
             vendor = self.m["models"][um]["vendor"]
-            effort, clamped = self.role_effort(role, um, spec)
+            effort, clamped = self.model_effort(um, spec, grade)
             if not self.usable(um, effort):
                 reason.append("override_unusable")
             elif vendor in self.exh:
@@ -254,7 +292,10 @@ class Router:
             else:
                 choice = (um, effort, clamped)
                 reason.append("user_override")
-                grade = self.m["models"][um]["grade"]
+                pinned = (self.m["models"][um].get("grades") or {}).get(effort)
+                if role == "review" and pinned != grade:
+                    reason.append("override_grade_mismatch")
+                    notes.append("user-pinned reviewer is grade %s, the author's grade is %s" % (pinned, grade))
         if choice is None:
             order = self.vendor_order(spec, host, author, reason)
             expected = order[0] if order else None
@@ -269,7 +310,7 @@ class Router:
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
                     continue
-                choice = self.pick(role, spec, v, grade)
+                choice = self.pick(role, spec, v, grade, cap, cfg["host"] == host and host == "claude")
                 if choice and self.needs_run_cli(choice[0], choice[1], host, cap):
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
@@ -291,8 +332,9 @@ class Router:
         vendor, cfg = model["vendor"], self.m["vendors"][model["vendor"]]
         if clamped:
             reason.append("effort_clamped")
-        metric = "cost_per_task" if self.m["roles"][role].get("pick") == "cheap" else "index"
-        reason.append("bench:local" if self.bench(mid, metric, effort) is not None else "bench:none")
+        grade = model["grades"][effort]
+        known = any(self.bench(mid, metric, effort) is not None for metric in ("index", "cost_per_task"))
+        reason.append("bench:local" if known else "bench:none")
         native = cfg["host"] == host
         extra = ""
         if native and host == "claude":
@@ -311,14 +353,14 @@ class Router:
                 cmd.append("--read-only")
             launch = {"kind": "run", "command": cmd}
         notice = "%s -> %s (%s, %s, grade %s) via %s." % (
-            role, mid, effort, vendor, model["grade"], "native session" if native else "run.py")
+            role, mid, effort, vendor, grade, "native session" if native else "run.py")
         if role == "review":
             notice += " Reviewer differs from author vendor %s." % author
         for n in notes:
             notice += " " + n + "."
         notice += extra
         return {"status": "ok", "role": role, "model": mid, "effort": effort, "vendor": vendor,
-                "grade": model["grade"], "launch": launch, "reason": reason, "notice": notice}, 0
+                "grade": grade, "launch": launch, "reason": reason, "notice": notice}, 0
 
 
 def mark(args, models, path):

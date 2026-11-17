@@ -105,10 +105,10 @@ class CollectTest(unittest.TestCase):
         ids, info = mc.parse_codex(read(os.path.join(FIX, "codex_models.json")))
         listing = {"ids": ids, "models": info}
         del models["models"]["gpt-6.1-terra"]
-        models["models"]["gpt-9-gone"] = {"vendor": "openai", "grade": "B", "efforts": ["low"]}
-        models["models"]["gpt-9-cand"] = {"vendor": "openai", "grade": "B", "efforts": ["low"], "candidate": True}
-        models["models"]["gpt-9-off"] = {"vendor": "openai", "grade": "B", "efforts": ["low"]}
-        models["models"]["gpt-6-luna"]["efforts"] = ["low", "ultra"]
+        models["models"]["gpt-9-gone"] = {"vendor": "openai", "grades": {"low": "B"}}
+        models["models"]["gpt-9-cand"] = {"vendor": "openai", "grades": {"low": "B"}, "candidate": True}
+        models["models"]["gpt-9-off"] = {"vendor": "openai", "grades": {"low": "B"}}
+        models["models"]["gpt-6-luna"]["grades"] = {"low": "C", "ultra": "C"}
         local = {"models": {"gpt-9-off": {"enabled": False}},
                  "available": {"openai": {"ids": ["gpt-6.1-sol", "gpt-9-gone"]}}}
         by = {(c["kind"], c.get("model") or c.get("id")): c for c in mc.compare("openai", listing, models, local)}
@@ -204,7 +204,7 @@ class CollectTest(unittest.TestCase):
 
     def test_config_missing_required_keys_is_exit_2(self):
         for body in ("{}", '{"vendors": {}, "models": []}',
-                     '{"vendors": {"openai": {"model_arg": "{model}"}}, "models": {"m": {"vendor": "x", "efforts": []}}}'):
+                     '{"vendors": {"openai": {"model_arg": "{model}"}}, "models": {"m": {"vendor": "x", "grades": {}}}}', '{"vendors": {"openai": {"model_arg": "{model}"}}, "models": {"m": {"vendor": "openai", "efforts": ["low"]}}}'):
             with open(os.path.join(self.cfg, "models.json"), "w") as f:
                 f.write(body)
             self.assertEqual(self.collect()[0], 2, body)
@@ -277,7 +277,7 @@ class BenchTest(CollectTest):
 
     def with_meta(self):
         self.models["vendors"]["meta"] = {"cli": "x", "host": None, "model_arg": "{model}", "aa_creator": "Meta"}
-        self.models["models"]["muse-wonder"] = {"vendor": "meta", "grade": "B", "efforts": ["max"]}
+        self.models["models"]["muse-wonder"] = {"vendor": "meta", "grades": {"max": "B"}}
         self.write_models()
         stored = self.local_bench()["models"]
         stored["muse-wonder"] = [self.entry("index", 10, "max")]
@@ -341,6 +341,53 @@ class BenchTest(CollectTest):
                                       "max": {"index": 70.0, "cost_per_task": 5.0}})
         self.assertEqual((nova["efforts"], nova["label"], nova["release_date"], nova["vendor"]),
                          (["low", "max"], "Claude Nova 6", "2099-01-01", "claude"))
+        self.assertEqual(nova["grades"], {"low": "A", "max": "S"})  # index 50 and 70 against floors 48 and 54
+
+    def test_grade_for_uses_floors(self):
+        floors = {"S": 54, "A": 48, "B": 30}
+        got = [mc.grade_for(v, floors) for v in (54, 53.9, 48, 47.9, 30, 29.9, 0)]
+        self.assertEqual(got, ["S", "A", "A", "B", "B", "C", "C"])
+
+    def test_grade_changed_from_local_bench(self):
+        # synthetic values: fable high 40 falls to B (table says S); terra xhigh 49 rises to A (table says B);
+        # sonnet high 35 stays B; haiku has no score
+        self.write_local_bench({
+            "claude-fable-5-2": [self.entry("index", 40, "high")],
+            "claude-sonnet-5-5": [self.entry("index", 35, "high")],
+            "gpt-6.1-terra": [self.entry("index", 49, "xhigh"), self.entry("cost_per_task", 0.2, "xhigh")]})
+        _, prop = self.collect()
+        got = {(c["model"], c["effort"]): c for c in self.by(prop, "grade_changed")}
+        self.assertEqual(sorted(got), [("claude-fable-5-2", "high"), ("gpt-6.1-terra", "xhigh")])
+        self.assertEqual({k: got[("claude-fable-5-2", "high")][k] for k in ("kind", "vendor", "old", "new", "index")},
+                         {"kind": "grade_changed", "vendor": "claude", "old": "S", "new": "B", "index": 40})
+        self.assertEqual((got[("gpt-6.1-terra", "xhigh")]["old"], got[("gpt-6.1-terra", "xhigh")]["new"]), ("B", "A"))
+        os.remove(os.path.join(self.cfg, "bench.local.json"))
+        _, prop = self.collect()
+        self.assertFalse(self.by(prop, "grade_changed"))  # no bench file, no grade changes
+
+    def test_grade_changed_uses_fresh_aa_values(self):
+        # stored terra xhigh 45 matches the table (B); the fresh AA value 49 moves it to A
+        self.write_local_bench({"gpt-6.1-terra": [self.entry("index", 45, "xhigh")]})
+        pages = [aa_fixture(1), aa_fixture(2)]
+        for page in pages:
+            for row in page["data"]:
+                if row["slug"] == "gpt-6-1-terra-xhigh":
+                    row["evaluations"]["artificial_analysis_intelligence_index"] = 49.0
+        _, prop = self.run_aa(pages=pages)
+        got = [(c["model"], c["effort"], c["old"], c["new"], c["index"]) for c in self.by(prop, "grade_changed")]
+        self.assertIn(("gpt-6.1-terra", "xhigh", "B", "A", 49.0), got)
+
+    def test_non_list_bench_entry_does_not_crash(self):
+        with open(os.path.join(self.cfg, "bench.local.json"), "w", encoding="utf-8") as f:
+            json.dump({"models": {"claude-opus-5-5": 5, "gpt-6.1-terra": [self.entry("index", 49, "xhigh")]}}, f)
+        code, prop = self.collect()
+        self.assertEqual(code, 0)
+        self.assertEqual([c["model"] for c in self.by(prop, "grade_changed")], ["gpt-6.1-terra"])
+
+    def test_grade_changed_ignores_efforts_the_model_lacks(self):
+        self.write_local_bench({"gpt-6.1-terra": [self.entry("index", 80, "max")]})
+        _, prop = self.collect()
+        self.assertFalse(self.by(prop, "grade_changed"))
 
     def test_new_model_days_window(self):
         e = {"creator": "Anthropic", "base": "claude-x", "effort": "max", "name": "X (Max)", "index": 1.0, "cost": 1.0}
@@ -445,6 +492,16 @@ class BenchTest(CollectTest):
         again = self.run_aa()[1]  # a fresh file leaves nothing to propose
         self.assertFalse(self.by(again, "bench_changed") + self.by(again, "bench_added"))
 
+    def test_build_bench_covers_new_google_models(self):
+        entries = [{"creator": "Google", "base": "gemini-4-carbon", "effort": "high", "name": "x", "release": "2026-11-01",
+                    "index": 61.0, "cost": 3.0},
+                   {"creator": "Google", "base": "gemini-4-hydrogen", "effort": "xhigh", "name": "x", "release": "2026-11-01",
+                    "index": 50.0, "cost": 1.0}]
+        out = mc.build_bench(self.models, entries, 5, "2099-01-10", {})["models"]
+        self.assertEqual({(b["effort"], b["metric"], b["value"]) for b in out["gemini-4-carbon"]},
+                         {("high", "index", 61.0), ("high", "cost_per_task", 3.0)})
+        self.assertIn(("xhigh", "index", 50.0), {(b["effort"], b["metric"], b["value"]) for b in out["gemini-4-hydrogen"]})
+
     def test_write_bench_keeps_other_sources_and_replaces_aa(self):
         self.write_bench()
         mine = self.local_bench()["models"]["claude-fable-5-2"]
@@ -539,10 +596,10 @@ class BenchTest(CollectTest):
         a = {"kind": "new_model", "vendor": "openai", "id": "gpt-9.1"}
         b = {"kind": "new_model", "vendor": "openai", "id": "gpt-9-1"}
         aa = {"kind": "new_model", "vendor": "openai", "id": "gpt-9-1", "source": "artificial_analysis",
-              "aa": {"high": {}}, "release_date": "2099-01-01"}
+              "aa": {"high": {}}, "release_date": "2099-01-01", "grades": {"high": "B"}}
         out = mc.merge_new_models([a, b, aa])
         self.assertEqual(len(out), 2)
-        self.assertEqual(out[0]["aa"], {"high": {}})
+        self.assertEqual((out[0]["aa"], out[0]["grades"]), ({"high": {}}, {"high": "B"}))
 
 
 for _name in [n for n in dir(CollectTest) if n.startswith("test_")]:
