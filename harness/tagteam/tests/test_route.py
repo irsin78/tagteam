@@ -173,8 +173,19 @@ class RouteTest(unittest.TestCase):
         code, r = self.route("implement")
         self.assertEqual((code, r["status"]), (4, "none"))
 
+    def cap_b_efforts(self):
+        """Limit the Claude B models to low-high so effort clamping can be tested."""
+        path = os.path.join(self.cfg, "models.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        for mid in ("claude-sonnet-5-5", "claude-haiku-5-5"):
+            data["models"][mid]["efforts"] = ["low", "medium", "high"]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
     # 10
     def test_effort_clamp_and_effort_by_role(self):
+        self.cap_b_efforts()
         self.local({"roles": {"implement": {"effort": "max"}}})
         r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")
         self.assertIn("effort_clamped", r["reason"])
@@ -263,6 +274,7 @@ class RouteTest(unittest.TestCase):
         self.assertIn("bench:none", r["reason"])
 
     def test_bench_uses_clamped_effort(self):
+        self.cap_b_efforts()
         self.local({"roles": {"implement": {"effort": "max"}}})  # clamps to high for the B models
         self.bench({"claude-haiku-5-5": [self.b("index", 30, "high")], "claude-sonnet-5-5": [self.b("index", 20, "max")]})
         r = self.assertPick(self.route("implement"), "claude-haiku-5-5", "high")
