@@ -44,6 +44,23 @@ Commands below are for PowerShell or `cmd` unless a Git Bash line says otherwise
   absolute path once and keeps the file on update. A moved project or a new worktree
   path asks for trust again; see manual section 1.2.
 
+## agy (Google)
+
+Measured with `agy` 1.5.9 in headless `-p` runs:
+
+- **Commands are denied by default.** Every shell command is refused unless allowed.
+- **`--settings '<json>'` applies for that run only.** `run.py` passes
+  `{"permissions":{"allow":["command(*)"]}}`, or one `command(<cmd>)` per
+  `--allow-command`. With `--mode accept-edits` the allowed commands run.
+- **Exact match on Windows.** In PowerShell and `cmd` an allow rule must equal the
+  command exactly; wildcards such as `command(git *)` do not match there. Only
+  `command(*)` allows everything. For `--allow-command`, give the full command as the
+  worker will write it.
+- **`--mode plan` never runs commands**, even when they are allowed. A read-only
+  review that must run tests or `git diff` therefore needs `run.py --read-only
+  --run-commands` (`accept-edits`); `run.py` then only checks the work tree afterwards,
+  which catches common accidents and is not a security boundary (manual section 7).
+
 ## Credentials and push
 
 - **Wrong account prompt.** Git Credential Manager may show an account chooser on

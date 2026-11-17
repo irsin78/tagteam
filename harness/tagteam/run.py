@@ -2,16 +2,26 @@
 """Launcher: run one worker through another vendor's CLI, verify the model, report briefly.
 
   run.py --vendor claude|openai|google --model ID --effort E --prompt-file PATH
-         [--cwd DIR] [--timeout SECONDS] [--read-only]
+         [--cwd DIR] [--timeout SECONDS] [--read-only] [--run-commands] [--allow-command CMD ...]
 
 Exit: 0 ok / 1 CLI failed / 2 usage, config or pre-run check / 3 vendor exhausted /
-4 actual model differs or cannot be confirmed / 5 timeout.
+4 actual model differs or cannot be confirmed / 5 timeout / 6 no answer /
+7 git HEAD or branch moved during the run / 8 a read-only run changed the work tree.
+Google (agy) runs always get --settings with a per-run command allow list: command(*), or
+exactly command(CMD) for each --allow-command (google only). Google --read-only uses --mode
+plan, which never runs commands; --read-only --run-commands (google only) uses accept-edits
+so a reviewer can run tests and git diff, and read-only is then enforced only by the git check.
+The git check (every vendor; HEAD, branch, `git status` listing and content hashes of the
+listed files, before and after) catches common accidents. It is not a security boundary:
+ignored files, paths outside the repository, stashes and other refs are not seen, and it
+sees every change in the checkout during the run, other writers' included.
 Records go to <state dir>/runs/<id>/. A usage-limit sign is written to
 <state dir>/exhausted.json (route.py reads it). Environment (tests): TAGTEAM_STATE_DIR,
 TAGTEAM_CONFIG_DIR, TAGTEAM_CLI_<VENDOR> (JSON array replacing the CLI).
 Python 3.9+, standard library only. Accident check, not a security boundary.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -30,6 +40,8 @@ import role_guard  # noqa: E402  (same folder; its CLI entry is behind a __main_
 MARKER = "HARNESS ROLE: DELEGATE"
 AGY_ARG_LIMIT = 30000  # characters of the serialized command; Windows stops near 32K
 REPORT_CHARS = 4000
+HASH_MAX_PATHS = 2000  # git check: content hashes of listed files; beyond this the check is partial
+HASH_MAX_BYTES = 50 * 1024 * 1024
 FLAGS = re.I | re.S
 CLAUDE_EX = re.compile(
     r"(?:API Error: )?(?:HTTP )?429.*|(?:usage|rate)[ -]limit(?: exceeded| reached)?.*"
@@ -46,7 +58,8 @@ GOOGLE_LINE_EX = re.compile(
     r"|quota(?: exceeded| exhausted)?[.!]?)", re.I)
 AGY_LABEL = re.compile(r'Propagating selected model override to backend: label="([^"]+)"')
 CODEX_MODEL = re.compile(r"^model:\s*(\S+)", re.M)
-PRIORITY = [("exhausted", 3), ("timeout", 5), ("model_mismatch", 4), ("cli_failed", 1), ("no_output", 6)]
+PRIORITY = [("exhausted", 3), ("git_head_moved", 7), ("timeout", 5), ("model_mismatch", 4), ("wrote_files", 8),
+            ("cli_failed", 1), ("no_output", 6)]
 
 
 def _is_windows():
@@ -132,7 +145,14 @@ def update_exhausted(state, vendor, entry):
 
 # ---- commands ---------------------------------------------------------------------------
 
-def build_command(vendor, base, model_arg, effort, read_only, cwd, run_dir, prompt, timeout):
+def agy_settings(allow_commands):
+    """The per-run agy settings JSON: command(*) by default, else exactly the listed commands."""
+    allow = ["command(%s)" % c for c in allow_commands] if allow_commands else ["command(*)"]
+    return json.dumps({"permissions": {"allow": allow}}, separators=(",", ":"))
+
+
+def build_command(vendor, base, model_arg, effort, read_only, cwd, run_dir, prompt, timeout, allow_commands=None,
+                  run_commands=False):
     """Argv for one vendor (design 5.3). The prompt is sent on stdin except for google."""
     if vendor == "claude":
         return base + ["-p", "--output-format", "json", "--model", model_arg, "--effort", effort,
@@ -144,12 +164,17 @@ def build_command(vendor, base, model_arg, effort, read_only, cwd, run_dir, prom
         if _is_windows():
             cmd += ["-c", "windows.sandbox=unelevated"]
         return cmd + ["-"]
-    tail = ["--model", model_arg, "--effort", effort, "--mode", "plan" if read_only else "accept-edits",
-            "--output-format", "json", "--log-file", os.path.join(run_dir, "agy.log"), "--print-timeout", "%ds" % timeout]
+    # plan mode never runs commands: a read-only run that must run them (run_commands) uses accept-edits
+    mode = "plan" if read_only and not run_commands else "accept-edits"
+    tail = ["--model", model_arg, "--effort", effort, "--mode", mode,
+            "--output-format", "json", "--log-file", os.path.join(run_dir, "agy.log"), "--print-timeout", "%ds" % timeout,
+            "--settings", agy_settings(allow_commands)]
     cmd = base + ["-p", prompt] + tail
     if len(subprocess.list2cmdline(cmd)) > AGY_ARG_LIMIT:  # quoting can double the length
         hint = "%s\nRead and follow the task in %s" % (MARKER, os.path.join(run_dir, "prompt.txt"))
         cmd = base + ["-p", hint] + tail
+        if len(subprocess.list2cmdline(cmd)) > AGY_ARG_LIMIT:  # the allow list alone is too long
+            raise ValueError("agy command line too long: use fewer or shorter --allow-command values")
     return cmd
 
 
@@ -192,6 +217,127 @@ def execute(argv, cwd, env, stdin_bytes, run_dir, timeout):
             except subprocess.TimeoutExpired:
                 pass
             return -1, True
+
+
+# ---- git before/after check -------------------------------------------------------------
+# Catches common accidents; not a security boundary (ignored files, paths outside the
+# repository, stashes and other refs are not seen).
+
+def _under(path, dirs):
+    return any(path == d or path.startswith(d + os.sep) for d in dirs)
+
+
+def hash_file(path, room):
+    """Return (digest, bytes read). None means over budget; 'dir' means skip (directory, submodule)."""
+    try:
+        if os.path.islink(path):
+            return "link:" + hashlib.sha256(os.readlink(path).encode("utf-8", "replace")).hexdigest(), 0
+        if os.path.isdir(path):
+            return "dir", 0
+        if not os.path.exists(path):
+            return "missing", 0
+        size = os.path.getsize(path)
+        if size > room:
+            return None, 0
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest(), size
+    except OSError:
+        return "unreadable", 0
+
+
+def git_snapshot(cwd, exclude=()):
+    """Return (snapshot, problem). (None, None): not a git work tree, or no git: skip silently.
+    (None, text): git failed. The snapshot has head, ref (symbolic HEAD, "" when detached), the
+    `status --porcelain` lines, a sha256 per listed file and `partial` when the hash limits were hit.
+    Directories in `exclude` (the launcher's own files) are left out when inside the work tree."""
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+
+    def git(*a):
+        return subprocess.run(["git", "-C", cwd] + list(a), capture_output=True, timeout=30, env=env)
+
+    def text(res):
+        return res.stdout.decode("utf-8", errors="replace")
+    try:
+        inside = git("rev-parse", "--is-inside-work-tree")
+        if inside.returncode != 0:
+            msg = inside.stderr.decode("utf-8", errors="replace").strip()
+            if "not a git repository" in msg.lower():
+                return None, None
+            return None, "git rev-parse failed: " + msg[:120]
+        if text(inside).strip() != "true":
+            return None, None
+        top = git("rev-parse", "--show-toplevel")
+        head = git("rev-parse", "HEAD")  # fails in a repository without commits: treated as ""
+        ref = git("symbolic-ref", "-q", "HEAD")  # fails when detached: treated as ""
+        status = git("status", "--porcelain", "-z", "--untracked-files=all")
+    except FileNotFoundError:
+        return None, None
+    except subprocess.TimeoutExpired:
+        return None, "git timed out"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, "%s: %s" % (type(exc).__name__, exc)
+    if top.returncode != 0 or status.returncode != 0:
+        return None, "git status failed: " + status.stderr.decode("utf-8", errors="replace").strip()[:120]
+    root = os.path.realpath(text(top).strip())
+    skip = [os.path.normcase(os.path.realpath(d)) for d in exclude]
+    lines, paths = [], []
+    entries = text(status).split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        if "R" in entry[:2] or "C" in entry[:2]:
+            i += 1  # the original path follows as its own entry
+        full = os.path.join(root, entry[3:])
+        if _under(os.path.normcase(os.path.realpath(full)), skip):
+            continue
+        lines.append(entry)
+        paths.append((entry[3:], full))
+    hashes, used, partial = {}, 0, False
+    for rel, full in sorted(paths):
+        if len(hashes) >= HASH_MAX_PATHS:
+            partial = True
+            break
+        digest, size = hash_file(full, HASH_MAX_BYTES - used)
+        if digest is None:
+            partial = True
+        elif digest != "dir":
+            hashes[rel] = digest
+            used += size
+    return {"head": text(head).strip() if head.returncode == 0 else "",
+            "ref": text(ref).strip() if ref.returncode == 0 else "",
+            "status": sorted(lines), "hashes": hashes, "partial": partial}, None
+
+
+def _where(snap):
+    return "%s %s" % (snap["ref"].replace("refs/heads/", "") or "detached", snap["head"][:7] or "none")
+
+
+def git_compare(before, after, read_only):
+    """Return (flags, ERROR lines). No snapshot on either side means no check."""
+    flags, lines = set(), []
+    if not before or not after:
+        return flags, lines
+    if before["head"] != after["head"] or before["ref"] != after["ref"]:
+        flags.add("git_head_moved")
+        lines.append("ERROR: git HEAD moved during the run (%s -> %s); workers must not commit or switch branches"
+                     % (_where(before), _where(after)))
+    if read_only:
+        changed = sorted(set(before["status"]) ^ set(after["status"]))
+        shown = [" ".join(d.split(None, 1)) for d in changed]
+        listed = {d[3:] for d in changed}
+        shown += ["content of %s" % path for path in sorted(before["hashes"])
+                  if path in after["hashes"] and before["hashes"][path] != after["hashes"][path] and path not in listed]
+        if shown:
+            flags.add("wrote_files")
+            lines.append("ERROR: a read-only run changed the work tree: %s%s"
+                         % (", ".join(shown[:5]), " (+%d more)" % (len(shown) - 5) if len(shown) > 5 else ""))
+    return flags, lines
 
 
 # ---- reading results --------------------------------------------------------------------
@@ -255,6 +401,10 @@ def parse_args(argv):
     p.add_argument("--cwd", default=None)
     p.add_argument("--timeout", type=int, default=1800)
     p.add_argument("--read-only", action="store_true")
+    p.add_argument("--run-commands", action="store_true",
+                   help="google only: with --read-only, use accept-edits so the worker can run commands")
+    p.add_argument("--allow-command", action="append", default=[], metavar="CMD",
+                   help="google only, repeatable: exact command agy may run (default: any command)")
     return p.parse_args(argv)
 
 
@@ -289,6 +439,12 @@ def main(argv):
     allowed = [e for e in ("low", "medium", "high", "xhigh", "max") if e in (info.get("grades") or {})]
     if args.effort not in allowed:
         return fail("effort %s is not allowed for %s (allowed: %s)" % (args.effort, args.model, ", ".join(allowed)))
+    if args.allow_command and args.vendor != "google":
+        return fail("--allow-command applies to vendor google only")
+    if args.run_commands and args.vendor != "google":
+        return fail("--run-commands applies to vendor google only")
+    if any(not c.strip() for c in args.allow_command):
+        return fail("--allow-command must not be empty")
     label = info.get("label")
     if args.vendor == "google" and not label:
         return fail("google model %s has no label in models.json" % args.model)
@@ -313,9 +469,15 @@ def main(argv):
     os.makedirs(run_dir, exist_ok=True)
     write_text(os.path.join(run_dir, "prompt.txt"), prompt)
     model_arg = vcfg.get("model_arg", "{model}").format(model=args.model, effort=args.effort)
-    cmd = build_command(args.vendor, base, model_arg, args.effort, args.read_only, cwd, run_dir, prompt, args.timeout)
+    try:
+        cmd = build_command(args.vendor, base, model_arg, args.effort, args.read_only, cwd, run_dir, prompt,
+                            args.timeout, args.allow_command, args.run_commands)
+    except ValueError as exc:
+        return fail(str(exc))
     env = dict(os.environ, HARNESS_DELEGATE_RUN="1")
     stdin_bytes = None if args.vendor == "google" else prompt.encode("utf-8")
+    own_files = [run_dir, state]  # the launcher's records may lie inside the work tree
+    git_before, problem = git_snapshot(cwd, own_files)
     t0 = time.time()
     start_error = None
     try:
@@ -324,6 +486,20 @@ def main(argv):
         code, timed_out, start_error = -1, False, "%s: %s" % (type(exc).__name__, exc)
         write_text(os.path.join(run_dir, "stderr.txt"), start_error + "\n")
     secs = int(time.time() - t0)
+    git_after, problem_after = git_snapshot(cwd, own_files)
+    problem = problem or problem_after
+    if not problem and bool(git_before) != bool(git_after):
+        problem = "the work tree changed between the two snapshots"
+    git_flags, git_lines = git_compare(git_before, git_after, args.read_only)
+    if problem:
+        git_check = "unavailable"
+        git_lines.append("WARNING: git check unavailable (%s)" % problem)
+    elif git_before and (git_before["partial"] or git_after["partial"]):
+        git_check = "partial"
+        git_lines.append("WARNING: git content check is partial (more than %d listed files or %d MB)"
+                         % (HASH_MAX_PATHS, HASH_MAX_BYTES >> 20))
+    else:
+        git_check = "ok" if git_before else "skipped"
     write_text(os.path.join(run_dir, "cmd.json"), json.dumps(
         {"argv": cmd, "cwd": cwd, "started": iso(start), "ended": iso(utc_now())}, indent=2) + "\n")
 
@@ -349,6 +525,7 @@ def main(argv):
             flags.add("model_mismatch")
         elif not last.strip():  # a clean exit with an empty answer is a failed run, not a result
             flags.add("no_output")
+    flags |= git_flags
     status, exit_code = next(((s, c) for s, c in PRIORITY if s in flags), ("ok", 0))
 
     lines = ["RUN %s vendor=%s model=%s effort=%s status=%s exit=%s secs=%d"
@@ -358,6 +535,7 @@ def main(argv):
     result = {"id": run_id, "vendor": args.vendor, "model": args.model, "effort": args.effort, "status": status,
               "exit_code": code, "secs": secs, "actual_model": found, "model_match": matches if found or status in ("ok", "model_mismatch") else None,
               "read_only": args.read_only, "run_dir": run_dir}
+    result["git_check"] = git_check
     if status == "exhausted":
         evidence, epoch = hit
         until = datetime.fromtimestamp(epoch, timezone.utc) if epoch else start + timedelta(minutes=int(vcfg.get("cooldown_minutes", 60)))
@@ -369,6 +547,7 @@ def main(argv):
     write_text(os.path.join(run_dir, "result.json"), json.dumps(result, indent=2) + "\n")
     if start_error:
         lines.append("ERROR: could not start the CLI (%s)" % start_error)
+    lines.extend(git_lines)
     if status == "no_output":
         denied = [d.get("display_name") or d.get("action") for d in (data or {}).get("denied_actions") or []
                   if isinstance(d, dict)] if isinstance(data, dict) else []

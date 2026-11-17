@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,13 +46,13 @@ class RunTestBase(unittest.TestCase):
         self.addCleanup(patcher.stop)
         os.environ.pop("HARNESS_DELEGATE_RUN", None)
 
-    def go(self, vendor, mode="ok", prompt="Do the thing.\n", extra=(), model=None, effort=None):
+    def go(self, vendor, mode="ok", prompt="Do the thing.\n", extra=(), model=None, effort=None, cwd=None):
         pf = os.path.join(self.tmp.name, "prompt.md")
         with open(pf, "w", encoding="utf-8", newline="") as fh:
             fh.write(prompt)
         os.environ["FAKE_MODE"] = mode
         argv = ["--vendor", vendor, "--model", model or VENDORS[vendor][0], "--effort", effort or VENDORS[vendor][1],
-                "--prompt-file", pf, "--cwd", self.tmp.name] + list(extra)
+                "--prompt-file", pf, "--cwd", cwd or self.tmp.name] + list(extra)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = run.main(argv)
@@ -90,9 +91,25 @@ class CommandTests(unittest.TestCase):
     def test_google(self):
         tail = ["--model", "m", "--effort", "low", "--mode"]
         log = os.path.join("/r", "agy.log")
-        for ro, mode in ((True, "plan"), (False, "accept-edits")):
-            want = ["cli", "-p", "prompt"] + tail + [mode, "--output-format", "json", "--log-file", log, "--print-timeout", "90s"]
-            self.assertEqual(self.build("google", ro, prompt="prompt"), want)
+        settings = '{"permissions":{"allow":["command(*)"]}}'
+        # (read_only, run_commands) -> mode: plan mode never runs commands, so --run-commands switches it off
+        for ro, rc, mode in ((True, False, "plan"), (True, True, "accept-edits"), (False, False, "accept-edits")):
+            want = ["cli", "-p", "prompt"] + tail + [mode, "--output-format", "json", "--log-file", log,
+                                                     "--print-timeout", "90s", "--settings", settings]
+            got = run.build_command("google", ["cli"], "m", "low", ro, "/w", "/r", "prompt", 90, None, rc)
+            self.assertEqual(got, want, (ro, rc))
+
+    def test_google_allow_commands_replace_wildcard(self):
+        cmd = run.build_command("google", ["cli"], "m", "low", False, "/w", "/r", "p", 90, ["git log -1", 'echo "x"'])
+        settings = json.loads(cmd[cmd.index("--settings") + 1])
+        self.assertEqual(settings, {"permissions": {"allow": ["command(git log -1)", 'command(echo "x")']}})
+
+    def test_agy_settings_survive_the_file_hint_and_are_limited(self):
+        cmd = self.build("google", True, prompt=MARKER + "\n" + "x" * 30001)
+        self.assertIn("prompt.txt", cmd[2])
+        self.assertIn("--settings", cmd)
+        with self.assertRaises(ValueError):
+            run.build_command("google", ["cli"], "m", "low", True, "/w", "/r", "p", 90, ["c" * 40] * 800)
 
     def test_agy_long_prompt_uses_file(self):
         cmd = self.build("google", True, prompt=MARKER + "\n" + "x" * 30001)
@@ -263,6 +280,187 @@ class LauncherTests(RunTestBase):
             code, out, _ = self.go("claude")
         self.assertEqual(code, 0)
         self.assertIn("[truncated, see OUTPUT]", out)
+
+    def settings_passed(self):
+        argv = self.recorded()["argv"]
+        return json.loads(argv[argv.index("--settings") + 1])
+
+    def test_google_gets_default_command_allow_list(self):
+        for ro in ((), ("--read-only",)):
+            self.assertEqual(self.go("google", extra=ro)[0], 0)
+            self.assertEqual(self.settings_passed(), {"permissions": {"allow": ["command(*)"]}})
+
+    def test_google_allow_command_is_exact_list(self):
+        extra = ["--allow-command", "git diff", "--allow-command", "python -m unittest"]
+        self.assertEqual(self.go("google", extra=extra)[0], 0)
+        self.assertEqual(self.settings_passed(), {"permissions": {"allow": ["command(git diff)", "command(python -m unittest)"]}})
+
+    def test_google_modes(self):
+        for extra, mode in ((["--read-only"], "plan"), (["--read-only", "--run-commands"], "accept-edits"), ([], "accept-edits")):
+            self.assertEqual(self.go("google", extra=extra)[0], 0)
+            argv = self.recorded()["argv"]
+            self.assertEqual(argv[argv.index("--mode") + 1], mode, extra)
+            self.assertEqual(self.settings_passed(), {"permissions": {"allow": ["command(*)"]}})
+
+    def test_other_vendors_get_no_settings_and_reject_google_only_options(self):
+        for vendor in ("claude", "openai"):
+            self.assertEqual(self.go(vendor)[0], 0)
+            self.assertNotIn("--settings", self.recorded()["argv"])
+            os.remove(self.record)
+            for extra in (["--allow-command", "git diff"], ["--run-commands"]):
+                code, _, err = self.go(vendor, extra=extra)
+                self.assertEqual(code, 2)
+                self.assertIn("google only", err)
+                self.assertFalse(os.path.exists(self.record))
+        self.assertEqual(self.go("google", extra=["--allow-command", " "])[0], 2)
+
+    def test_priority_puts_head_moved_after_exhaustion_only(self):
+        order = [s for s, _ in run.PRIORITY]
+        self.assertEqual(order[0], "exhausted")
+        self.assertEqual(order[1], "git_head_moved")
+        self.assertEqual(dict(run.PRIORITY)["git_head_moved"], 7)
+        self.assertEqual(dict(run.PRIORITY)["wrote_files"], 8)
+
+
+@unittest.skipUnless(shutil.which("git"), "git not installed")
+class GitCheckTests(RunTestBase):
+    def setUp(self):
+        super().setUp()
+        self.repo = os.path.join(self.tmp.name, "repo")  # the state folder stays outside the work tree
+        os.makedirs(self.repo)
+        self.git("init", "-q")
+        self.commit("base")
+
+    def git(self, *args, cwd=None):
+        subprocess.run(["git", "-C", cwd or self.repo] + list(args), check=True, capture_output=True)
+
+    def commit(self, msg):
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false",
+                 "commit", "-q", "--allow-empty", "-m", msg)
+
+    def last_result(self):
+        paths = [os.path.join(d, "result.json") for d in self.run_dirs()]
+        with open(max(paths, key=os.path.getmtime), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def head(self):
+        return subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    def write(self, name, text):
+        with open(os.path.join(self.repo, name), "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+
+    def test_commit_is_git_head_moved_for_every_vendor(self):
+        for vendor in VENDORS:
+            before = self.head()
+            code, out, _ = self.go(vendor, "commit", cwd=self.repo)
+            self.assertEqual(code, 7, (vendor, out))
+            self.assertIn("status=git_head_moved", out)
+            self.assertRegex(out, r"ERROR: git HEAD moved during the run \(\S+ %s -> \S+ %s\)" % (before[:7], self.head()[:7]))
+
+    def test_branch_switch_at_the_same_commit_counts_as_moved(self):
+        a = {"head": "a" * 40, "ref": "refs/heads/main", "status": [], "hashes": {}, "partial": False}
+        b = dict(a, ref="refs/heads/other")
+        flags, lines = run.git_compare(a, b, False)
+        self.assertEqual(flags, {"git_head_moved"})
+        self.assertIn("main aaaaaaa -> other aaaaaaa", lines[0])
+        self.assertEqual(run.git_compare(a, dict(a, ref=""), False)[0], {"git_head_moved"})  # detached
+
+    def test_priority_of_head_moved(self):
+        before = {"head": "a" * 40, "ref": "", "status": [], "hashes": {}, "partial": False}
+        after = dict(before, head="b" * 40, status=["?? x"], hashes={"x": "1"})
+        self.assertEqual(run.git_compare(before, after, False)[0], {"git_head_moved"})
+        self.assertEqual(run.git_compare(before, after, True)[0], {"git_head_moved", "wrote_files"})
+        pick = lambda flags: next(c for s, c in run.PRIORITY if s in flags)
+        self.assertEqual(pick({"git_head_moved", "timeout", "cli_failed", "model_mismatch"}), 7)
+        self.assertEqual(pick({"git_head_moved", "exhausted"}), 3)
+
+    def test_read_only_write_is_wrote_files(self):
+        for vendor in VENDORS:
+            code, out, _ = self.go(vendor, "write_file", cwd=self.repo, extra=["--read-only"])
+            self.assertEqual(code, 8, (vendor, out))
+            self.assertIn("status=wrote_files", out)
+            self.assertIn("ERROR: a read-only run changed the work tree: ?? fake_written.txt", out)
+            os.remove(os.path.join(self.repo, "fake_written.txt"))
+
+    def test_read_only_overwrite_of_an_already_untracked_file(self):
+        self.write("fake_written.txt", "old")
+        code, out, _ = self.go("claude", "write_file", cwd=self.repo, extra=["--read-only"])
+        self.assertEqual(code, 8, out)
+        self.assertIn("content of fake_written.txt", out)
+
+    def test_read_only_overwrite_of_an_already_modified_tracked_file(self):
+        self.write("fake_written.txt", "a")
+        self.git("add", "fake_written.txt")
+        self.commit("add")
+        self.write("fake_written.txt", "b")  # dirty before the run: the status listing will not change
+        code, out, _ = self.go("openai", "write_file", cwd=self.repo, extra=["--read-only"])
+        self.assertEqual(code, 8, out)
+        self.assertIn("content of fake_written.txt", out)
+        self.assertEqual(self.go("openai", cwd=self.repo, extra=["--read-only"])[0], 0)  # unchanged dirty file passes
+
+    def test_write_without_read_only_is_allowed(self):
+        code, out, _ = self.go("google", "write_file", cwd=self.repo)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("ERROR:", out)
+
+    def test_clean_read_only_run_passes(self):
+        for vendor in VENDORS:
+            code, out, _ = self.go(vendor, cwd=self.repo, extra=["--read-only"])
+            self.assertEqual(code, 0, (vendor, out))
+            self.assertEqual(self.last_result()["git_check"], "ok")
+
+    def test_launcher_own_files_inside_the_work_tree_are_ignored(self):
+        os.environ["TAGTEAM_STATE_DIR"] = os.path.join(self.repo, "state")
+        for vendor in VENDORS:
+            code, out, _ = self.go(vendor, cwd=self.repo, extra=["--read-only"])
+            self.assertEqual(code, 0, (vendor, out))
+            self.assertNotIn("ERROR:", out)
+        self.assertTrue(os.path.isdir(os.path.join(self.repo, "state", "runs")))
+
+    def test_commit_in_a_repository_without_commits(self):
+        fresh = os.path.join(self.tmp.name, "fresh")
+        os.makedirs(fresh)
+        self.git("init", "-q", cwd=fresh)
+        code, out, _ = self.go("claude", "commit", cwd=fresh)
+        self.assertEqual(code, 7, out)
+        self.assertIn(" none -> ", out)
+
+    def test_not_a_git_work_tree_skips_the_check_silently(self):
+        plain = os.path.join(self.tmp.name, "plain")
+        os.makedirs(plain)
+        for mode, extra in (("write_file", ["--read-only"]), ("commit", [])):
+            code, out, _ = self.go("google", mode, cwd=plain, extra=extra)
+            self.assertEqual(code, 0, (mode, out))
+            self.assertNotIn("ERROR:", out)
+            self.assertNotIn("WARNING:", out)
+            self.assertEqual(self.last_result()["git_check"], "skipped")
+
+    def test_git_missing_skips_the_check(self):
+        with mock.patch.object(run.subprocess, "run", side_effect=FileNotFoundError("git")):
+            self.assertEqual(run.git_snapshot(self.repo), (None, None))
+
+    def test_git_failure_warns_and_does_not_fail_the_run(self):
+        with mock.patch.object(run, "git_snapshot", return_value=(None, "git timed out")):
+            code, out, _ = self.go("claude", cwd=self.repo, extra=["--read-only"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARNING: git check unavailable (git timed out)", out)
+        self.assertEqual(self.last_result()["git_check"], "unavailable")
+        with mock.patch.object(run.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 30)):
+            self.assertEqual(run.git_snapshot(self.repo), (None, "git timed out"))
+
+    def test_hash_limits_make_the_check_partial(self):
+        for i in range(3):
+            self.write("f%d.txt" % i, "x")
+        with mock.patch.object(run, "HASH_MAX_PATHS", 2):
+            snap, problem = run.git_snapshot(self.repo)
+        self.assertIsNone(problem)
+        self.assertTrue(snap["partial"])
+        self.assertEqual(len(snap["hashes"]), 2)
+        with mock.patch.object(run, "HASH_MAX_BYTES", 0):
+            code, out, _ = self.go("claude", cwd=self.repo, extra=["--read-only"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARNING: git content check is partial", out)
 
 
 if __name__ == "__main__":

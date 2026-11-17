@@ -306,7 +306,8 @@ restart that session. The role is otherwise fixed for the life of a session.
 Runs one worker through another vendor's CLI.
 
     python .claude/tagteam/run.py --vendor claude|openai|google --model ID --effort E
-        --prompt-file PATH [--cwd DIR] [--timeout SECONDS] [--read-only]
+        --prompt-file PATH [--cwd DIR] [--timeout SECONDS] [--read-only] [--run-commands]
+        [--allow-command "<exact command>" ...]
 
 The router prints this command ready to fill in. Checks before the run (exit 2 on
 failure): the process is not itself a launcher worker (`HARNESS_DELEGATE_RUN=1`), the
@@ -319,7 +320,46 @@ child runs with `HARNESS_DELEGATE_RUN=1`. The default timeout is 1800 seconds.
 |---|---|---|
 | `claude` | `claude` | `-p --output-format json`, `--permission-mode plan` (read-only) or `auto` |
 | `openai` | `codex` | `exec -s read-only|workspace-write`, `-C <cwd>`; on Windows also `-c windows.sandbox=unelevated` |
-| `google` | `agy` | `-p`, `--mode plan|accept-edits`, `--log-file`; a very long prompt is passed as a file reference |
+| `google` | `agy` | `-p`, `--mode plan` (read-only) or `accept-edits`, `--settings <json>`, `--log-file`; a very long prompt is passed as a file reference |
+
+**Commands in `agy` runs.** In headless mode `agy` denies every shell command unless it is
+allowed, and `--mode plan` never runs commands. A Google run always gets
+`--settings '{"permissions":{"allow":["command(*)"]}}'` (applies to that run only). Modes:
+
+- `--read-only`: `plan`. Truly read-only, but the worker cannot run tests or `git diff`.
+- `--read-only --run-commands`: `accept-edits` with the allow list. The worker can run
+  commands (a reviewer running tests and `git diff`); read-only is then enforced only by
+  the git check below.
+- neither: `accept-edits` with the allow list (implementation runs).
+
+`--run-commands` and `--allow-command "<exact command>"` are Google only (exit 2 for other
+vendors). `--allow-command` is repeatable and replaces the wildcard with
+`command(<cmd>)` for each given command, for example only `git diff` and the test
+command. On Windows the rule must match the command exactly (see
+`docs/platform/windows.md`). If the allow list makes the command line too long, the
+launcher exits 2.
+
+**Git check (every vendor).** When `--cwd` is inside a git work tree, the launcher records
+before and after the run: `git rev-parse HEAD`, the symbolic ref (`git symbolic-ref -q
+HEAD`, empty when detached), `git status --porcelain` (untracked files included) and a
+sha256 of every listed file (at most 2000 files and 50 MB per snapshot; past that the
+check is partial and the report says so). Results:
+
+- HEAD or the branch moved: status `git_head_moved` (exit 7).
+- With `--read-only`, the status listing or the content of a listed file changed (this
+  includes overwriting a file that was already modified): status `wrote_files` (exit 8).
+- Each adds an `ERROR:` line naming the change. If git itself fails (timeout, error) the
+  report gets `WARNING: git check unavailable (...)` and `result.json` gets
+  `"git_check": "unavailable"`; the run is not failed for it. Outside a work tree, or
+  without `git`, the check is skipped silently.
+- The launcher's own files (the run folder and the state folder) are left out when they
+  lie inside the work tree.
+
+This is an accident check, **not a security boundary**, like the role guard's commit
+check: ignored files, paths outside the repository, stashes and other refs are not
+looked at. It also sees every change in the checkout during the run, including other
+workers'. Run read-only reviews while no other writer uses the checkout, or in a separate
+worktree.
 
 **Model check.** After a clean exit the launcher compares the model that answered with
 the one requested, from `modelUsage` in the Claude JSON, the `model:` line in the
@@ -335,17 +375,22 @@ wrong one.
     ACTUAL_MODEL: <model> (match)          (on status ok or model_mismatch)
     EXHAUSTED: <vendor> until <time> (<evidence>)   (only when exhausted)
     ERROR: could not start the CLI (...)            (only when the CLI did not start)
+    ERROR: git HEAD moved ... / a read-only run changed the work tree: ...   (git check)
+    WARNING: git check unavailable (...) / git content check is partial (...)  (git check)
     OUTPUT: <path to last.txt>
     ---
     <first 4000 characters of the final text>
 
 Exit codes: 0 ok; 1 CLI failed; 2 usage, configuration or pre-run check; 3 vendor
 exhausted; 4 model differs or cannot be confirmed; 5 timeout; 6 the CLI exited cleanly with
-an empty answer (the report names any tools the CLI denied in headless mode). A CLI error that is not a usage-limit message (for example a
+an empty answer (the report names any tools the CLI denied in headless mode); 7 git HEAD
+or branch moved during the run; 8 a read-only run changed the work tree. When several apply, 3
+wins, then 7, 5, 4, 8, 1, 6. A CLI error that is not a usage-limit message (for example a
 short-lived authentication failure) counts as `cli_failed`, not as exhaustion; run it again.
 
 The launcher is an accident check, not a sandbox: `--read-only` asks the CLI for its
-read-only mode but does not replace review of what a worker changed.
+read-only mode (Google with `--run-commands`: the git check) but does not replace review of
+what a worker changed.
 
 ## 8. Keeping the model list current
 

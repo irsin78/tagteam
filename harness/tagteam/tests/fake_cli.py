@@ -2,10 +2,12 @@
 """Stand-in for the claude, codex and agy CLIs. Usage: fake_cli.py <claude|openai|google> [CLI args...]
 
 Records argv, stdin, HARNESS_DELEGATE_RUN and pid to FAKE_RECORD (JSON), then behaves per FAKE_MODE:
-ok, wrong_model, no_model_field, exhausted, exhausted_epoch, quota_text_in_prompt, crash, sleep, empty (google).
+ok, wrong_model, no_model_field, exhausted, exhausted_epoch, quota_text_in_prompt, crash, sleep, empty (google),
+write_file (writes fake_written.txt in the cwd, then ok), commit (makes an empty git commit in the cwd, then ok).
 """
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -86,6 +88,12 @@ def main():
     if mode == "sleep":
         time.sleep(60)
         emit(0)
+    if mode == "write_file":  # then behaves like ok
+        with open("fake_written.txt", "w", encoding="utf-8") as fh:
+            fh.write("x")
+    if mode == "commit":  # a worker that commits (needs a git work tree; failure is ignored)
+        subprocess.run(["git", "-c", "user.name=fake", "-c", "user.email=fake@example.invalid", "-c", "commit.gpgsign=false",
+                        "commit", "--allow-empty", "-m", "fake"], capture_output=True)
     model = opt(args, "--model") or opt(args, "-m")
     {"claude": claude, "openai": openai, "google": google}[vendor](args, mode, model)
 
