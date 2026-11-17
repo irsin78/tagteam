@@ -174,6 +174,34 @@ def ensure_bench(target):
               % (BENCH_REL.as_posix(), text.splitlines()[-1][:200] if text else "no output"), file=sys.stderr)
 
 
+def ensure_available(target):
+    """With no "available" lists in models.local.json yet, ask the vendor CLIs once, so routes skip
+    models this machine's plans do not offer. Never fails the install."""
+    collector, local = target / COLLECTOR_REL, target / ".claude/tagteam/models.local.json"
+    try:
+        data = json.loads(local.read_text(encoding="utf-8")) if local.is_file() else {}
+        vendors = json.loads((target / ".claude/tagteam/models.json").read_text(encoding="utf-8")).get("vendors") or {}
+        have = set(data.get("available") or {})
+        plans = data.get("plans") or {}
+    except (OSError, ValueError, AttributeError):
+        return
+    want = {v for v in vendors if plans.get(v) != "none"}
+    if not collector.is_file() or (have and want <= have):  # retry while some vendor has no list yet
+        return
+    env = {k: v for k, v in os.environ.items() if k != "TAGTEAM_CONFIG_DIR"}
+    try:
+        p = subprocess.run([sys.executable, str(collector), "--write-available", "--timeout", "30"],
+                           capture_output=True, text=True, env=env, timeout=150)
+        ok, text = p.returncode == 0, (p.stdout + p.stderr).strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        ok, text = False, str(exc)
+    if ok and "wrote available" in text:
+        print("  models   available model lists written to models.local.json")
+    else:
+        print("warning: could not record available models (%s); run models_collect.py --write-available later"
+              % (text.splitlines()[-1][:200] if text else "no output"), file=sys.stderr)
+
+
 def install(target, source, interactive):
     rep = Report()
     h = source / "harness"
@@ -461,6 +489,7 @@ def main(argv=None, runner=run_cmd, plat=None):
         print(("Updated" if a.update else "Installed") + f" tagteam in {target}")
         rep.print()
         ensure_bench(target)
+        ensure_available(target)
     if not a.schedule and interactive and not a.update:
         a.schedule = input("Register a weekly model-list check (scheduled task, no LLM)? [y/N]: ").strip().lower() == "y"
     if a.schedule:

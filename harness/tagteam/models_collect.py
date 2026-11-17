@@ -3,13 +3,16 @@
 
   models_collect.py [--project DIR] [--timeout 60] [--mark-applied]
   models_collect.py --write-bench [--timeout 60]
+  models_collect.py --write-available [--timeout 60]
 
-No LLM, no model run, no edit of models.json or models.local.json. --write-bench rewrites
+No LLM and no model run. The weekly run never edits models.json or models.local.json. --write-bench rewrites
 bench.local.json (next to models.json, machine-local, git-ignored) from Artificial Analysis for
 every registered model and effort that has a value; entries of other sources are kept. Without a
 key it writes nothing and exits 0; on an AA error it exits 1 and leaves the file alone. Writes
 <state dir>/model-update.json (overwritten each run) and appends to collect.log.
 --mark-applied records the current proposal's digest in <state dir>/model-update.applied.
+--write-available asks the vendor CLIs for their model lists (claude: /model families) and writes them to
+"available" in models.local.json for the vendors that answered; other keys are kept. Install runs it once.
 With env TAGTEAM_AA_API_KEY set, also reads the Artificial Analysis /free model list (urllib,
 max 10 pages) for vendors that have "aa_creator" in models.json: exact slug+effort matching,
 bench_changed/bench_added (compared with bench.local.json; no file = no bench changes and
@@ -28,6 +31,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import sys
 import urllib.error
 import urllib.request
@@ -62,7 +66,7 @@ def grade_for(index, floors):
     return "C"
 
 
-def parse_codex(text):
+def parse_codex(text, models=None):
     """slug -> {"efforts", "label"} for models with visibility list; ultra is never offered."""
     out = {}
     data = json.loads(text)
@@ -75,7 +79,7 @@ def parse_codex(text):
     return list(out), out
 
 
-def parse_agy(text):
+def parse_agy(text, models=None):
     ids, models = [], {}
     for line in text.splitlines():
         if "\t" not in line:
@@ -90,14 +94,45 @@ def parse_agy(text):
     return ids, models
 
 
-LISTERS = {"openai": (["debug", "models"], parse_codex), "google": (["models"], parse_agy)}
+CLAUDE_SPECIAL = {"best", "default", "opusplan"}
 
 
-def run_cli(cmd, timeout):
+def claude_family(mid, model):
+    """Model family as /model names it: `family` in models.json, else the second part of the id (claude-opus-5-5 -> opus)."""
+    return model.get("family") or (mid.split("-")[1] if mid.count("-") >= 1 else mid)
+
+
+def parse_claude(text, models):
+    """`claude -p /model --output-format json` lists the aliases this account may use. A registered Claude model
+    counts as offered when its family is in that list; Claude Code lists families, not versions."""
+    data = json.loads(text)
+    result = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(result, str):
+        raise ValueError("unexpected /model output: no text result")
+    hit = re.search(r"Available:\s*(.+)", result)
+    if not hit:
+        raise ValueError("unexpected /model output: no 'Available:' list")
+    families = set()
+    for token in hit.group(1).split(","):
+        token = re.sub(r"\[1m\]$", "", token.strip().rstrip(".").lower())
+        if re.fullmatch(r"[a-z]+", token) and token not in CLAUDE_SPECIAL:
+            families.add(token)
+    if not families:
+        raise ValueError("unexpected /model output: no model family listed")
+    ids = [mid for mid, m in models["models"].items()
+           if m.get("vendor") == "claude" and claude_family(mid, m) in families]
+    return ids, {}
+
+
+LISTERS = {"openai": (["debug", "models"], parse_codex), "google": (["models"], parse_agy),
+           "claude": (["-p", "/model", "--output-format", "json"], parse_claude)}
+
+
+def run_cli(cmd, timeout, cwd=None, env=None):
     """(returncode, stdout, stderr) or raises subprocess.TimeoutExpired after killing the tree."""
     kw = {} if os.name == "nt" else {"start_new_session": True}
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            encoding="utf-8", errors="replace", **kw)
+                            encoding="utf-8", errors="replace", cwd=cwd, env=env, **kw)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -121,13 +156,19 @@ def collect_vendor(vendor, models, local, timeout):
         return {"status": "missing"}, None
     args, parser = LISTERS[vendor]
     try:
-        code, out, err = run_cli(cli + args, timeout)
+        if vendor == "claude":
+            # Run outside the project so its hooks and settings do not load, and mark the process as a worker so
+            # a user-level copy of the role guard records nothing as an orchestrator. /model itself calls no model.
+            env = dict(os.environ, HARNESS_DELEGATE_RUN="1")
+            code, out, err = run_cli(cli + args, timeout, cwd=tempfile.gettempdir(), env=env)
+        else:
+            code, out, err = run_cli(cli + args, timeout)
         if code != 0:
             return {"status": "error", "detail": (err.strip().splitlines() or ["exit %d" % code])[0][:200]}, None
-        ids, info = parser(out)
+        ids, info = parser(out, models)
     except subprocess.TimeoutExpired:
         return {"status": "error", "detail": "timeout after %ss" % timeout}, None
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
         return {"status": "error", "detail": ("%s: %s" % (type(exc).__name__, exc))[:200]}, None
     if not ids:
         return {"status": "error", "detail": "no models parsed from output"}, None
@@ -438,17 +479,46 @@ def write_bench(cdir, timeout):
     return 0
 
 
+def write_available(cdir, timeout):
+    """--write-available: 0 written (or nothing to write), 2 config error."""
+    try:
+        models, local = load_config(cdir)
+    except (OSError, ValueError) as exc:
+        sys.stderr.write("models_collect: %s\n" % exc)
+        return 2
+    today =datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    got = {}
+    for vendor in sorted(models["vendors"]):
+        status, listing = collect_vendor(vendor, models, local, timeout)
+        print("%s: %s" % (vendor, status["status"]))
+        if listing:
+            got[vendor] = {"checked": today, "ids": listing["ids"]}
+    if got:
+        try:  # reload: keep edits made while the CLIs were answering
+            local = load(os.path.join(cdir, "models.local.json"), False)
+        except (OSError, ValueError) as exc:
+            sys.stderr.write("models_collect: models.local.json changed and is unreadable: %s\n" % exc)
+            return 2
+        local.setdefault("available", {}).update(got)
+        write_json(os.path.join(cdir, "models.local.json"), local)
+        print("wrote available for %s to models.local.json" % ", ".join(sorted(got)))
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description="Collect vendor model lists into a proposal file.")
     ap.add_argument("--project")
     ap.add_argument("--timeout", type=int, default=60)
     ap.add_argument("--mark-applied", action="store_true")
     ap.add_argument("--write-bench", action="store_true")
+    ap.add_argument("--write-available", action="store_true")
     args = ap.parse_args(argv)
     here = os.path.dirname(os.path.abspath(__file__))
     cdir = os.environ.get("TAGTEAM_CONFIG_DIR") or here
     if args.write_bench:
         return write_bench(cdir, args.timeout)
+    if args.write_available:
+        return write_available(cdir, args.timeout)
     project = os.path.abspath(args.project or os.path.dirname(os.path.dirname(here)))
     state = role_guard.state_dir({"cwd": project})
     proposal = os.path.join(state, "model-update.json")

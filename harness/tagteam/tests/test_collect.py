@@ -60,8 +60,9 @@ class CollectTest(unittest.TestCase):
         with open(os.path.join(self.cfg, "models.local.json"), "w", encoding="utf-8") as f:
             json.dump(data, f)
 
-    def collect(self, openai=None, google=None, extra=(), key="", fetch=None):
+    def collect(self, openai=None, google=None, extra=(), key="", fetch=None, claude=None):
         env = {"TAGTEAM_CONFIG_DIR": self.cfg, "TAGTEAM_STATE_DIR": self.state, "TAGTEAM_AA_API_KEY": key,
+               "TAGTEAM_CLI_CLAUDE": claude or self.cli(os.path.join(FIX, "claude_model.json")),
                "TAGTEAM_CLI_OPENAI": openai or self.cli(os.path.join(FIX, "codex_models.json")),
                "TAGTEAM_CLI_GOOGLE": google or self.cli(os.path.join(FIX, "agy_models.txt"))}
         out, err = io.StringIO(), io.StringIO()
@@ -151,13 +152,72 @@ class CollectTest(unittest.TestCase):
         self.assertEqual((code, prop["cli"]["openai"]["status"], prop["cli"]["openai"]["detail"]), (1, "error", "boom"))
         self.assertNotIn("openai", prop["available"])
         self.assertFalse([c for c in prop["changes"] if c["vendor"] == "openai"])
-        code, prop = self.collect(openai=self.cli(code=2, err="x"), google=err)
+        code, prop = self.collect(openai=self.cli(code=2, err="x"), google=err, claude=self.cli(code=1, err="y"))
         self.assertEqual(code, 3)
-        self.assertEqual(prop["cli"]["claude"]["status"], "unlisted")
+        self.assertEqual(prop["cli"]["claude"]["status"], "error")
         self.assertEqual(prop["available"], {})
         self.local({"plans": {"openai": "none"}})
         code, prop = self.collect(openai=self.cli(code=2, err="would fail if run"))
         self.assertEqual((code, prop["cli"]["openai"]["status"]), (0, "skipped"))
+
+    def test_claude_model_families(self):
+        code, prop = self.collect()
+        self.assertEqual((code, prop["cli"]["claude"]["status"]), (0, "ok"))
+        self.assertEqual(sorted(prop["available"]["claude"]["ids"]),
+                         sorted(m for m, v in self.models["models"].items() if v["vendor"] == "claude"))
+        self.assertFalse([c for c in prop["changes"] if c["vendor"] == "claude" and c["kind"] == "new_model"])
+        # a plan without fable: fable models are not offered
+        text = read(os.path.join(FIX, "claude_model.json")).replace(" fable,", "").replace(" fable[1m],", "")
+        path = os.path.join(self.tmp, "claude_nofable.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        self.local({"available": {"claude": {"ids": ["claude-fable-5-2"]}}})
+        _, prop = self.collect(claude=self.cli(path))
+        self.assertNotIn("claude-fable-5-2", prop["available"]["claude"]["ids"])
+        self.assertIn("claude-opus-5-5", prop["available"]["claude"]["ids"])
+        gone = [c for c in prop["changes"] if c["kind"] == "no_longer_available" and c["vendor"] == "claude"]
+        self.assertEqual([c["model"] for c in gone], ["claude-fable-5-2"])
+
+    def test_write_available_updates_local_only(self):
+        self.local({"plans": {"claude": "max"}, "available": {"google": {"ids": ["old"]}}})
+        before = os.listdir(self.state)
+        self.collect(google=self.cli(code=1, err="down"), extra=["--write-available"])
+        local = json.loads(read(os.path.join(self.cfg, "models.local.json")))
+        self.assertEqual(local["plans"], {"claude": "max"})
+        self.assertEqual(local["available"]["google"], {"ids": ["old"]})  # failed vendor keeps its old list
+        self.assertIn("claude-opus-5-5", local["available"]["claude"]["ids"])
+        self.assertIn("gpt-6.1-sol", local["available"]["openai"]["ids"])
+        self.assertEqual(os.listdir(self.state), before)  # no proposal written
+
+    def test_claude_aliases_case_and_variants(self):
+        models = {"models": {"claude-opus-5-5": {"vendor": "claude"}, "claude-fable-5-2": {"vendor": "claude"},
+                             "claude-x-1": {"vendor": "claude", "family": "fable"}}}
+        ids, _ = mc.parse_claude(json.dumps({"result": "Available: Opus, fable[1m], default."}), models)
+        self.assertEqual(sorted(ids), ["claude-fable-5-2", "claude-opus-5-5", "claude-x-1"])
+
+    def test_claude_lister_runs_outside_the_project(self):
+        calls = []
+
+        def fake(cmd, timeout, cwd=None, env=None):
+            calls.append({"cmd": cmd, "cwd": cwd, "env": env})
+            return 0, read(os.path.join(FIX, "claude_model.json")), ""
+        with mock.patch.object(mc, "run_cli", side_effect=fake),                 mock.patch.object(mc.run, "resolve_cli", return_value=["claude"]):
+            status, listing = mc.collect_vendor("claude", self.models, {}, 5)
+        self.assertEqual(status["status"], "ok")
+        listing_call = calls[0]
+        self.assertIn("/model", listing_call["cmd"])
+        self.assertEqual(listing_call["cwd"], mc.tempfile.gettempdir())
+        self.assertEqual(listing_call["env"]["HARNESS_DELEGATE_RUN"], "1")
+
+    def test_claude_model_unexpected_output_is_error(self):
+        path = os.path.join(self.tmp, "claude_odd.json")
+        for text in ('{"result": "no list here"}', "not json", '{"result": "Available: best, default"}',
+                     '{"result": {"message": "unavailable"}}', '[1, 2]'):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            code, prop = self.collect(claude=self.cli(path))
+            self.assertEqual((code, prop["cli"]["claude"]["status"]), (1, "error"), text)
+            self.assertNotIn("claude", prop["available"])
 
     def test_empty_output_is_error(self):
         code, prop = self.collect(google=self.cli("-"))
@@ -180,7 +240,7 @@ class CollectTest(unittest.TestCase):
         for key in ("schema", "created", "project", "cli", "available", "changes", "digest"):
             self.assertIn(key, prop)
         self.assertRegex(prop["created"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-        self.assertEqual(sorted(prop["available"]), ["google", "openai"])
+        self.assertEqual(sorted(prop["available"]), ["claude", "google", "openai"])
         self.assertEqual(prop["available"]["google"]["checked"], prop["created"][:10])
         self.assertEqual(len(prop["digest"]), 16)
         after = {n: digest_of(os.path.join(self.cfg, n)) for n in before}
@@ -416,7 +476,8 @@ class BenchTest(CollectTest):
         del self.models["vendors"]["claude"]["aa_creator"]
         self.write_models()
         _, prop = self.run_aa()
-        self.assertFalse([c for c in prop["changes"] if c["vendor"] == "claude"])
+        self.assertFalse([c for c in prop["changes"] if c["vendor"] == "claude"
+                          and c["kind"] in ("bench_changed", "bench_added", "new_model")])
 
     def test_aa_slug_override(self):
         e = {"creator": "Anthropic", "base": "other-slug", "effort": "high", "name": "X (High)",
@@ -567,8 +628,8 @@ class BenchTest(CollectTest):
 
     def test_cli_all_failed_still_3_with_bench_error(self):
         err = self.cli(os.path.join(FIX, "agy_error.txt"), code=1, err="not logged in")
-        code, _ = self.collect(openai=self.cli(code=2, err="x"), google=err, key=AA_KEY,
-                               fetch=self.aa(fail=ValueError("x")))
+        code, _ = self.collect(openai=self.cli(code=2, err="x"), google=err, claude=self.cli(code=1, err="y"),
+                               key=AA_KEY, fetch=self.aa(fail=ValueError("x")))
         self.assertEqual(code, 3)
 
     def test_key_never_appears_anywhere(self):

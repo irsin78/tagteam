@@ -33,8 +33,17 @@ if event == "PreToolUse":
         sys.stderr.write("deny"); sys.exit(2)
 sys.exit(0)
 '''
-FAKE_COLLECT = '''import os, sys
+FAKE_COLLECT = '''import json, os, sys
 cfg = os.path.dirname(os.path.abspath(__file__))
+if "--write-available" in sys.argv:
+    with open(os.path.join(cfg, "avail.log"), "a") as f:
+        f.write(" ".join(sys.argv[1:]) + "\\n")
+    path =os.path.join(cfg, "models.local.json")
+    data = json.load(open(path)) if os.path.exists(path) else {}
+    data["available"] = {"openai": {"ids": ["m1"]}}
+    json.dump(data, open(path, "w"))
+    print("wrote available for openai to models.local.json")
+    sys.exit(0)
 with open(os.path.join(cfg, "calls.log"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "|" + os.environ.get("TAGTEAM_AA_API_KEY", "") + "\\n")
 if os.environ.get("FAKE_COLLECT_FAIL"):
@@ -114,7 +123,7 @@ class InstallTests(unittest.TestCase):
         self.run_install()
         (self.dst / "AGENTS.md").write_text(
             "# old head\n\n## Project policy\n\nMY POLICY\n", encoding="utf-8")
-        (self.dst / ".claude/tagteam/models.local.json").write_text('{"mine": 1}', encoding="utf-8")
+        (self.dst / ".claude/tagteam/models.local.json").write_text('{"mine": 1, "available": {"google": {"ids": ["g"]}}}', encoding="utf-8")
         (self.dst / ".codex/hooks.json").write_text('{"trusted": true}', encoding="utf-8")
         (self.dst / ".claude/settings.json").write_text(json.dumps(
             {"hooks": {"old": 1}, "permissions": {"allow": ["x"]}, "subagentPromptCacheTtl": "5m"}),
@@ -126,7 +135,7 @@ class InstallTests(unittest.TestCase):
         self.assertIn("MY POLICY", agents)
         self.assertNotIn("template placeholder", agents)
         self.assertNotIn("old head", agents)
-        self.assertEqual((self.dst / ".claude/tagteam/models.local.json").read_text(), '{"mine": 1}')
+        self.assertEqual((self.dst / ".claude/tagteam/models.local.json").read_text(), '{"mine": 1, "available": {"google": {"ids": ["g"]}}}')
         self.assertEqual((self.dst / ".codex/hooks.json").read_text(), '{"trusted": true}')
         self.assertIn("kept", out)
         s = json.loads((self.dst / ".claude/settings.json").read_text(encoding="utf-8"))
@@ -173,6 +182,26 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn("k-123", out)
         self.run_install("--update")  # file exists: not touched again
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_available_written_once(self):
+        code, out = self.run_install()
+        self.assertEqual(code, 0)
+        avail_log = self.dst / ".claude/tagteam/avail.log"
+        self.assertEqual(avail_log.read_text().splitlines(), ["--write-available --timeout 30"])
+        local = json.loads((self.dst / ".claude/tagteam/models.local.json").read_text(encoding="utf-8"))
+        self.assertEqual(local["available"], {"openai": {"ids": ["m1"]}})
+        self.assertEqual(local["plans"], {})  # other keys kept
+        self.assertIn("available model lists written", out)
+        self.run_install("--update")  # lists exist: not asked again
+        self.assertEqual(len(avail_log.read_text().splitlines()), 1)
+
+    def test_available_retried_for_missing_vendor(self):
+        self.run_install()
+        avail_log = self.dst / ".claude/tagteam/avail.log"
+        (self.src / "harness/tagteam/models.json").write_text(json.dumps(
+            {"vendors": {"openai": {}, "claude": {}}}), encoding="utf-8")
+        self.run_install("--update")  # claude has no list yet: asked again
+        self.assertEqual(len(avail_log.read_text().splitlines()), 2)
 
     def test_bench_not_written_without_key(self):
         self.run_install()
