@@ -1,12 +1,13 @@
 # tagteam
 
-A small harness for one developer who works with Claude Code and Codex (and optionally Gemini through the `agy` CLI) on the
-same project. One session, the *orchestrator*, splits the work. Worker sessions design, implement and read. A reviewer from
-another vendor checks the result. Only the orchestrator commits.
+A small harness for one developer who works with several coding-agent CLIs on the same project. One session, the
+*orchestrator*, splits the work. Worker sessions design, implement and read. A reviewer running on another vendor's model
+checks the result. Only the orchestrator commits. Supported CLIs and their roles: [manual section
+1](docs/manual.md#1-install-and-update).
 
 What it adds to a project:
 
-- One instruction file, `AGENTS.md`, read by both Claude Code and Codex.
+- One instruction file, `AGENTS.md`, read by every supported orchestrator CLI.
 - A router that picks model and effort for each role from a grade table, so that a worker never silently runs on the
   wrong model.
 - A launcher that runs another vendor's CLI as a worker and checks which model really answered.
@@ -31,9 +32,8 @@ It does not ship a service, a UI or a message relay (scope and known gaps: [docs
 ## Requirements
 
 - Python 3.9 or newer (standard library only) and git.
-- Claude Code. Codex (`codex`) and `agy` are optional; a vendor whose CLI is missing is skipped by the router.
-- The session pool uses the session tool of the Claude Code desktop app. Without it, native subagents and the launcher
-  still work.
+- At least one supported orchestrator CLI; the others are optional, and a vendor whose CLI is missing is skipped by the
+  router. Which CLI can do what: [manual section 1](docs/manual.md#1-install-and-update).
 - Windows is the verified platform. macOS and Linux are not yet verified; see
   [docs/platform/](docs/platform/windows.md).
 
@@ -46,7 +46,8 @@ Clone this repository, then install into your project:
     python install.py <project dir> --update
 
 `--check` looks for the CLIs on PATH and feeds fake payloads to the installed hook; `--update` refreshes an existing
-install. Then open the project in Claude Code and give it a mission; the orchestrator loads the `cycle` skill itself. Fill
+install. Then open the project in your orchestrator CLI and give it a mission; it follows `AGENTS.md` and the `cycle`
+procedure. Fill
 in the `## Project policy` section at the bottom of the installed `AGENTS.md` (verification commands, conventions, protected
 scope, push mode).
 
@@ -57,7 +58,7 @@ A weekly check of the vendors' model lists is optional: `python install.py <proj
 | Path | Installed as | Purpose |
 |---|---|---|
 | `install.py` | (not installed) | install, update, check, schedule |
-| `AGENTS.md.template`, `CLAUDE.md.template` | `AGENTS.md`, `CLAUDE.md` | the instruction file and its Claude Code import |
+| `AGENTS.md.template`, `CLAUDE.md.template` | `AGENTS.md`, `CLAUDE.md` | the instruction file and a one-line import of it |
 | `harness/claude/` | `.claude/` | hook settings, worker agent definitions, skills |
 | `harness/codex/` | `.codex/` | hook settings, worker agent definitions |
 | `harness/tagteam/` | `.claude/tagteam/` | `route.py`, `run.py`, `role_guard.py`, `models_collect.py`, `models.json` |
@@ -75,10 +76,10 @@ A weekly check of the vendors' model lists is optional: `python install.py <proj
 
 ## Benchmark data
 
-Optional. With an Artificial Analysis API key in the environment variable `TAGTEAM_AA_API_KEY`, install writes scores and
-prices from the free Data API to `.claude/tagteam/bench.local.json` (machine-local, git-ignored), and the weekly collector
-proposes updates. Without a key, routes follow the `defaults` lists and the model order in `models.json`. Model benchmark
-data: [Artificial Analysis](https://artificialanalysis.ai/).
+Optional. With a benchmark API key in the environment variable `TAGTEAM_AA_API_KEY`, install writes model scores and
+prices to `.claude/tagteam/bench.local.json` (machine-local, git-ignored), and the weekly collector proposes updates.
+Without a key, routes follow the `defaults` lists and the model order in `models.json`. Data source and its attribution
+terms: [manual section 8](docs/manual.md#8-keeping-the-model-list-current).
 
 ## License
 

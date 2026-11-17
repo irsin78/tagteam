@@ -28,6 +28,14 @@ are in the project you installed into.
     python install.py <project dir> [--update] [--check] [--yes] [--source DIR]
     python install.py <project dir> --schedule | --unschedule [--dry-run]
 
+Supported CLIs (each optional except that you need one orchestrator):
+
+| CLI | Orchestrator (host) | Worker | Notes |
+|---|---|---|---|
+| Claude Code (`claude`) | yes | native subagent or session, or launcher | the session pool needs the session tool of the Claude Code desktop app; without it, subagents and the launcher still work |
+| Codex CLI (`codex`) | yes | native subagent, or launcher | |
+| Antigravity CLI (`agy`, Gemini models) | not yet ([design gaps](design.md)) | launcher only | |
+
 **Warning: install and update overwrite harness-owned files, in a plain run as well.** Customizations in the files marked
 "overwritten" below are lost, and the `hooks` and `subagentPromptCacheTtl` keys of an existing `.claude/settings.json` are
 replaced. Commit or back up the project first. Put per-machine changes in `.claude/tagteam/models.local.json` (section 5.2);
@@ -360,6 +368,10 @@ When several apply, 3 wins, then 7, 5, 4, 8, 1, 6.
 
 Vendors rename and add models often. The collector asks each CLI what it offers and what changed; a skill applies the
 result. No language model is involved in collecting.
+
+Benchmark scores and prices come from the free Data API of [Artificial Analysis](https://artificialanalysis.ai/); its
+terms require crediting it wherever the data is shown or shared. The values stay in the machine-local
+`bench.local.json` (its `source` field names them) and are not part of this repository.
 
     python .claude/tagteam/models_collect.py [--project DIR] [--timeout 60] [--mark-applied]
     python .claude/tagteam/models_collect.py --write-bench [--timeout 60]
