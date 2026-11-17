@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "updated": "2026-11-17",
+  "vendors": {
+    "claude": {"cli": "claude", "host": "claude", "model_arg": "{model}", "cooldown_minutes": 60},
+    "openai": {"cli": "codex", "host": "codex", "model_arg": "{model}", "cooldown_minutes": 60},
+    "google": {"cli": "agy", "host": null, "model_arg": "{model}-{effort}", "cooldown_minutes": 60}
+  },
+  "models": {
+    "claude-sonnet-5-5": {"vendor": "claude", "grade": "B", "efforts": ["low", "medium", "high"]},
+    "gpt-6.1-terra": {"vendor": "openai", "grade": "B", "efforts": ["low", "medium", "high"]},
+    "gemini-3.8-flash": {"vendor": "google", "grade": "B", "efforts": ["low", "medium", "high"], "label": "Gemini 3.8 Flash"}
+  }
+}

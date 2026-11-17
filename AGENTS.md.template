@@ -11,9 +11,12 @@ The user's instructions override skill guidance; on a conflict, follow the user 
 Every call that opens a session or a worker (`start_session`, a launcher run, a
 subagent without a fixed definition) passes `model` and `effort` explicitly. Take
 both from `python .claude/tagteam/route.py --role <role>` (roles: design,
-implement, review, read, translate). Until route.py is installed, use the values
-fixed in `.claude/agents/*.md` / `.codex/agents/*.toml`, or the overrides in
-Project policy. Left empty, a session inherits the orchestrator's model; sessions
+implement, review, read, translate; add `--json` for the launch command). A review
+needs `--author-vendor <vendor of the author>` and, to match the author's grade,
+`--grade <grade>`; pass `--orchestrator-model`/`--orchestrator-effort` so the
+router knows what a session may inherit. A `run` result goes through
+`.claude/tagteam/run.py`; a `native` result opens a session or subagent with
+those values. Left empty, a session inherits the orchestrator's model; sessions
 opened that way ran on the wrong model or did not run at all. A hook rejects
 `start_session` without `model` and `effort`.
 

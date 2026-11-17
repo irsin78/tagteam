@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "updated": "2026-11-17",
+  "grades": {
+    "S": "Vendor flagship; FrontierSWE pass@1 of 0.65 or more; for open-ended design judgment.",
+    "A": "Artificial Analysis index of 50 or more and cheaper than S; for review and hard design.",
+    "B": "Artificial Analysis index below 50, cheap and fast; for well-specified implementation, reading and translation."
+  },
+  "vendors": {
+    "claude": {"cli": "claude", "host": "claude", "model_arg": "{model}", "cooldown_minutes": 60},
+    "openai": {"cli": "codex", "host": "codex", "model_arg": "{model}", "cooldown_minutes": 60},
+    "google": {"cli": "agy", "host": null, "model_arg": "{model}-{effort}", "cooldown_minutes": 60}
+  },
+  "hosts": {
+    "claude": ["claude", "openai", "google"],
+    "codex": ["openai", "claude", "google"]
+  },
+  "roles": {
+    "design": {"grade": "A", "effort": "high", "pick": "best"},
+    "implement": {"grade": "B", "effort": "medium", "pick": "best"},
+    "review": {"grade": "A", "effort": "high", "pick": "best", "read_only": true},
+    "read": {"grade": "B", "effort": "low", "pick": "cheap", "read_only": true},
+    "translate": {"grade": "B", "effort": "medium", "pick": "best", "vendors": ["google", "openai", "claude"]}
+  },
+  "models": {
+    "claude-fable-5-2": {
+      "vendor": "claude", "grade": "S", "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 62, "effort": "high", "date": "2026-11-10"},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 9.08, "effort": "high", "date": "2026-11-10"},
+        {"source": "frontierswe", "metric": "pass1", "value": 0.699, "date": "2026-11-10"}
+      ]
+    },
+    "claude-opus-5-5": {
+      "vendor": "claude", "grade": "A", "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 54, "effort": "high", "date": "2026-09-30"},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 1.82, "effort": "high", "date": "2026-09-30"},
+        {"source": "frontierswe", "metric": "pass1", "value": 0.623, "date": "2026-09-30"}
+      ]
+    },
+    "claude-sonnet-5-5": {
+      "vendor": "claude", "grade": "B", "efforts": ["low", "medium", "high"],
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 47, "effort": "high", "date": "2026-10-19"},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 0.88, "effort": "high", "date": "2026-10-19"}
+      ]
+    },
+    "claude-haiku-5-5": {
+      "vendor": "claude", "grade": "B", "efforts": ["low", "medium", "high"],
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 34, "effort": "medium", "date": "2026-10-19", "provisional": true},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 0.05, "effort": "medium", "date": "2026-10-19", "provisional": true}
+      ]
+    },
+    "gpt-6-astra": {
+      "vendor": "openai", "grade": "S", "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "effort_by_role": {"design": "medium"},
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 51, "effort": "high", "date": "2026-09-30"},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 1.73, "effort": "high", "date": "2026-09-30"},
+        {"source": "frontierswe", "metric": "pass1", "value": 0.655, "date": "2026-09-30"}
+      ]
+    },
+    "gpt-6.1-sol": {
+      "vendor": "openai", "grade": "A", "efforts": ["low", "medium", "high", "xhigh"],
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 50, "effort": "high", "date": "2026-09-30", "provisional": true},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 0.32, "effort": "high", "date": "2026-09-30", "provisional": true}
+      ]
+    },
+    "gpt-6.1-terra": {
+      "vendor": "openai", "grade": "B", "efforts": ["low", "medium", "high", "xhigh"],
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 45, "effort": "xhigh", "date": "2026-10-27", "provisional": true},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 0.19, "effort": "xhigh", "date": "2026-10-27", "provisional": true}
+      ]
+    },
+    "gpt-6-luna": {
+      "vendor": "openai", "grade": "B", "efforts": ["low", "medium", "high", "xhigh"],
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 32, "effort": "high", "date": "2026-09-30", "provisional": true},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 0.03, "effort": "high", "date": "2026-09-30", "provisional": true}
+      ]
+    },
+    "gemini-4-argon": {
+      "vendor": "google", "grade": "A", "efforts": ["low", "medium", "high"], "label": "Gemini 4 Argon",
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 53, "effort": "high", "date": "2026-10-14"},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 1.99, "effort": "high", "date": "2026-10-14"}
+      ]
+    },
+    "gemini-3.8-flash": {
+      "vendor": "google", "grade": "B", "efforts": ["low", "medium", "high"], "label": "Gemini 3.8 Flash",
+      "bench": [
+        {"source": "artificial_analysis", "metric": "index", "value": 40, "effort": "medium", "date": "2026-09-30"},
+        {"source": "artificial_analysis", "metric": "cost_per_task", "value": 0.93, "effort": "medium", "date": "2026-09-30"}
+      ]
+    }
+  }
+}

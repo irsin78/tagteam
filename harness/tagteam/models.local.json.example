@@ -1,0 +1,9 @@
+{
+  "_comment": "Per-machine settings. Copy to models.local.json. plans: none|free|pro|max (missing vendor = pro; none removes the vendor, free moves it last in the default order). models.<id>.enabled false hides a model, true skips the availability check. available lists the ids the vendor CLI really offers (agy ids include the effort suffix); a vendor with no entry is assumed to offer everything. roles.<role> may set model, effort, vendor and grade.",
+  "plans": {"claude": "max", "openai": "pro", "google": "free"},
+  "models": {"gemini-4-argon": {"enabled": false}},
+  "available": {
+    "google": {"checked": "2026-11-17", "ids": ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high"]}
+  },
+  "roles": {}
+}
