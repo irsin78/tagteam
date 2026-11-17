@@ -78,22 +78,27 @@ Procedure: skill `cycle` (load it for any mission with more than one unit).
 
 ## 4. Verification
 
-Match depth to consequence, not to file count:
-- **Tier 0** - trivial, easily reverted: one cheap relevant check, or none with a reason.
-- **Tier 1** - ordinary behavior change: affected checks plus diff inspection; one
-  review if uncertainty remains.
-- **Tier 2** - possible irreversible loss, unauthorized external action, or
-  weakened protection: regression checks plus a deep review by another vendor.
+Every change is reviewed by another vendor; no tier skips review. The tier sets how
+reviews are grouped and how deep they go (by consequence, not file count):
+- **Tier 0** - trivial, easily reverted: the affected checks; the review is batched,
+  several Tier 0 units in one review at the next cut point.
+- **Tier 1** - ordinary behavior change: the affected checks, diff inspection and one
+  review of the unit.
+- **Tier 2** - possible irreversible loss, unauthorized external action, or weakened
+  protection: regression checks and two deep reviews: one, the fixes, then a second
+  review of the fixed result (another reviewer model when one is available).
 
-Review-and-fix: one round by default, a second only for a remaining blocker, then
-report the rest as incomplete. Reviewers use a different vendor than the author
-at the same grade; if none is available, report "no independent review - incomplete".
+Reviewers use a different vendor than the author at the same grade; if none is
+available, report "no independent review - incomplete" and do not mark the unit done.
+Findings go back to the worker that wrote the change. After its fixes the orchestrator
+checks the new diff against the findings (Tier 2: the second review does this). A
+blocker left after the last review is reported as incomplete.
 
 Timing: comparing a report with the actual files is cheap and happens on every
-return. Expensive checks (full test suite, cross-vendor review) are batched: run
-them before other work builds on a result, right after a risky change, and before
-a merge. Run the next unit while a batch is being verified. Record which units a
-batch covers so a failure can be narrowed down.
+return. A Tier 1 review runs when the unit returns, a Tier 2 review before anything
+builds on the unit, and the Tier 0 batch and the full test suite at cut points (before
+other work builds on a result, and before a merge). Run the next unit while a review
+runs when they share no files. Record which units a review covers.
 
 ## 5. Commit, push, release
 

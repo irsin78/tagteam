@@ -170,7 +170,8 @@ and, on Windows, `.git` is read-only inside its sandbox, so Codex workers cannot
 
 ## 4. Verification and review
 
-AGENTS.md section 4 defines three levels (Tier 0, 1, 2), review-and-fix and batching. Operationally:
+**Every change gets a review by another vendor; nothing skips it.** AGENTS.md section 4 sets how: Tier 0 units are
+reviewed together in one batch, a Tier 1 unit once, a Tier 2 unit twice (review, fixes, second review). Operationally:
 
 - Fill in `Verification commands` in `## Project policy` with the exact commands and what counts as passing. Workers run
   the commands named in their brief.

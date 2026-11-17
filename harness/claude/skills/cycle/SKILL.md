@@ -74,19 +74,20 @@ latest message, not in edits to earlier context.
   anything larger goes back to the same worker with the delta only.
 - Update status.md.
 
-## 6. Batched verification and cross-vendor review
+## 6. Verification and cross-vendor review (AGENTS.md section 4)
 
-- Choose cut points: before the next unit builds on this result, right after a risky
-  (Tier 2) change, and before merging a branch. Not after every unit.
-- At a cut point run the expensive checks once over the batch: full test suite, then a
-  review by another vendor at the same grade (router `--role review`). Name the units
-  in the batch so a failure can be traced.
+- Every unit gets a review by another vendor at the same grade (router `--role review`);
+  the tier sets when and how deep: Tier 1 when the unit returns, Tier 2 twice (review,
+  fixes, second review) before anything builds on it, Tier 0 batched at a cut point.
+- Cut points: before the next unit builds on a result, and before merging a branch. At
+  a cut point run the full test suite once and the batched Tier 0 review. Name the units
+  a review covers so a failure can be traced.
 - Give the reviewer: the acceptance question, the changed hunks, needed interfaces and
   the spec; not whole trees or logs.
 - Keep the next unit running while a batch is verified, when they share no files.
-- Review-and-fix: one round, a second only for a remaining blocker, then report incomplete.
-  Send the findings back to the worker that wrote the change (it already has the context);
-  the orchestrator then checks the new diff.
+- Send the findings back to the worker that wrote the change (it already has the context);
+  the orchestrator then checks the new diff. A blocker left after the last review of the
+  tier is reported as incomplete.
 
 ## 7. Merge and commit
 
