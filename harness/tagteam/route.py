@@ -188,7 +188,7 @@ class Router:
     def pick(self, role, spec, vendor, grade):
         cands = []
         for mid, m in self.m["models"].items():
-            if m["vendor"] != vendor or m["grade"] != grade:
+            if m["vendor"] != vendor or m["grade"] != grade or m.get("candidate"):
                 continue
             effort, clamped = self.role_effort(role, mid, spec)
             if self.usable(mid, effort):

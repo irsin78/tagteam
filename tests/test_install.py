@@ -1,11 +1,15 @@
 import contextlib
+import hashlib
 import io
 import json
+import os
+import plistlib
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 INSTALL = Path(__file__).resolve().parent.parent / "install.py"
 sys.path.insert(0, str(INSTALL.parent))
@@ -160,6 +164,200 @@ class InstallTests(unittest.TestCase):
         p = subprocess.run([sys.executable, str(INSTALL), str(self.dst), "--source", str(self.src),
                             "--yes"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
         self.assertEqual(p.returncode, 0, p.stderr)
+
+
+SKILL = INSTALL.parent / "harness/claude/skills/model-update/SKILL.md"
+GUARD_WITH_STATE = "import os\ndef state_dir(payload):\n    return os.environ['TAGTEAM_STATE_DIR']\n"
+
+
+class ScheduleTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.proj = (base / "proj").resolve()
+        (self.proj / ".claude/tagteam").mkdir(parents=True)
+        (self.proj / ".claude/tagteam/models_collect.py").write_text("# collector\n", encoding="utf-8")
+        (self.proj / ".claude/tagteam/role_guard.py").write_text(GUARD_WITH_STATE, encoding="utf-8")
+        self.state = base / "state"
+        self.state.mkdir()
+        self.home = base / "home"
+        self.calls = []
+        self.fail = lambda argv: False
+        self.crontab = ""
+
+    def runner(self, argv, input_text=None):
+        self.calls.append((argv, input_text))
+        if argv[:2] == ["crontab", "-l"]:
+            return (0, self.crontab) if self.crontab else (1, "no crontab")
+        return (1, "boom") if self.fail(argv) else (0, "")
+
+    def sched(self, plat, dry=False):
+        return install.Scheduler(self.proj, plat, self.runner, dry, python="/usr/bin/py", home=self.home, uid=501)
+
+    def name(self):
+        return "tagteam-models-" + hashlib.sha1(str(self.proj).encode("utf-8")).hexdigest()[:8]
+
+    def quiet(self, fn):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = fn()
+        return code, out.getvalue()
+
+    def cmd(self):
+        return ["/usr/bin/py", str(self.proj / ".claude/tagteam/models_collect.py"), "--project", str(self.proj)]
+
+    def test_windows_schedule_xml_and_argv(self):
+        captured = {}
+
+        def runner(argv, input_text=None):
+            self.calls.append(argv)
+            if "/XML" in argv:
+                data = Path(argv[argv.index("/XML") + 1]).read_bytes()
+                captured["raw"] = data
+            return 0, ""
+        s = install.Scheduler(self.proj, "windows", runner, False, python="C:/Py/python.exe")
+        code, _ = self.quiet(s.schedule)
+        self.assertEqual(code, 0)
+        name = self.name()
+        self.assertEqual(self.calls[0][:4], ["schtasks", "/Create", "/TN", name])
+        self.assertEqual(self.calls[0][4], "/XML")
+        self.assertEqual(self.calls[0][-1], "/F")
+        raw = captured["raw"]
+        self.assertTrue(raw.startswith(b"\xff\xfe"))
+        xml = raw[2:].decode("utf-16-le")
+        for want in ("<Monday />", "<LogonType>InteractiveToken</LogonType>", "<StartWhenAvailable>true</StartWhenAvailable>",
+                     "<ExecutionTimeLimit>PT10M</ExecutionTimeLimit>", "<RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>",
+                     '<Command>"C:/Py/python.exe"</Command>', "models_collect.py", "--project", f"<WorkingDirectory>{self.proj}</WorkingDirectory>"):
+            self.assertIn(want, xml)
+        self.assertFalse(Path(self.calls[0][5]).exists(), "temp xml removed")
+
+    def test_task_name_hash_per_project(self):
+        self.assertEqual(install.task_name(self.proj), self.name())
+        self.assertNotEqual(install.task_name(self.proj), install.task_name(self.proj / "other"))
+        self.assertRegex(self.name(), r"^tagteam-models-[0-9a-f]{8}$")
+
+    def test_windows_xml_failure_falls_back_to_weekly(self):
+        self.fail = lambda argv: "/XML" in argv
+        code, out = self.quiet(self.sched("windows").schedule)
+        self.assertEqual(code, 0)
+        fallback = self.calls[1][0]
+        self.assertEqual(fallback[:2], ["schtasks", "/Create"])
+        for tok in ("/SC", "WEEKLY", "/D", "MON", "/ST", "09:00", "/TR", "/F"):
+            self.assertIn(tok, fallback)
+        self.assertIn("will not be re-run", out)
+
+    def test_dry_run_runs_nothing_and_shows_xml(self):
+        code, out = self.quiet(self.sched("windows", dry=True).schedule)
+        self.assertEqual((code, self.calls), (0, []))
+        self.assertIn("InteractiveToken", out)
+        self.assertIn("schtasks /Create /TN", out)
+
+    def test_macos_schedule_and_unschedule(self):
+        s = self.sched("macos")
+        self.quiet(s.schedule)
+        plist = self.home / f"Library/LaunchAgents/net.tagteam.{self.name()}.plist"
+        data = plistlib.loads(plist.read_bytes())
+        self.assertEqual(data["ProgramArguments"], self.cmd())
+        self.assertEqual(data["StartCalendarInterval"], {"Weekday": 1, "Hour": 9, "Minute": 0})
+        self.assertEqual(data["WorkingDirectory"], str(self.proj))
+        self.assertEqual(self.calls[-1][0], ["launchctl", "bootstrap", "gui/501", str(plist)])
+        self.quiet(self.sched("macos").schedule)  # overwrite: boots out the old one first
+        self.assertIn(["launchctl", "bootout", f"gui/501/net.tagteam.{self.name()}"], [c[0] for c in self.calls])
+        self.calls.clear()
+        self.assertEqual(self.quiet(self.sched("macos").unschedule)[0], 0)
+        self.assertEqual(self.calls[0][0], ["launchctl", "bootout", f"gui/501/net.tagteam.{self.name()}"])
+        self.assertFalse(plist.exists())
+
+    def test_linux_crontab_replaces_marked_line_only(self):
+        mark = "# " + self.name()
+        self.crontab = f"5 5 * * * other job\n0 9 * * 1 old {mark}\n"
+        self.quiet(self.sched("linux").schedule)
+        written = self.calls[-1][1]
+        self.assertEqual(self.calls[-1][0], ["crontab", "-"])
+        lines = written.splitlines()
+        self.assertEqual(lines[0], "5 5 * * * other job")
+        self.assertEqual(sum(ln.endswith(mark) for ln in lines), 1)
+        self.assertTrue(lines[1].startswith("0 9 * * 1 /usr/bin/py "))
+        self.assertIn("--project", lines[1])
+        self.crontab = written
+        self.calls.clear()
+        self.quiet(self.sched("linux").unschedule)
+        self.assertEqual(self.calls[-1][1], "5 5 * * * other job\n")
+
+    def test_crontab_read_error_never_writes(self):
+        reads = []
+
+        def runner(argv, input_text=None):
+            self.calls.append((argv, input_text))
+            if argv == ["crontab", "-l"]:
+                reads.append(1)
+                return 1, "crontab: error while loading shared libraries"
+            return 0, ""
+        for op in ("schedule", "unschedule"):
+            self.calls.clear()
+            s = install.Scheduler(self.proj, "linux", runner, False, python="/usr/bin/py")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                code = getattr(s, op)()
+            self.assertEqual(code, 1, op)
+            self.assertIn("cannot read the crontab", err.getvalue())
+            self.assertEqual([c for c in self.calls if c[0] == ["crontab", "-"]], [], op)
+        self.assertEqual(len(reads), 2, "one read per operation")
+
+    def test_crontab_read_once_and_percent_escaped(self):
+        odd = self.proj / "100%done"
+        s = install.Scheduler(odd, "linux", self.runner, False, python="/usr/bin/py")
+        self.quiet(s.schedule)
+        self.assertEqual(sum(c[0] == ["crontab", "-l"] for c in self.calls), 1)
+        line = self.calls[-1][1].splitlines()[-1]
+        self.assertIn("100\\%done", line)
+        self.assertNotIn("100%done", line)
+
+    def test_unschedule_when_not_registered_is_ok(self):
+        for plat in ("windows", "macos", "linux"):
+            self.fail = lambda argv: True
+            code, out = self.quiet(self.sched(plat).unschedule)
+            self.assertEqual(code, 0, plat)
+            self.assertIn("not registered", out)
+
+    def test_unschedule_deletes_proposal_files_and_uses_delete_argv(self):
+        for fn in ("model-update.json", "model-update.applied", "keep.txt"):
+            (self.state / fn).write_text("x", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state)}):
+            code, _ = self.quiet(self.sched("windows").unschedule)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.calls[0][0], ["schtasks", "/Delete", "/TN", self.name(), "/F"])
+        self.assertEqual(sorted(p.name for p in self.state.iterdir()), ["keep.txt"])
+
+    def test_main_flags(self):
+        calls = []
+        runner = lambda argv, input_text=None: calls.append(argv) or (0, "")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(install.main([str(self.proj), "--schedule", "--dry-run"], runner, "linux"), 0)
+            self.assertEqual(install.main([str(self.proj), "--schedule"], runner, "windows"), 0)
+            self.assertEqual(install.main([str(self.proj), "--unschedule", "--yes"], runner, "windows"), 0)
+        self.assertIn("[dry-run] crontab -", out.getvalue())
+        self.assertEqual([c[:2] for c in calls if c[0] == "schtasks"], [["schtasks", "/Create"], ["schtasks", "/Delete"]])
+        self.assertFalse((self.proj / "AGENTS.md").exists(), "schedule-only must not reinstall")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            install.main([str(self.proj), "--dry-run"])
+
+    def test_schedule_without_installed_collector_fails_without_registering(self):
+        (self.proj / ".claude/tagteam/models_collect.py").unlink()
+        calls = []
+        runner = lambda argv, input_text=None: calls.append(argv) or (0, "")
+        src = self._tmp.name + "/nosrc"
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = install.main([str(self.proj), "--schedule", "--source", src], runner, "windows")
+        self.assertEqual((code, calls), (1, []))
+
+    def test_skill_file(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertLessEqual(len(text.splitlines()), 80)
+        self.assertTrue(text.startswith("---\nname: model-update\ndescription:"))
+        self.assertIn("Do not use it in a worker", text)
+        for kw in ("worker", "model-update.json", "route.py", "Artificial Analysis", "FrontierSWE", "candidate",
+                   "probe", "--check", "[fix:", "Commit", "--mark-applied"):
+            self.assertIn(kw, text, kw)
 
 
 if __name__ == "__main__":

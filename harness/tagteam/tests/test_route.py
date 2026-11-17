@@ -219,6 +219,18 @@ class RouteTest(unittest.TestCase):
         self.assertIn("cli_missing:claude", r["reason"])
         self.assertNotIn("user_override", r["reason"])
 
+    def test_candidate_skipped_by_default_but_selectable(self):
+        path = os.path.join(self.cfg, "models.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["models"]["claude-sonnet-5-5"]["candidate"] = True
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        self.assertPick(self.route("implement"), "claude-haiku-5-5", "medium")
+        self.local({"roles": {"implement": {"model": "claude-sonnet-5-5"}}})
+        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")
+        self.assertEqual(r["reason"], ["user_override"])
+
     # 13
     def test_registry(self):
         with open(os.path.join(TAGTEAM, "models.json"), encoding="utf-8") as f:

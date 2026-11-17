@@ -122,6 +122,62 @@ class RoleGuardTest(unittest.TestCase):
         self.prompt("hello")
         self.assertTrue(os.path.exists(os.path.join(self.state, "sessions", "s1.json")))
 
+    # model-update notice (P4)
+    def proposal(self, created=None, digest="d1", changes=1, errors=0, applied=None):
+        import datetime
+        created = created or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cli = {"openai": {"status": "error" if errors else "ok"}}
+        with open(os.path.join(self.state, "model-update.json"), "w", encoding="utf-8") as f:
+            json.dump({"schema": 1, "created": created, "cli": cli, "digest": digest,
+                       "changes": [{"kind": "new_model"}] * changes}, f)
+        if applied:
+            with open(os.path.join(self.state, "model-update.applied"), "w", encoding="utf-8") as f:
+                json.dump({"digest": applied}, f)
+
+    def start_lines(self, env=None, payload=None):
+        r = self.run_guard("SessionStart", payload or {"session_id": "n"}, env=env)
+        self.assertEqual(r.returncode, 0)
+        return r.stdout.strip().splitlines()
+
+    def test_notice_for_pending_proposal(self):
+        self.proposal(changes=2, errors=1)
+        lines = self.start_lines()
+        self.assertEqual(len(lines), 2)
+        self.assertRegex(lines[1], r"^TAGTEAM: model update proposal \(2 changes, 1 CLI errors, collected \d{4}-\d\d-\d\d\); "
+                                   r"orchestrator: load skill model-update\.$")
+
+    def test_no_notice_when_applied_worker_missing_or_broken(self):
+        self.assertEqual(len(self.start_lines()), 1)  # no proposal file
+        self.proposal(applied="d1")
+        self.assertEqual(len(self.start_lines()), 1)
+        self.proposal(changes=0, errors=0)
+        self.assertEqual(len(self.start_lines()), 1)  # nothing to report
+        self.proposal()
+        self.assertEqual(len(self.start_lines(env={"HARNESS_DELEGATE_RUN": "1"})), 1)
+        self.assertEqual(len(self.start_lines(payload={"session_id": "n", "agent_id": "a"})), 1)
+        with open(os.path.join(self.state, "model-update.json"), "w") as f:
+            f.write("{broken")
+        r = self.run_guard("SessionStart", {"session_id": "n"})
+        self.assertEqual((r.returncode, len(r.stdout.strip().splitlines())), (0, 1))
+
+    def test_applied_marker_states(self):
+        marker = os.path.join(self.state, "model-update.applied")
+        self.proposal()
+        self.assertEqual(len(self.start_lines()), 2)  # no marker: not applied
+        for body in ("{broken", "[1]", "{}"):
+            with open(marker, "w") as f:
+                f.write(body)
+            self.assertEqual(len(self.start_lines()), 1, body)  # unreadable marker: silent
+        os.remove(marker)
+        os.mkdir(marker)  # exists but cannot be read as a file
+        self.assertEqual(len(self.start_lines()), 1)
+
+    def test_stale_collection_warning(self):
+        self.proposal(created="2020-01-01T00:00:00Z")
+        lines = self.start_lines()
+        self.assertEqual(len(lines), 2)
+        self.assertRegex(lines[1], r"^TAGTEAM: model list not collected for \d+ days; check the scheduled task")
+
 
 if __name__ == "__main__":
     unittest.main()

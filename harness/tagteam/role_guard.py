@@ -7,6 +7,7 @@ Any internal error fails open (exit 0 with a warning on stderr).
 State lives in <git common dir>/tagteam/ (or <project root>/.tagteam/ outside git);
 TAGTEAM_STATE_DIR overrides it (tests).
 """
+import datetime
 import json
 import os
 import re
@@ -91,6 +92,38 @@ def shell_command(tool_input):
 def on_session_start(payload, host):
     role = "worker" if is_worker(payload) else "orchestrator"
     print("TAGTEAM: role=%s host=%s" % (role, host))
+    if role == "orchestrator":
+        try:
+            note = model_update_notice(payload)
+        except Exception:  # fail open: a notice bug must not block a session
+            note = None
+        if note:
+            print(note)
+
+
+def model_update_notice(payload):
+    """One line about a pending model-list proposal, or a stale-collection warning."""
+    base = state_dir(payload)
+    with open(os.path.join(base, "model-update.json"), encoding="utf-8") as f:
+        prop = json.load(f)
+    created = datetime.datetime.strptime(prop["created"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    days = (datetime.datetime.now(datetime.timezone.utc) - created).days
+    if days > 14:
+        return ("TAGTEAM: model list not collected for %d days; "
+                "check the scheduled task (install.py --schedule)." % days)
+    try:
+        with open(os.path.join(base, "model-update.applied"), encoding="utf-8") as f:
+            applied = json.load(f)["digest"]
+    except FileNotFoundError:
+        applied = None  # never applied
+    except (OSError, ValueError, KeyError, TypeError):
+        return None  # unreadable marker: stay silent
+    changes = len(prop.get("changes") or [])
+    errors = sum(1 for c in (prop.get("cli") or {}).values() if c.get("status") == "error")
+    if prop.get("digest") == applied or not (changes or errors):
+        return None
+    return ("TAGTEAM: model update proposal (%d changes, %d CLI errors, collected %s); "
+            "orchestrator: load skill model-update." % (changes, errors, prop["created"][:10]))
 
 
 def on_prompt(payload, host):

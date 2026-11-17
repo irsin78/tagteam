@@ -2,10 +2,15 @@
 """tagteam installer: install / update / check. Standard library only (Python 3.9+).
 
     python install.py <target> [--update] [--check] [--source DIR] [--yes]
+    python install.py <target> --schedule | --unschedule [--dry-run]
 """
 import argparse
+import hashlib
+import importlib.util
 import json
 import os
+import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -236,25 +241,205 @@ def check(target):
     return 1 if errors else 0
 
 
-def main(argv=None):
+# ---- --schedule / --unschedule: weekly model-list check -------------------------------
+# Opt-in. The task runs the installed collector (no LLM); it never edits models.json.
+
+COLLECTOR_REL = ".claude/tagteam/models_collect.py"
+PROPOSAL_FILES = ("model-update.json", "model-update.applied")
+MARK_FALLBACK = "missed runs will not be re-run"
+
+
+def run_cmd(argv, input_text=None):
+    """Default command runner: returns (exit code, combined output)."""
+    try:
+        p = subprocess.run(argv, input=input_text, capture_output=True, text=True, timeout=120)
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except (OSError, subprocess.SubprocessError) as e:
+        return 127, str(e)
+
+
+def task_name(target):
+    return "tagteam-models-" + hashlib.sha1(str(target).encode("utf-8")).hexdigest()[:8]
+
+
+def task_xml(argv, root):
+    from xml.sax.saxutils import escape
+    cmd, args = escape('"' + argv[0] + '"'), escape(subprocess.list2cmdline(argv[1:]))
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>tagteam: weekly model list check</Description></RegistrationInfo>
+  <Triggers><CalendarTrigger><StartBoundary>2026-01-05T09:00:00</StartBoundary><Enabled>true</Enabled>
+    <ScheduleByWeek><DaysOfWeek><Monday /></DaysOfWeek><WeeksInterval>1</WeeksInterval></ScheduleByWeek>
+  </CalendarTrigger></Triggers>
+  <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit><Enabled>true</Enabled></Settings>
+  <Actions Context="Author"><Exec><Command>{cmd}</Command><Arguments>{args}</Arguments>
+    <WorkingDirectory>{escape(str(root))}</WorkingDirectory></Exec></Actions>
+</Task>
+"""
+
+
+def installed_state_dir(target):
+    """State dir via the installed role_guard (install.py has no state-dir logic of its own)."""
+    guard = target / GUARD_REL
+    try:
+        spec = importlib.util.spec_from_file_location("tagteam_installed_guard", guard)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return Path(mod.state_dir({"cwd": str(target)}))
+    except Exception:  # noqa: BLE001 - missing or old guard: nothing to clean
+        return None
+
+
+class CronReadError(Exception):
+    pass
+
+
+class Scheduler:
+    def __init__(self, target, plat=None, runner=run_cmd, dry=False, python=None, home=None, uid=None):
+        self.target, self.dry, self.runner = target, dry, runner
+        self.plat = plat or {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+        self.name = task_name(target)
+        self.argv = [python or sys.executable, str(target / COLLECTOR_REL), "--project", str(target)]
+        self.uid = uid
+        self.plist = Path(home or Path.home()) / "Library/LaunchAgents" / f"net.tagteam.{self.name}.plist"
+
+    def run(self, argv, input_text=None):
+        print("  " + ("[dry-run] " if self.dry else "$ ") + subprocess.list2cmdline(argv))
+        return (0, "") if self.dry else self.runner(argv, input_text)
+
+    def _gui(self):
+        return "gui/%d" % (self.uid if self.uid is not None else os.getuid())
+
+    def _cron(self):
+        """Read the user crontab once: (all lines, lines without our marked line)."""
+        rc, text = self.runner(["crontab", "-l"])
+        if rc != 0:
+            if "no crontab" not in text.lower():
+                raise CronReadError("cannot read the crontab (crontab -l: %s); nothing was changed" % text.strip()[:200])
+            text = ""
+        mark = "# " + self.name
+        lines = text.splitlines()
+        return lines, [ln for ln in lines if not ln.rstrip().endswith(mark)]
+
+    def schedule(self):
+        print(f"task {self.name} ({self.plat}): {subprocess.list2cmdline(self.argv)}")
+        try:
+            rc = getattr(self, "_add_" + self.plat)()
+        except CronReadError as e:
+            print("error: %s" % e, file=sys.stderr)
+            return 1
+        print(("would schedule" if self.dry else "scheduled") if rc == 0 else "scheduling FAILED", self.name)
+        return int(rc != 0)
+
+    def _add_windows(self):
+        xml = task_xml(self.argv, self.target)
+        if self.dry:
+            print(xml)
+        tmp = Path(tempfile.gettempdir()) / f"{self.name}.xml"
+        try:
+            if not self.dry:
+                tmp.write_bytes(b"\xff\xfe" + xml.encode("utf-16-le"))
+            rc, msg = self.run(["schtasks", "/Create", "/TN", self.name, "/XML", str(tmp), "/F"])
+        finally:
+            if not self.dry and tmp.exists():
+                tmp.unlink()
+        if rc != 0:
+            print(f"note: /XML registration failed ({msg.strip()[:200]}); using /SC WEEKLY, {MARK_FALLBACK}")
+            rc, _ = self.run(["schtasks", "/Create", "/TN", self.name, "/SC", "WEEKLY", "/D", "MON", "/ST", "09:00",
+                              "/TR", subprocess.list2cmdline(self.argv), "/F"])
+        return rc
+
+    def _add_macos(self):
+        data = plistlib.dumps({"Label": "net.tagteam." + self.name, "ProgramArguments": self.argv,
+                               "StartCalendarInterval": {"Weekday": 1, "Hour": 9, "Minute": 0},
+                               "WorkingDirectory": str(self.target)})
+        if self.dry:
+            print(data.decode("utf-8"))
+        else:
+            if self.plist.exists():
+                self.run(["launchctl", "bootout", f"{self._gui()}/net.tagteam.{self.name}"])
+            self.plist.parent.mkdir(parents=True, exist_ok=True)
+            self.plist.write_bytes(data)
+        return self.run(["launchctl", "bootstrap", self._gui(), str(self.plist)])[0]
+
+    def _add_linux(self):
+        line = "0 9 * * 1 %s # %s" % (shlex.join(self.argv).replace("%", "\\%"), self.name)  # % is special in crontab
+        return self.run(["crontab", "-"], "\n".join(self._cron()[1] + [line]) + "\n")[0]
+
+    def unschedule(self):
+        try:
+            rc = getattr(self, "_del_" + self.plat)()
+        except CronReadError as e:
+            print("error: %s" % e, file=sys.stderr)
+            return 1
+        print(("removed " if rc == 0 else "not registered (nothing to remove): ") + self.name)
+        state = installed_state_dir(self.target)
+        for fn in PROPOSAL_FILES if state else ():
+            if (state / fn).exists():
+                print(("  [dry-run] would delete " if self.dry else "  deleted ") + str(state / fn))
+                if not self.dry:
+                    (state / fn).unlink()
+        return 0
+
+    def _del_windows(self):
+        return self.run(["schtasks", "/Delete", "/TN", self.name, "/F"])[0]
+
+    def _del_macos(self):
+        rc = self.run(["launchctl", "bootout", f"{self._gui()}/net.tagteam.{self.name}"])[0]
+        if self.plist.exists():
+            if not self.dry:
+                self.plist.unlink()
+            rc = 0
+        return rc
+
+    def _del_linux(self):
+        old, keep = self._cron()
+        if len(keep) == len(old):
+            return 1
+        return self.run(["crontab", "-"], "\n".join(keep) + "\n" if keep else "")[0]
+
+
+def main(argv=None, runner=run_cmd, plat=None):
     ap = argparse.ArgumentParser(description="Install, update or check tagteam in a project.")
     ap.add_argument("target")
     ap.add_argument("--update", action="store_true", help="re-apply files, preserving local content")
     ap.add_argument("--check", action="store_true", help="check environment and hook smoke test")
+    ap.add_argument("--schedule", action="store_true", help="register the weekly model-list check (installs first if needed)")
+    ap.add_argument("--unschedule", action="store_true", help="remove the weekly check and its proposal files")
+    ap.add_argument("--dry-run", action="store_true", help="with --schedule/--unschedule: print, change nothing")
     ap.add_argument("--source", default=str(Path(__file__).resolve().parent))
     ap.add_argument("--yes", action="store_true", help="non-interactive")
     a = ap.parse_args(argv)
+    if a.dry_run and not (a.schedule or a.unschedule):
+        ap.error("--dry-run needs --schedule or --unschedule")
+    if a.schedule and a.unschedule:
+        ap.error("--schedule and --unschedule exclude each other")
     target, source = Path(a.target).resolve(), Path(a.source).resolve()
+    sched = Scheduler(target, plat, runner, a.dry_run)
     if a.check:
         return check(target)
+    if a.unschedule:
+        return sched.unschedule()
     if not (source / "harness").is_dir():
         print(f"error: no harness/ directory under source {source}", file=sys.stderr)
         return 1
-    target.mkdir(parents=True, exist_ok=True)
     interactive = sys.stdin.isatty() and not a.yes
-    rep = install(target, source, interactive)
-    print(("Updated" if a.update else "Installed") + f" tagteam in {target}")
-    rep.print()
+    if not (a.schedule and not a.update and (target / COLLECTOR_REL).is_file()) and not a.dry_run:
+        target.mkdir(parents=True, exist_ok=True)
+        rep = install(target, source, interactive)
+        print(("Updated" if a.update else "Installed") + f" tagteam in {target}")
+        rep.print()
+    if not a.schedule and interactive and not a.update:
+        a.schedule = input("Register a weekly model-list check (scheduled task, no LLM)? [y/N]: ").strip().lower() == "y"
+    if a.schedule:
+        if not a.dry_run and not (target / COLLECTOR_REL).is_file():
+            print(f"error: {COLLECTOR_REL} is not installed; cannot schedule", file=sys.stderr)
+            return 1
+        return sched.schedule()
     return 0
 
 
