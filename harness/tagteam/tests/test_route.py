@@ -279,6 +279,15 @@ class RouteTest(unittest.TestCase):
         self.assertIn("cli_missing:claude", r["reason"])
         self.assertNotIn("user_override", r["reason"])
 
+    def test_pinned_remote_model_checks_cli(self):
+        self.local({"roles": {"implement": {"model": "gpt-6.1-sol", "effort": "medium"}}})
+        r = self.assertPick(self.route("implement"), "gpt-6.1-sol", "medium", "run")
+        self.assertIn("user_override", r["reason"])
+        env = {"TAGTEAM_CLI_CLAUDE": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}  # no codex
+        r = self.assertPick(self.route("implement", env=env), "claude-sonnet-5-5", "medium")  # the pinned effort still limits candidates
+        self.assertIn("cli_missing:openai", r["reason"])
+        self.assertNotIn("user_override", r["reason"])
+
     def test_candidate_skipped_by_default_but_selectable(self):
         self.models_edit(lambda d: d["models"]["claude-sonnet-5-5"].update(candidate=True))
         self.assertPick(self.route("implement"), "claude-haiku-5-5", "max")

@@ -143,6 +143,21 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(s["subagentPromptCacheTtl"], "1h")
         self.assertEqual(s["permissions"], {"allow": ["x"]})
 
+    def test_existing_agents_md_without_policy_marker_is_kept_under_policy(self):
+        (self.dst / "AGENTS.md").write_text("# My rules\n\nDo X.\nDo Y.\n", encoding="utf-8")
+        code, out = self.run_install()
+        self.assertEqual(code, 0)
+        agents = (self.dst / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("intro v2", agents)
+        self.assertNotIn("template placeholder", agents)
+        self.assertEqual(agents.count("## Project policy"), 1)
+        self.assertGreater(agents.index("# My rules"), agents.index("## Project policy"))
+        self.assertIn("Do X.\nDo Y.\n", agents)
+        self.assertIn("kept (moved under Project policy)", out)
+        again = self.run_install("--update")[1]  # now the marker exists: no second move
+        self.assertEqual((self.dst / "AGENTS.md").read_text(encoding="utf-8"), agents)
+        self.assertNotIn("moved under Project policy", again)
+
     def test_claude_md_handling(self):
         (self.dst / "CLAUDE.md").write_text("# mine", encoding="utf-8")
         self.run_install()

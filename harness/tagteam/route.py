@@ -269,7 +269,8 @@ class Router:
         """The launch will go through run.py (not native) but the vendor CLI is missing."""
         v = self.m["models"][mid]["vendor"]
         cfg = self.m["vendors"][v]
-        return cfg["host"] == host and host == "claude" and self.over_cap(mid, effort, *cap)             and not cli_present(v, cfg)
+        via_run = cfg["host"] != host or (host == "claude" and self.over_cap(mid, effort, *cap))
+        return via_run and not cli_present(v, cfg)
 
     def route(self, role, host, author=None, grade=None, orch_model=None, orch_effort=None):
         spec = self.spec(role, grade)

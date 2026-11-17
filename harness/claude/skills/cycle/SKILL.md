@@ -30,6 +30,9 @@ Sessions can be opened only on a turn the user started; turns started by a worke
 cannot open them. So open everything the phase needs while the user is present.
 - One session per role needed now: usually one design session and one or two implementation
   sessions. A small mission with little design: the orchestrator designs, no design session.
+- Session or subagent: a unit that edits files or still has decisions open goes to a
+  session, which the user can watch and steer; a read-only lookup or a one-file mechanical
+  edit may go to a subagent, whose progress is not visible until it returns.
 - Each session gets a fixed `model` and `effort` from the router (AGENTS.md section 1) and
   keeps them for the whole mission; switching models discards the prompt cache.
 - The first prompt of every session contains the line `HARNESS ROLE: DELEGATE`. It cannot
@@ -78,6 +81,8 @@ latest message, not in edits to earlier context.
   the spec; not whole trees or logs.
 - Keep the next unit running while a batch is verified, when they share no files.
 - Review-and-fix: one round, a second only for a remaining blocker, then report incomplete.
+  Send the findings back to the worker that wrote the change (it already has the context);
+  the orchestrator then checks the new diff.
 
 ## 7. Merge and commit
 

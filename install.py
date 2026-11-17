@@ -33,8 +33,8 @@ class Report:
     def print(self):
         for state in ("created", "updated", "kept"):
             for s, p in self.items:
-                if s == state:
-                    print(f"  {state:8} {p}")
+                if s.split(" ")[0] == state:
+                    print(f"  {s:8} {p}")
 
 
 def put(rep, target, rel, data, *, keep_existing=False, note=""):
@@ -103,9 +103,15 @@ def merge_agents_md(rep, src, target):
     if dst.exists():
         old = dst.read_text(encoding="utf-8")
         i, j = old.find(POLICY_MARK), text.find(POLICY_MARK)
+        head = text[:j] if j >= 0 else text.rstrip("\n") + "\n\n"
         if i >= 0:
-            head = text[:j] if j >= 0 else text.rstrip("\n") + "\n\n"
             text = head + old[i:]
+        elif old.strip():
+            # No marker: the file is the project's own. Keep all of it under a new policy section.
+            text = head + POLICY_MARK + "\n\n" + old.strip("\n") + "\n"
+            dst.write_bytes(text.encode("utf-8"))
+            rep.add("kept (moved under Project policy)", rel)
+            return
     put(rep, target, rel, text.encode("utf-8"))
 
 
@@ -126,7 +132,9 @@ def ask_tiers():
     plans = {}
     for v in VENDORS:
         while True:
-            ans = input(f"Plan tier for {v} ({'/'.join(TIERS)}) [none]: ").strip().lower() or "none"
+            ans = input(f"Plan tier for {v} ({'/'.join(TIERS)}) [pro]: ").strip().lower()
+            if not ans:  # Enter keeps the default (an unset vendor counts as pro)
+                break
             if ans in TIERS:
                 plans[v] = ans
                 break
