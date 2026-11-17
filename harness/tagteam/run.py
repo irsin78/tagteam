@@ -15,8 +15,16 @@ The git check (every vendor; HEAD, branch, `git status` listing and content hash
 listed files, before and after) catches common accidents. It is not a security boundary:
 ignored files, paths outside the repository, stashes and other refs are not seen, and it
 sees every change in the checkout during the run, other writers' included.
-Records go to <state dir>/runs/<id>/. A usage-limit sign is written to
-<state dir>/exhausted.json (route.py reads it). Environment (tests): TAGTEAM_STATE_DIR,
+Records go to <state dir>/runs/<id>/. The first line, printed before the CLI starts, is
+`RUN <id> started run_dir=<dir> stdout=<file> stderr=<file>`; the report follows when the CLI ends.
+An unwritable state folder is a pre-run error (exit 2; inside a Codex sandbox run.py needs escalated
+permissions). A usage-limit sign is written to <state dir>/exhausted.json (route.py reads it).
+Codex on Windows gets `-c windows.sandbox=<value>` from models.local.json codex.windows_sandbox
+(default "unelevated"; null or "" adds nothing) [host: codex-cli 0.169.0 Windows, the elevated
+sandbox failed every command with CreateProcessWithLogonW 1385, measured 2026-11-17 / re-test after
+a Codex update]. Non-Claude CLIs start without CLAUDECODE and CLAUDE_CODE_ENTRYPOINT, so a tool inside
+the worker does not take the host for Claude Code. Workers get no extra writable folder (no --add-dir):
+they do not write the state folder. Environment (tests): TAGTEAM_STATE_DIR,
 TAGTEAM_CONFIG_DIR, TAGTEAM_CLI_<VENDOR> (JSON array replacing the CLI).
 Python 3.9+, standard library only. Accident check, not a security boundary.
 """
@@ -60,6 +68,33 @@ AGY_LABEL = re.compile(r'Propagating selected model override to backend: label="
 CODEX_MODEL = re.compile(r"^model:\s*(\S+)", re.M)
 PRIORITY = [("exhausted", 3), ("git_head_moved", 7), ("timeout", 5), ("model_mismatch", 4), ("wrote_files", 8),
             ("cli_failed", 1), ("no_output", 6)]
+WINDOWS_SANDBOX = "unelevated"  # codex windows.sandbox default; models.local.json codex.windows_sandbox overrides it
+# The values Codex accepts: codex-cli 0.169.0 rejects others at start with
+# "unknown variant `x`, expected one of `elevated`, `unelevated`, `mxc` in `windows.sandbox`".
+WINDOWS_SANDBOX_VALUES = ("elevated", "unelevated", "mxc")
+CLAUDE_HOST_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")  # removed for non-Claude CLIs (host detection)
+
+
+def windows_sandbox(config_dir):
+    """codex windows.sandbox value: models.local.json codex.windows_sandbox, else the default; None = add nothing.
+
+    A missing or unreadable models.local.json means the default. Any value other than null, "" or one of
+    WINDOWS_SANDBOX_VALUES raises ValueError (a usage error, before the CLI starts)."""
+    try:
+        with open(os.path.join(config_dir, "models.local.json"), encoding="utf-8") as fh:
+            local = json.load(fh)
+    except (OSError, ValueError):
+        return WINDOWS_SANDBOX
+    codex = local.get("codex") if isinstance(local, dict) else None
+    if not isinstance(codex, dict) or "windows_sandbox" not in codex:
+        return WINDOWS_SANDBOX
+    value = codex["windows_sandbox"]
+    if value is None or value == "":
+        return None
+    if value not in WINDOWS_SANDBOX_VALUES:
+        raise ValueError("models.local.json codex.windows_sandbox is %s; use one of %s, or null to pass nothing"
+                         % (json.dumps(value), ", ".join('"%s"' % v for v in WINDOWS_SANDBOX_VALUES)))
+    return value
 
 
 def _is_windows():
@@ -152,7 +187,7 @@ def agy_settings(allow_commands):
 
 
 def build_command(vendor, base, model_arg, effort, read_only, cwd, run_dir, prompt, timeout, allow_commands=None,
-                  run_commands=False):
+                  run_commands=False, sandbox=WINDOWS_SANDBOX):
     """Argv for one vendor (design 5.3). The prompt is sent on stdin except for google."""
     if vendor == "claude":
         return base + ["-p", "--output-format", "json", "--model", model_arg, "--effort", effort,
@@ -161,8 +196,8 @@ def build_command(vendor, base, model_arg, effort, read_only, cwd, run_dir, prom
         cmd = base + ["exec", "-m", model_arg, "-c", "model_reasoning_effort=" + effort,
                       "-s", "read-only" if read_only else "workspace-write", "-C", cwd,
                       "-o", os.path.join(run_dir, "last.txt")]
-        if _is_windows():
-            cmd += ["-c", "windows.sandbox=unelevated"]
+        if _is_windows() and sandbox:
+            cmd += ["-c", "windows.sandbox=" + sandbox]
         return cmd + ["-"]
     # plan mode never runs commands: a read-only run that must run them (run_commands) uses accept-edits
     mode = "plan" if read_only and not run_commands else "accept-edits"
@@ -448,6 +483,10 @@ def main(argv):
     label = info.get("label")
     if args.vendor == "google" and not label:
         return fail("google model %s has no label in models.json" % args.model)
+    try:
+        sandbox = windows_sandbox(config_dir) if args.vendor == "openai" else None
+    except ValueError as exc:
+        return fail(str(exc))
     base = resolve_cli(args.vendor, cfg)
     if not base:
         return fail("CLI for %s not found (%s)" % (args.vendor, vcfg.get("cli")))
@@ -475,10 +514,17 @@ def main(argv):
     model_arg = vcfg.get("model_arg", "{model}").format(model=args.model, effort=args.effort)
     try:
         cmd = build_command(args.vendor, base, model_arg, args.effort, args.read_only, cwd, run_dir, prompt,
-                            args.timeout, args.allow_command, args.run_commands)
+                            args.timeout, args.allow_command, args.run_commands, sandbox)
     except ValueError as exc:
         return fail(str(exc))
     env = dict(os.environ, HARNESS_DELEGATE_RUN="1")
+    if args.vendor != "claude":
+        for key in CLAUDE_HOST_ENV:
+            env.pop(key, None)
+    # the run id and log paths before the CLI starts, so a long run can be found and watched
+    sys.stdout.write("RUN %s started run_dir=%s stdout=%s stderr=%s\n" % (
+        run_id, run_dir, os.path.join(run_dir, "stdout.txt"), os.path.join(run_dir, "stderr.txt")))
+    sys.stdout.flush()
     stdin_bytes = None if args.vendor == "google" else prompt.encode("utf-8")
     own_files = [run_dir, state]  # the launcher's records may lie inside the work tree
     git_before, problem = git_snapshot(cwd, own_files)

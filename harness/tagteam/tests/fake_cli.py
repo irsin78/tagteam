@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Stand-in for the claude, codex and agy CLIs. Usage: fake_cli.py <claude|openai|google> [CLI args...]
 
-Records argv, stdin, HARNESS_DELEGATE_RUN and pid to FAKE_RECORD (JSON), then behaves per FAKE_MODE:
+Records argv, stdin, HARNESS_DELEGATE_RUN, CLAUDECODE, CLAUDE_CODE_ENTRYPOINT, pid and the text of the
+file named by FAKE_PEEK at start (the launcher's stdout, when a test redirects it there) to FAKE_RECORD (JSON),
+then behaves per FAKE_MODE:
 ok, wrong_model, no_model_field, exhausted, exhausted_epoch, quota_text_in_prompt, crash, sleep, empty (google),
 write_file (writes fake_written.txt in the cwd, then ok), commit (makes an empty git commit in the cwd, then ok).
 """
@@ -79,9 +81,15 @@ def main():
     stdin = "" if vendor == "google" else sys.stdin.buffer.read().decode("utf-8", errors="replace")
     record = os.environ.get("FAKE_RECORD")
     if record:
+        peek = os.environ.get("FAKE_PEEK")
+        if peek:
+            with open(peek, encoding="utf-8", errors="replace") as fh:
+                peek = fh.read()
         with open(record, "w", encoding="utf-8") as fh:
             json.dump({"argv": args, "stdin": stdin, "delegate_env": os.environ.get("HARNESS_DELEGATE_RUN"),
-                       "pid": os.getpid()}, fh)
+                       "claudecode": os.environ.get("CLAUDECODE"),
+                       "entrypoint": os.environ.get("CLAUDE_CODE_ENTRYPOINT"),
+                       "pid": os.getpid(), "peek": peek}, fh)
     if mode == "crash":
         echo = "model: %s\nuser\n%s\n" % (opt(args, "-m"), stdin) if vendor == "openai" else ""
         emit(1, "", echo + "boom\n")

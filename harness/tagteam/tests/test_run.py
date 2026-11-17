@@ -84,6 +84,7 @@ class StateFolderTests(RunTestBase):
         self.assertIn("TAGTEAM_STATE_DIR", err)
         self.assertIn("Codex: run this command with escalated permissions", err)
         self.assertFalse(os.path.exists(self.record))  # the CLI was never started
+        self.assertEqual(out, "")  # no "started" line for a run that never started
 
     def test_default_state_folder_is_in_the_main_work_tree_even_from_a_worktree(self):
         env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
@@ -121,6 +122,35 @@ class CommandTests(unittest.TestCase):
             want = ["cli", "exec", "-m", "m", "-c", "model_reasoning_effort=low", "-s", sandbox, "-C", "/w", "-o", last]
             self.assertEqual(self.build("openai", ro), want + ["-"])
             self.assertEqual(self.build("openai", ro, windows=True), want + ["-c", "windows.sandbox=unelevated", "-"])
+            for sandbox, tail in ((None, ["-"]), ("elevated", ["-c", "windows.sandbox=elevated", "-"])):
+                with mock.patch.object(run, "_is_windows", return_value=True):
+                    got = run.build_command("openai", ["cli"], "m", "low", ro, "/w", "/r", "p", 90, sandbox=sandbox)
+                self.assertEqual(got, want + tail)
+                with mock.patch.object(run, "_is_windows", return_value=False):  # a Windows-only setting
+                    got = run.build_command("openai", ["cli"], "m", "low", ro, "/w", "/r", "p", 90, sandbox=sandbox)
+                self.assertEqual(got, want + ["-"])
+            self.assertNotIn("--add-dir", self.build("openai", ro, windows=True))  # workers do not write the state folder
+
+    def test_windows_sandbox_setting(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(run.windows_sandbox(d), "unelevated")  # no models.local.json
+            path = os.path.join(d, "models.local.json")
+            for body, want in (("{broken", "unelevated"), ("[1]", "unelevated"), ('{"plans": {}}', "unelevated"),
+                               ('{"codex": {}}', "unelevated"), ('{"codex": {"windows_sandbox": "elevated"}}', "elevated"),
+                               ('{"codex": {"windows_sandbox": "unelevated"}}', "unelevated"),
+                               ('{"codex": {"windows_sandbox": "mxc"}}', "mxc"),
+                               ('{"codex": {"windows_sandbox": null}}', None), ('{"codex": {"windows_sandbox": ""}}', None)):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+                self.assertEqual(run.windows_sandbox(d), want, body)
+            # values Codex would reject at start: true, numbers, unknown words, other case, lists, padding
+            for bad in ("true", "1", "123", '"123"', '"bogus"', '"true"', '"Elevated"', '" unelevated"',
+                        '["unelevated"]', '{"v": 1}', '"a b"', '"x\\"; y"'):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write('{"codex": {"windows_sandbox": %s}}' % bad)
+                with self.assertRaises(ValueError, msg=bad) as ctx:
+                    run.windows_sandbox(d)
+                self.assertIn('"elevated", "unelevated", "mxc"', str(ctx.exception))
 
     def test_google(self):
         tail = ["--model", "m", "--effort", "low", "--mode"]
@@ -180,6 +210,60 @@ class LauncherTests(RunTestBase):
         self.assertEqual(self.recorded()["argv"][1], MARKER + "\nTask body\n")
         self.assertEqual(self.recorded()["delegate_env"], "1")
 
+    def test_claude_host_env_removed_for_other_vendors(self):
+        os.environ.update(CLAUDECODE="1", CLAUDE_CODE_ENTRYPOINT="claude-desktop")
+        for vendor in ("openai", "google"):
+            self.assertEqual(self.go(vendor)[0], 0, vendor)
+            rec = self.recorded()
+            self.assertEqual((rec["claudecode"], rec["entrypoint"], rec["delegate_env"]), (None, None, "1"), vendor)
+        self.assertEqual(self.go("claude")[0], 0)
+        rec = self.recorded()
+        self.assertEqual((rec["claudecode"], rec["entrypoint"]), ("1", "claude-desktop"))
+        self.assertEqual(os.environ["CLAUDECODE"], "1")  # the launcher's own environment is unchanged
+
+    def config_with_local(self, body):
+        cfg = os.path.join(self.tmp.name, "cfg")
+        os.makedirs(cfg, exist_ok=True)
+        shutil.copy(os.path.join(FIXTURES, "models.json"), cfg)
+        with open(os.path.join(cfg, "models.local.json"), "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.environ["TAGTEAM_CONFIG_DIR"] = cfg
+
+    def test_windows_sandbox_from_models_local(self):
+        self.config_with_local('{"codex": {"windows_sandbox": null}}')
+        with mock.patch.object(run, "_is_windows", return_value=True):
+            self.assertEqual(self.go("openai")[0], 0)
+            self.assertFalse(any(a.startswith("windows.sandbox") for a in self.recorded()["argv"]))
+            self.config_with_local('{"codex": {"windows_sandbox": "elevated"}}')
+            self.assertEqual(self.go("openai")[0], 0)
+            self.assertIn("windows.sandbox=elevated", self.recorded()["argv"])
+            for bad in ("5", "true", '"bogus"'):
+                if os.path.exists(self.record):
+                    os.remove(self.record)
+                self.config_with_local('{"codex": {"windows_sandbox": %s}}' % bad)
+                code, out, err = self.go("openai")
+                self.assertEqual((code, out), (2, ""), bad)
+                self.assertIn("codex.windows_sandbox is %s; use one of" % bad, err)
+                self.assertFalse(os.path.exists(self.record), bad)  # refused before the CLI starts
+            self.assertEqual(self.go("claude")[0], 0)  # other vendors ignore the setting
+
+    def test_run_id_is_printed_before_the_cli_starts(self):
+        pf = os.path.join(self.tmp.name, "prompt.md")
+        with open(pf, "w", encoding="utf-8") as fh:
+            fh.write("Do it.\n")
+        out_file = os.path.join(self.tmp.name, "launcher-stdout.txt")
+        env = dict(os.environ, FAKE_MODE="ok", FAKE_PEEK=out_file)
+        with open(out_file, "w", encoding="utf-8") as out:
+            subprocess.run([sys.executable, os.path.join(os.path.dirname(TESTS), "run.py"), "--vendor", "openai",
+                            "--model", VENDORS["openai"][0], "--effort", "low", "--prompt-file", pf,
+                            "--cwd", self.tmp.name], stdout=out, stderr=subprocess.PIPE, env=env, timeout=120, check=True)
+        seen = self.recorded()["peek"]  # what the launcher had printed when the CLI started
+        self.assertRegex(seen, r"^RUN \S+-openai-[0-9a-f]{4} started run_dir=\S.* stdout=\S.*stdout\.txt stderr=\S.*stderr\.txt\n$")
+        with open(out_file, encoding="utf-8") as fh:
+            final = fh.read().splitlines()
+        self.assertEqual(final[0], seen.rstrip("\n"))
+        self.assertIn("status=ok", final[1])
+
     def test_refuses_nested_launch(self):
         os.environ["HARNESS_DELEGATE_RUN"] = "1"
         code, _, err = self.go("claude")
@@ -202,12 +286,17 @@ class LauncherTests(RunTestBase):
             self.assertEqual(code, 0, out)
             model = VENDORS[vendor][0]
             lines = out.splitlines()
-            self.assertRegex(lines[0], r"^RUN \d{8}-\d{6}-%s-[0-9a-f]{4} vendor=%s model=%s effort=low status=ok exit=0 secs=\d+$"
+            run_id = lines[0].split()[1]
+            run_dir = os.path.join(self.state, "runs", run_id)
+            self.assertEqual(lines[0], "RUN %s started run_dir=%s stdout=%s stderr=%s" % (
+                run_id, run_dir, os.path.join(run_dir, "stdout.txt"), os.path.join(run_dir, "stderr.txt")))
+            self.assertRegex(lines[1], r"^RUN \d{8}-\d{6}-%s-[0-9a-f]{4} vendor=%s model=%s effort=low status=ok exit=0 secs=\d+$"
                              % (vendor, vendor, model.replace(".", r"\.")))
+            self.assertEqual(lines[1].split()[1], run_id)
             shown = "Gemini 3.8 Flash (Low)" if vendor == "google" else model
-            self.assertEqual(lines[1], "ACTUAL_MODEL: %s (match)" % shown)
-            self.assertTrue(lines[2].startswith("OUTPUT: "))
-            self.assertEqual(lines[3:], ["---", "OK"])
+            self.assertEqual(lines[2], "ACTUAL_MODEL: %s (match)" % shown)
+            self.assertTrue(lines[3].startswith("OUTPUT: "))
+            self.assertEqual(lines[4:], ["---", "OK"])
         self.assertEqual(len(self.run_dirs()), 3)
         d = self.run_dirs()[0]
         for name in ("prompt.txt", "cmd.json", "stdout.txt", "stderr.txt", "last.txt", "result.json"):
