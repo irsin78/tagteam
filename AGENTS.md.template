@@ -69,7 +69,7 @@ result, a few lines needing no design decision. Changes that need design, span
 files or change behavior go to a worker. Direct fixes follow the same
 verification and commit rules. With agy's Orchestrator model the execution side makes no
 direct fixes: every implementation unit goes through `run.py`, and it edits only mission
-records (`hosts.md`, agy notes).
+records (see `hosts.md`, agy notes).
 
 ## 3. The cycle
 
