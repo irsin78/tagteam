@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Stand-in for the claude, codex and agy CLIs. Usage: fake_cli.py <claude|openai|google> [CLI args...]
 
-Records argv, stdin, HARNESS_DELEGATE_RUN, CLAUDECODE, CLAUDE_CODE_ENTRYPOINT, pid and the text of the
-file named by FAKE_PEEK at start (the launcher's stdout, when a test redirects it there) to FAKE_RECORD (JSON),
+Records argv, stdin, HARNESS_DELEGATE_RUN, CLAUDECODE, CLAUDE_CODE_ENTRYPOINT, ANTIGRAVITY_CONVERSATION_ID, pid,
+the text of the file named by FAKE_PEEK at start (the launcher's stdout, when a test redirects it there) and the text
+of started.json in the run folder (found from -o or --log-file; None if absent) to FAKE_RECORD (JSON),
 then behaves per FAKE_MODE:
 ok, wrong_model, no_model_field, exhausted, exhausted_epoch, quota_text_in_prompt, crash, sleep, empty (google),
 write_file (writes fake_written.txt in the cwd, then ok), commit (makes an empty git commit in the cwd, then ok).
@@ -19,6 +20,13 @@ EPOCH = 1900000000
 
 def opt(args, flag, default=""):
     return args[args.index(flag) + 1] if flag in args else default
+
+
+def read_if_file(path):
+    if path and os.path.isfile(path):
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    return None
 
 
 def emit(code, out="", err=""):
@@ -85,11 +93,15 @@ def main():
         if peek:
             with open(peek, encoding="utf-8", errors="replace") as fh:
                 peek = fh.read()
+        in_run_dir = opt(args, "-o") or opt(args, "--log-file")  # claude gets neither
+        started = os.path.join(os.path.dirname(in_run_dir), "started.json") if in_run_dir else ""
         with open(record, "w", encoding="utf-8") as fh:
             json.dump({"argv": args, "stdin": stdin, "delegate_env": os.environ.get("HARNESS_DELEGATE_RUN"),
                        "claudecode": os.environ.get("CLAUDECODE"),
                        "entrypoint": os.environ.get("CLAUDE_CODE_ENTRYPOINT"),
-                       "pid": os.getpid(), "peek": peek}, fh)
+                       "antigravity": os.environ.get("ANTIGRAVITY_CONVERSATION_ID"),
+                       "pid": os.getpid(), "peek": peek,
+                       "started": read_if_file(started)}, fh)
     if mode == "crash":
         echo = "model: %s\nuser\n%s\n" % (opt(args, "-m"), stdin) if vendor == "openai" else ""
         emit(1, "", echo + "boom\n")

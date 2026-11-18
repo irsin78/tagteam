@@ -340,19 +340,7 @@ class MigrateTest(StateTestBase):
         self.assertEqual(state.legacy_dirs(subdir), [])
         self.assertFalse(os.path.exists(os.path.join(subdir, ".tagteam")))
 
-    def test_worktree_of_a_submodule_finds_the_module_folder(self):
-        sub = self.repo("sub")
-        sup = self.repo("sup")
-        self.git(sup, "submodule", "add", "-q", sub, "libs/sub")
-        self.git(sup, "commit", "-q", "-m", "sm")
-        wt = os.path.join(self.tmp, "subwt")
-        self.git(os.path.join(sup, "libs", "sub"), "worktree", "add", "-q", wt, "-b", "w")
-        old_mod = os.path.join(sup, ".git", "modules", "libs", "sub", "tagteam")
-        write(os.path.join(old_mod, "exhausted.json"), "m")
-        state.migrate(wt)
-        self.assertEqual(read(os.path.join(sup, ".tagteam", "exhausted.json")), "m")
-
-    def test_worktree_of_a_submodule_finds_the_superproject_old_folder_too(self):
+    def test_worktree_of_a_submodule_finds_the_old_folders(self):
         sub = self.repo("sub")
         sup = self.repo("sup")
         self.git(sup, "submodule", "add", "-q", sub, "libs/sub")
@@ -361,14 +349,17 @@ class MigrateTest(StateTestBase):
         self.git(os.path.join(sup, "libs", "sub"), "worktree", "add", "-q", wt, "-b", "w")
         old_sup = os.path.join(sup, ".git", "tagteam")
         old_mod = os.path.join(sup, ".git", "modules", "libs", "sub", "tagteam")
-        write(os.path.join(old_sup, "runs", "r1", "result.json"), "r1")
-        write(os.path.join(old_mod, "sessions", "s9.json"), "s9")
-        self.assertEqual(sorted(real(p) for p in state.legacy_dirs(wt)), sorted([real(old_sup), real(old_mod)]))
-        state.migrate(wt)
-        new = os.path.join(sup, ".tagteam")
-        self.assertEqual(read(os.path.join(new, "runs", "r1", "result.json")), "r1")
-        self.assertEqual(read(os.path.join(new, "sessions", "s9.json")), "s9")
-        self.assertEqual(state.legacy_dirs(wt), [])
+        rows = {"module folder": [(old_mod, "exhausted.json")],
+                "superproject folder too": [(old_sup, "runs/r1/result.json"), (old_mod, "sessions/s9.json")]}
+        for name, files in rows.items():
+            with self.subTest(name):
+                for folder, rel in files:
+                    write(os.path.join(folder, *rel.split("/")), rel)
+                self.assertEqual(sorted(real(p) for p in state.legacy_dirs(wt)), sorted({real(f) for f, _ in files}))
+                state.migrate(wt)
+                for _, rel in files:
+                    self.assertEqual(read(os.path.join(sup, ".tagteam", *rel.split("/"))), rel)
+                self.assertEqual(state.legacy_dirs(wt), [])
 
     def test_separate_git_dir_with_a_worktree_finds_the_old_folder(self):
         repo = os.path.join(self.tmp, "sep")

@@ -5,10 +5,12 @@ import os
 import shutil
 import subprocess
 import sys
+import re
 import tempfile
+import threading
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -220,6 +222,28 @@ class LauncherTests(RunTestBase):
         rec = self.recorded()
         self.assertEqual((rec["claudecode"], rec["entrypoint"]), ("1", "claude-desktop"))
         self.assertEqual(os.environ["CLAUDECODE"], "1")  # the launcher's own environment is unchanged
+
+    def test_antigravity_id_removed_for_other_vendors(self):
+        os.environ["ANTIGRAVITY_CONVERSATION_ID"] = "cid-1"
+        for vendor, want in (("claude", None), ("openai", None), ("google", "cid-1")):
+            self.assertEqual(self.go(vendor)[0], 0, vendor)
+            self.assertEqual(self.recorded()["antigravity"], want, vendor)
+        self.assertEqual(os.environ["ANTIGRAVITY_CONVERSATION_ID"], "cid-1")  # the launcher's own environment is unchanged
+
+    def test_started_json_exists_before_the_cli_starts_and_report_txt_holds_the_report(self):
+        for vendor in ("openai", "google"):
+            code, out, _ = self.go(vendor, extra=["--timeout", "77"])
+            self.assertEqual(code, 0, out)
+            run_dir = os.path.join(self.state, "runs", out.split()[1])
+            started = json.loads(self.recorded()["started"])  # what the CLI saw when it started
+            self.assertEqual(started, {"pid": os.getpid(), "started": started["started"], "vendor": vendor,
+                                       "model": VENDORS[vendor][0], "effort": "low", "timeout": 77})
+            self.assertRegex(started["started"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+            with open(os.path.join(run_dir, "report.txt"), encoding="utf-8", newline="") as fh:
+                self.assertEqual(fh.read(), out.split("\n", 1)[1])  # the report is everything after the started line
+            with open(os.path.join(run_dir, "result.json"), encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["run_exit"], 0)
+            self.assertEqual([n for n in os.listdir(run_dir) if n.endswith(".tmp")], [])
 
     def config_with_local(self, body):
         cfg = os.path.join(self.tmp.name, "cfg")
@@ -446,7 +470,7 @@ class LauncherTests(RunTestBase):
 
 
 @unittest.skipUnless(shutil.which("git"), "git not installed")
-class GitCheckTests(RunTestBase):
+class GitRepoBase(RunTestBase):
     def setUp(self):
         super().setUp()
         self.repo = os.path.join(self.tmp.name, "repo")  # the state folder stays outside the work tree
@@ -457,10 +481,13 @@ class GitCheckTests(RunTestBase):
     def git(self, *args, cwd=None):
         subprocess.run(["git", "-C", cwd or self.repo] + list(args), check=True, capture_output=True)
 
-    def commit(self, msg):
+    def commit(self, msg, cwd=None):
         self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false",
-                 "commit", "-q", "--allow-empty", "-m", msg)
+                 "commit", "-q", "--allow-empty", "-m", msg, cwd=cwd)
 
+
+@unittest.skipUnless(shutil.which("git"), "git not installed")
+class GitCheckTests(GitRepoBase):
     def last_result(self):
         paths = [os.path.join(d, "result.json") for d in self.run_dirs()]
         with open(max(paths, key=os.path.getmtime), encoding="utf-8") as fh:
@@ -584,6 +611,359 @@ class GitCheckTests(RunTestBase):
             code, out, _ = self.go("claude", cwd=self.repo, extra=["--read-only"])
         self.assertEqual(code, 0, out)
         self.assertIn("WARNING: git content check is partial", out)
+
+
+
+class StatusTests(RunTestBase):
+    def cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = run.main(list(argv))
+            except SystemExit as exc:  # argparse usage errors
+                code = exc.code
+        return code, out.getvalue(), err.getvalue()
+
+    def sleeper(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        return proc
+
+    def make_run(self, run_id, pid=None, ago=5, timeout=1800, started=True):
+        run_dir = os.path.join(self.state, "runs", run_id)
+        os.makedirs(run_dir)
+        if started:
+            doc = {"pid": pid, "started": run.iso(run.utc_now() - timedelta(seconds=ago)), "vendor": "claude",
+                   "model": "m", "effort": "low", "timeout": timeout}
+            run.write_atomic(os.path.join(run_dir, "started.json"), json.dumps(doc))
+        return run_dir
+
+    def test_finished_run_repeats_its_report_and_exit_code(self):
+        for vendor, mode, want in (("claude", "ok", 0), ("openai", "crash", 1), ("claude", "exhausted", 3),
+                                   ("google", "wrong_model", 4)):
+            with self.subTest(mode):
+                code, out, _ = self.go(vendor, mode)
+                self.assertEqual(code, want)
+                first, report = out.split("\n", 1)
+                run_id = first.split()[1]
+                self.assertEqual(self.cli("--status", run_id), (want, report, ""))
+                self.assertEqual(self.cli("--wait", run_id), (want, report, ""))
+
+    def test_old_record_without_run_exit_takes_the_code_from_the_status_word(self):
+        _, out, _ = self.go("openai", "crash")
+        run_id = out.split()[1]
+        path = os.path.join(self.state, "runs", run_id, "result.json")
+        with open(path, encoding="utf-8") as fh:
+            result = json.load(fh)
+        del result["run_exit"]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(result, fh)
+        self.assertEqual(self.cli("--status", run_id)[0], 1)
+
+    def test_running(self):
+        child = self.sleeper()
+        run_dir = self.make_run("r-running", pid=child.pid, ago=7)
+        code, out, _ = self.cli("--status", "r-running")
+        self.assertEqual(code, 9)
+        secs = int(re.fullmatch(r"RUN r-running running secs=(\d+) run_dir=%s\n" % re.escape(run_dir), out).group(1))
+        self.assertIn(secs, (7, 8, 9))
+        self.assertIsNone(child.poll())  # looking at a process does not end it
+
+    def test_ended_without_a_report(self):
+        child = self.sleeper()
+        child.kill()
+        child.wait()
+        self.make_run("r-dead", pid=child.pid)
+        self.make_run("r-nostart", started=False)
+        for run_id in ("r-dead", "r-nostart"):
+            self.assertEqual(self.cli("--status", run_id), (6, "RUN %s ended without a report\n" % run_id, ""))
+
+    def test_a_live_pid_older_than_the_timeout_is_a_reused_pid(self):
+        child = self.sleeper()
+        self.make_run("r-old", pid=child.pid, ago=3000, timeout=1800)
+        self.make_run("r-late", pid=child.pid, ago=100, timeout=1)  # inside the grace period: still running
+        self.assertEqual(self.cli("--status", "r-old")[0], 6)
+        self.assertEqual(self.cli("--status", "r-late")[0], 9)
+
+    def test_wait_returns_when_the_report_appears_and_when_the_run_has_ended(self):
+        child = self.sleeper()
+        run_dir = self.make_run("r-wait", pid=child.pid)
+        report = "RUN r-wait vendor=claude model=m effort=low status=ok exit=0 secs=1\n---\nOK\n"
+        timer = threading.Timer(0.3, run.write_atomic, (os.path.join(run_dir, "report.txt"), report))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        t0 = time.monotonic()
+        self.assertEqual(self.cli("--wait", "r-wait", "--secs", "9"), (0, report, ""))
+        self.assertLess(time.monotonic() - t0, 4)
+        dead = self.sleeper()
+        dead.kill()
+        dead.wait()
+        self.make_run("r-gone", pid=dead.pid)
+        t0 = time.monotonic()
+        self.assertEqual(self.cli("--wait", "r-gone", "--secs", "9")[0], 6)
+        self.assertLess(time.monotonic() - t0, 2)
+
+    def test_wait_gives_up_after_secs(self):
+        child = self.sleeper()
+        self.make_run("r-slow", pid=child.pid)
+        t0 = time.monotonic()
+        code, out, _ = self.cli("--wait", "r-slow", "--secs", "1")
+        self.assertEqual((code, out.startswith("RUN r-slow running secs=")), (9, True))
+        self.assertTrue(0.9 <= time.monotonic() - t0 < 4)
+        t0 = time.monotonic()
+        self.assertEqual(self.cli("--wait", "r-slow", "--secs", "0")[0], 9)  # one look
+        self.assertLess(time.monotonic() - t0, 0.9)
+
+    def test_wait_default_and_limit(self):
+        self.make_run("r-x", pid=None)
+        with mock.patch.object(run, "wait_for", return_value=("x\n", 9)) as waited:
+            self.assertEqual(self.cli("--wait", "r-x")[0], 9)
+            self.assertEqual(waited.call_args[0][2], 8)
+            self.assertEqual(self.cli("--wait", "r-x", "--secs", "9")[0], 9)
+            self.assertEqual(waited.call_args[0][2], 9)
+            for bad in ("10", "-1"):
+                code, _, err = self.cli("--wait", "r-x", "--secs", bad)
+                self.assertEqual(code, 2, bad)
+                self.assertIn("--secs must be 0 to 9", err)
+            self.assertEqual(waited.call_count, 2)
+
+    def test_run_id_must_be_a_name_under_runs(self):
+        outside = os.path.join(self.state, "outside")
+        os.makedirs(os.path.join(self.state, "runs"))
+        os.makedirs(outside)
+        run.write_atomic(os.path.join(outside, "report.txt"), "RUN outside vendor=x status=ok\n")
+        for bad in ("..", "../outside", "..\\outside", "a/b", "", ".", ".hidden", "x y", outside):
+            for flag in ("--status", "--wait"):
+                code, out, err = self.cli(flag, bad)
+                self.assertEqual((code, out), (2, ""), (flag, bad))
+                self.assertIn("invalid run id", err)
+        code, out, err = self.cli("--status", "20261118-000000-claude-ffff")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("no run 20261118-000000-claude-ffff under", err)
+
+    def test_usage_errors(self):
+        self.make_run("r-u", pid=None)
+        full = ["--vendor", "claude", "--model", "m", "--effort", "low", "--prompt-file", "p"]
+        for argv in (["--status", "r-u", "--vendor", "claude"], ["--status", "r-u", "--read-only"],
+                     ["--status", "r-u", "--secs", "3"], ["--wait", "r-u", "--timeout", "5"],
+                     ["--wait", "r-u", "--cwd", "."], ["--status", "r-u", "--wait", "r-u"],
+                     ["--secs", "3"] + full, [], ["--vendor", "claude"], full[:-2]):
+            with self.subTest(argv):
+                code, out, _ = self.cli(*argv)
+                self.assertEqual((code, out), (2, ""))
+        self.assertFalse(os.path.exists(self.record))  # no CLI was started
+
+
+class PidAliveTests(unittest.TestCase):
+    def test_a_live_child_is_alive_and_stays_alive_a_dead_one_is_not(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        for _ in range(3):
+            self.assertTrue(run.pid_alive(proc.pid))
+            self.assertIsNone(proc.poll())
+        proc.kill()
+        proc.wait()
+        self.assertFalse(run.pid_alive(proc.pid))
+
+    def test_values_that_are_not_pids(self):
+        for bad in (None, 0, -5, "12", 1.5, [], {}):
+            self.assertFalse(run.pid_alive(bad), bad)
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_windows_never_calls_os_kill(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        with mock.patch.object(run.os, "kill", side_effect=AssertionError("os.kill must not be used on Windows")):
+            self.assertTrue(run.pid_alive(proc.pid))
+            self.assertTrue(run.pid_alive(os.getpid()))
+        self.assertIsNone(proc.poll())
+
+    @unittest.skipIf(os.name == "nt", "POSIX only")
+    def test_posix_sends_signal_zero(self):
+        for effect, want in ((None, True), (PermissionError(), True), (ProcessLookupError(), False)):
+            with mock.patch.object(run.os, "kill", side_effect=effect) as kill:
+                self.assertEqual(run.pid_alive(4242), want)
+                kill.assert_called_once_with(4242, 0)
+
+
+class HookCopyTests(GitRepoBase):
+    TAGTEAM = {"PreToolUse": [{"matcher": "run_command",
+                               "hooks": [{"type": "command", "command": "python '/main/role_guard.py' PreToolUse"}]}]}
+
+    def setUp(self):
+        super().setUp()
+        self.wt = os.path.join(self.tmp.name, "wt")
+        self.git("worktree", "add", "-q", self.wt, "-b", "side")
+        self.put(self.repo, {"tagteam": self.TAGTEAM, "mine": 1})
+
+    @staticmethod
+    def put(root, doc):
+        os.makedirs(os.path.join(root, ".agents"), exist_ok=True)
+        with open(os.path.join(root, ".agents", "hooks.json"), "w", encoding="utf-8") as fh:
+            fh.write(doc if isinstance(doc, str) else json.dumps(doc))
+
+    @staticmethod
+    def hooks(root):
+        path = os.path.join(root, ".agents", "hooks.json")
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def copied_to(self, out):
+        lines = [ln for ln in out.splitlines() if ln.startswith("HOOKS copied to ")]
+        self.assertEqual(len(lines), 1, out)
+        return lines[0][len("HOOKS copied to "):]
+
+    def test_worktree_gets_only_the_tagteam_key_before_the_git_snapshot(self):
+        self.put(self.wt, {"other": 2})
+        code, out, _ = self.go("google", cwd=self.wt, extra=["--read-only"])
+        self.assertEqual(code, 0, out)  # a copy made after the first snapshot would be a read-only run's write (exit 8)
+        self.assertTrue(os.path.samefile(self.copied_to(out), os.path.join(self.wt, ".agents", "hooks.json")))
+        self.assertEqual(self.hooks(self.wt), {"other": 2, "tagteam": self.TAGTEAM})
+        self.assertEqual(self.hooks(self.repo), {"tagteam": self.TAGTEAM, "mine": 1})
+        self.assertLess(out.index("HOOKS copied"), out.index("OUTPUT:"))
+
+    def test_the_copy_exists_when_the_first_snapshot_is_taken(self):
+        seen = []
+        path = os.path.join(self.wt, ".agents", "hooks.json")
+
+        def snapshot(cwd, exclude=()):
+            seen.append(os.path.exists(path))
+            return None, None
+        with mock.patch.object(run, "git_snapshot", side_effect=snapshot):
+            self.assertEqual(self.go("google", cwd=self.wt)[0], 0)
+        self.assertEqual(seen, [True, True])
+        self.assertEqual(self.hooks(self.wt), {"tagteam": self.TAGTEAM})  # no file before: created
+
+    def test_a_tracked_hooks_file_is_left_alone(self):
+        self.put(self.wt, {"theirs": 3})
+        self.git("add", ".agents/hooks.json", cwd=self.wt)
+        self.commit("hooks", cwd=self.wt)
+        code, out, _ = self.go("google", cwd=self.wt, extra=["--read-only"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARNING: agy hooks not copied (.agents/hooks.json is tracked)", out)
+        self.assertNotIn("HOOKS copied", out)
+        self.assertEqual(self.hooks(self.wt), {"theirs": 3})
+
+    def test_a_hooks_file_that_is_not_a_json_object_is_left_alone(self):
+        for body in ("{broken", "[1]"):
+            with self.subTest(body):
+                self.put(self.wt, body)
+                code, out, _ = self.go("google", cwd=self.wt)
+                self.assertEqual(code, 0, out)
+                self.assertRegex(out, r"WARNING: agy hooks not copied \(\.agents/hooks\.json: ")
+                with open(os.path.join(self.wt, ".agents", "hooks.json"), encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), body)
+
+    def test_nothing_is_copied_when_the_conditions_do_not_hold(self):
+        sub = os.path.join(self.repo, "deep", "er")
+        os.makedirs(sub)
+        plain = os.path.join(self.tmp.name, "plain")
+        os.makedirs(plain)
+        wt_hooks = os.path.join(self.wt, ".agents", "hooks.json")
+        cases = (("vendor claude", "claude", self.wt), ("vendor openai", "openai", self.wt),
+                 ("main checkout", "google", self.repo), ("folder of the main checkout", "google", sub),
+                 ("outside git", "google", plain))
+        for name, vendor, cwd in cases:
+            with self.subTest(name):
+                code, out, _ = self.go(vendor, cwd=cwd)
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("HOOKS", out)
+                self.assertFalse(os.path.exists(wt_hooks))
+        for name, doc in (("no tagteam key", {"mine": 1}), ("not JSON", "{broken"), ("no file", None)):
+            with self.subTest(name):
+                if doc is None:
+                    os.remove(os.path.join(self.repo, ".agents", "hooks.json"))
+                else:
+                    self.put(self.repo, doc)
+                code, out, _ = self.go("google", cwd=self.wt)
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("HOOKS", out)
+                self.assertNotIn("WARNING", out)
+                self.assertFalse(os.path.exists(wt_hooks))
+
+    def link(self, target, link, directory):
+        """A symbolic link, or on Windows without the privilege a junction (directories only); else skip the test."""
+        try:
+            os.symlink(target, link, target_is_directory=directory)
+            return
+        except (OSError, NotImplementedError):
+            pass
+        if os.name == "nt" and directory and subprocess.run(["cmd", "/c", "mklink", "/J", link, target],
+                                                            capture_output=True).returncode == 0:
+            return
+        self.skipTest("cannot create links here")
+
+    def test_a_link_to_a_tracked_file_is_not_written_through(self):
+        os.makedirs(os.path.join(self.wt, "config"))
+        tracked = os.path.join(self.wt, "config", "hooks.json")
+        with open(tracked, "w", encoding="utf-8") as fh:
+            fh.write('{"theirs": 3}')
+        self.git("add", "config/hooks.json", cwd=self.wt)
+        self.commit("config", cwd=self.wt)
+        self.link(os.path.join(self.wt, "config"), os.path.join(self.wt, ".agents"), True)  # .agents -> tracked config/
+        code, out, _ = self.go("google", cwd=self.wt)
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARNING: agy hooks not copied (.agents/hooks.json is a link or resolves elsewhere)", out)
+        self.assertNotIn("HOOKS copied", out)
+        self.assertEqual(self.hooks(self.wt), {"theirs": 3})
+
+    def test_a_hooks_file_that_is_a_link_is_not_written_through(self):
+        other = os.path.join(self.wt, "other.json")
+        with open(other, "w", encoding="utf-8") as fh:
+            fh.write('{"theirs": 4}')
+        self.git("add", "other.json", cwd=self.wt)
+        self.commit("other", cwd=self.wt)
+        os.makedirs(os.path.join(self.wt, ".agents"))
+        self.link(other, os.path.join(self.wt, ".agents", "hooks.json"), False)
+        code, out, _ = self.go("google", cwd=self.wt)
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARNING: agy hooks not copied (.agents/hooks.json is a link or resolves elsewhere)", out)
+        with open(other, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), {"theirs": 4})
+
+    def test_a_file_the_system_calls_a_link_is_not_written_even_when_no_link_can_be_made(self):
+        dst = os.path.join(self.wt, ".agents", "hooks.json")
+        real_islink = os.path.islink
+        with mock.patch.object(run.os.path, "islink", side_effect=lambda p: real_islink(p) or os.path.normpath(p) == dst):
+            code, out, _ = self.go("google", cwd=self.wt)
+        self.assertEqual(code, 0, out)
+        self.assertIn("is a link or resolves elsewhere", out)
+        self.assertFalse(os.path.exists(dst))
+
+    def make_submodule(self):
+        """The repository gets a submodule libs/sub; both the superproject and the submodule have their own hooks."""
+        sub = os.path.join(self.tmp.name, "sub-origin")
+        os.makedirs(sub)
+        self.git("init", "-q", cwd=sub)
+        self.commit("sub", cwd=sub)
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "libs/sub")
+        self.commit("add submodule")
+        inner = os.path.join(self.repo, "libs", "sub")
+        self.put(inner, {"tagteam": {"SessionStart": [{"type": "command", "command": "sub-guard"}]}})
+        return inner
+
+    def test_a_plain_submodule_is_not_a_linked_worktree(self):
+        inner = self.make_submodule()
+        before = self.hooks(inner)
+        for cwd in (inner, os.path.join(inner, "x")):
+            os.makedirs(cwd, exist_ok=True)
+            code, out, _ = self.go("google", cwd=cwd)
+            self.assertEqual(code, 0, out)
+            self.assertNotIn("HOOKS", out)
+            self.assertNotIn("WARNING", out)
+        self.assertEqual(self.hooks(inner), before)  # the superproject's hooks were not copied into it
+
+    def test_a_worktree_of_a_submodule_gets_the_hooks_of_the_submodule_checkout(self):
+        inner = self.make_submodule()
+        wt = os.path.join(self.tmp.name, "subwt")
+        self.git("worktree", "add", "-q", wt, "-b", "w", cwd=inner)
+        code, out, _ = self.go("google", cwd=wt)
+        self.assertEqual(code, 0, out)
+        self.copied_to(out)
+        self.assertEqual(self.hooks(wt), self.hooks(inner))  # not the superproject's {"tagteam": TAGTEAM, ...}
+        self.assertNotEqual(self.hooks(wt)["tagteam"], self.TAGTEAM)
 
 
 if __name__ == "__main__":

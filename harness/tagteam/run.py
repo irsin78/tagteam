@@ -1,32 +1,18 @@
 #!/usr/bin/env python3
 """Launcher: run one worker through another vendor's CLI, verify the model, report briefly.
 
-  run.py --vendor claude|openai|google --model ID --effort E --prompt-file PATH
-         [--cwd DIR] [--timeout SECONDS] [--read-only] [--run-commands] [--allow-command CMD ...]
-
-Exit: 0 ok / 1 CLI failed / 2 usage, config or pre-run check / 3 vendor exhausted /
-4 actual model differs or cannot be confirmed / 5 timeout / 6 no answer /
-7 git HEAD or branch moved during the run / 8 a read-only run changed the work tree.
-Google (agy) runs always get --settings with a per-run command allow list: command(*), or
-exactly command(CMD) for each --allow-command (google only). Google --read-only uses --mode
-plan, which never runs commands; --read-only --run-commands (google only) uses accept-edits
-so a reviewer can run tests and git diff, and read-only is then enforced only by the git check.
-The git check (every vendor; HEAD, branch, `git status` listing and content hashes of the
-listed files, before and after) catches common accidents. It is not a security boundary:
-ignored files, paths outside the repository, stashes and other refs are not seen, and it
-sees every change in the checkout during the run, other writers' included.
-Records go to <state dir>/runs/<id>/. The first line, printed before the CLI starts, is
-`RUN <id> started run_dir=<dir> stdout=<file> stderr=<file>`; the report follows when the CLI ends.
-An unwritable state folder is a pre-run error (exit 2; inside a Codex sandbox run.py needs escalated
-permissions). A usage-limit sign is written to <state dir>/exhausted.json (route.py reads it).
-Codex on Windows gets `-c windows.sandbox=<value>` from models.local.json codex.windows_sandbox
-(default "unelevated"; null or "" adds nothing) [host: codex-cli 0.169.0 Windows, the elevated
-sandbox failed every command with CreateProcessWithLogonW 1385, measured 2026-11-17 / re-test after
-a Codex update]. Non-Claude CLIs start without CLAUDECODE and CLAUDE_CODE_ENTRYPOINT, so a tool inside
-the worker does not take the host for Claude Code. Workers get no extra writable folder (no --add-dir):
-they do not write the state folder. Environment (tests): TAGTEAM_STATE_DIR,
-TAGTEAM_CONFIG_DIR, TAGTEAM_CLI_<VENDOR> (JSON array replacing the CLI).
-Python 3.9+, standard library only. Accident check, not a security boundary.
+Options, exit codes, records and the git check's limits: `run.py --help` and docs/manual.md (section 7). Kept here:
+- The git check is an accident check, not a security boundary.
+- A run's records are <state dir>/runs/<id>/; started.json is written before the CLI starts and report.txt last,
+  so --status and --wait can tell a finished, a running and a dead run apart. A usage-limit sign goes to
+  <state dir>/exhausted.json (route.py reads it).
+- Codex on Windows gets `-c windows.sandbox=<value>` from models.local.json codex.windows_sandbox
+  [host: codex-cli 0.169.0 Windows, the elevated sandbox failed every command with CreateProcessWithLogonW 1385,
+  measured 2026-11-17 / re-test after a Codex update].
+- A CLI starts without the variables that name another host: CLAUDECODE and CLAUDE_CODE_ENTRYPOINT unless it is
+  claude, ANTIGRAVITY_CONVERSATION_ID unless it is google. Workers get no extra writable folder (no --add-dir).
+- Environment (tests): TAGTEAM_STATE_DIR, TAGTEAM_CONFIG_DIR, TAGTEAM_CLI_<VENDOR> (JSON array replacing the CLI).
+Python 3.9+, standard library only.
 """
 import argparse
 import hashlib
@@ -72,7 +58,16 @@ WINDOWS_SANDBOX = "unelevated"  # codex windows.sandbox default; models.local.js
 # The values Codex accepts: codex-cli 0.169.0 rejects others at start with
 # "unknown variant `x`, expected one of `elevated`, `unelevated`, `mxc` in `windows.sandbox`".
 WINDOWS_SANDBOX_VALUES = ("elevated", "unelevated", "mxc")
-CLAUDE_HOST_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")  # removed for non-Claude CLIs (host detection)
+# Variables that make a tool inside the worker take the host for another CLI: kept only for the vendor that owns them.
+HOST_ENV = {"claude": ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"), "google": ("ANTIGRAVITY_CONVERSATION_ID",)}
+DEFAULT_TIMEOUT = 1800
+# --wait ends before an agy command does: agy moves a run_command call to the background after about 10 s
+# [host: agy 1.5.10 Windows and Linux, measured 2026-11-18 / re-test after an agy update]
+WAIT_DEFAULT, WAIT_MAX = 8, 9
+EXIT_NO_REPORT, EXIT_RUNNING = 6, 9  # --status / --wait: the run ended without a report / is still running
+PID_GRACE = 120  # seconds past a run's timeout before a live pid is taken for a reused one
+RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a name under runs/: no separator, no ".."
+PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE, ERROR_ACCESS_DENIED = 0x1000, 259, 5
 
 
 def windows_sandbox(config_dir):
@@ -131,6 +126,13 @@ def write_text(path, text):
         fh.write(text)
 
 
+def write_atomic(path, text):
+    """Write through a temporary sibling and publish with os.replace, so a reader never sees half of it."""
+    tmp = "%s.%s.tmp" % (path, secrets.token_hex(3))
+    write_text(tmp, text)
+    os.replace(tmp, path)
+
+
 def parse_json(text):
     try:
         data = json.loads(text.strip())
@@ -172,10 +174,8 @@ def update_exhausted(state, vendor, entry):
         del vendors[vendor]
     else:
         vendors[vendor] = entry
-    tmp = "%s.%s.tmp" % (path, secrets.token_hex(3))
     statelib.ensure_writable(state)
-    write_text(tmp, json.dumps({"schema": 1, "vendors": vendors}, indent=2) + "\n")
-    os.replace(tmp, path)
+    write_atomic(path, json.dumps({"schema": 1, "vendors": vendors}, indent=2) + "\n")
 
 
 # ---- commands ---------------------------------------------------------------------------
@@ -425,22 +425,206 @@ def final_text(vendor, data, out, run_dir):
     return str(data[key]) if data and key in data else out
 
 
+# ---- agy hooks in a worktree ------------------------------------------------------------------
+
+def git_out(cwd, *args):
+    """stdout (stripped) of `git -C cwd args`, or None when git fails or is missing."""
+    try:
+        res = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return res.stdout.decode("utf-8", errors="replace").strip() if res.returncode == 0 else None
+
+
+def own_main_work_tree(top):
+    """The main work tree of the repository whose work tree is `top`, from its git common dir; None when that cannot
+    be told. A plain repository or submodule gives itself, a linked worktree gives the checkout it was made from
+    (a submodule's common dir is <super>/.git/modules/<name>; its work tree is the dir's core.worktree).
+    state.py wants the outermost superproject instead; that is not what this needs."""
+    out = git_out(top, "rev-parse", "--git-common-dir")
+    if not out:
+        return None
+    common = os.path.normpath(os.path.join(top, out))
+    if os.path.basename(common) == ".git":
+        return os.path.dirname(common)
+    configured = git_out(common, "config", "--get", "core.worktree")
+    main = os.path.normpath(os.path.join(common, configured)) if configured else None
+    return main if main and os.path.lexists(os.path.join(main, ".git")) else None
+
+
+def copy_agy_hooks(cwd):
+    """Give a linked worktree the "tagteam" hooks of its main checkout (agy reads .agents/hooks.json of the work tree
+    it runs in). Returns report lines; [] when there is nothing to do (not a linked worktree: the main checkout, a
+    plain submodule, outside git). Only the "tagteam" key is written, other keys stay. Nothing is written when git
+    tracks the file, or when .agents or hooks.json is a link or otherwise resolves outside <top>/.agents/hooks.json
+    (it could be a tracked file elsewhere). The guard path in the hooks is absolute (the installer writes it so), so
+    the copy calls the main checkout's guard. Must run before the first git snapshot."""
+    top = git_out(cwd, "rev-parse", "--show-toplevel")
+    top = os.path.normpath(top) if top else None
+    main = own_main_work_tree(top) if top else None
+    if not main or os.path.normcase(os.path.realpath(main)) == os.path.normcase(os.path.realpath(top)):
+        return []
+    try:
+        with open(os.path.join(main, ".agents", "hooks.json"), encoding="utf-8") as fh:
+            ours = json.load(fh)["tagteam"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    rel, dst = ".agents/hooks.json", os.path.join(top, ".agents", "hooks.json")
+    plain = os.path.join(os.path.realpath(top), ".agents", "hooks.json")
+    if os.path.islink(dst) or os.path.islink(os.path.dirname(dst)) or os.path.normcase(os.path.realpath(dst)) != os.path.normcase(plain):
+        return ["WARNING: agy hooks not copied (%s is a link or resolves elsewhere)" % rel]
+    tracked = git_out(top, "ls-files", "--", rel)
+    if tracked is None or tracked:
+        return ["WARNING: agy hooks not copied (%s is %s)" % (rel, "tracked" if tracked else "not checkable: git failed")]
+    try:
+        doc = {}
+        if os.path.exists(dst):
+            with open(dst, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            if not isinstance(doc, dict):
+                raise ValueError("not a JSON object")
+        doc["tagteam"] = ours
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        write_atomic(dst, json.dumps(doc, indent=2) + "\n")
+    except (OSError, ValueError) as exc:
+        return ["WARNING: agy hooks not copied (%s: %s)" % (rel, exc)]
+    return ["HOOKS copied to " + dst]
+
+
+# ---- --status and --wait ----------------------------------------------------------------------
+
+def pid_alive(pid):
+    """True while a process with this pid exists. Nothing is sent to it. On Windows os.kill(pid, 0) is not a
+    liveness check (0 is CTRL_C_EVENT and any other value terminates the process), so ctypes asks instead; a
+    process that exited with code 259 (STILL_ACTIVE) looks alive."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if not _is_windows():
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == ERROR_ACCESS_DENIED  # it exists, but its exit code is not ours to read
+    try:
+        code = wintypes.DWORD()
+        return bool(k32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == STILL_ACTIVE
+    finally:
+        k32.CloseHandle(handle)
+
+
+def run_alive(started):
+    """Is the run.py named by started.json still running? A pid can be reused after run.py died, so a live pid
+    older than the run's timeout plus PID_GRACE does not count. Not exact: a reused pid within that time does."""
+    if not pid_alive(started.get("pid")):
+        return False
+    try:
+        return utc_now() <= parse_iso(started["started"]) + timedelta(seconds=int(started["timeout"]) + PID_GRACE)
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
+def run_report(run_id, run_dir):
+    """(text, exit code) for a run from its records: the stored report and the launcher's own exit code; or
+    `running` (EXIT_RUNNING); or `ended without a report` (EXIT_NO_REPORT, run.py died before it could report)."""
+    text = read_text(os.path.join(run_dir, "report.txt"))
+    if text:
+        result = parse_json(read_text(os.path.join(run_dir, "result.json"))) or {}
+        code = result.get("run_exit")
+        if not isinstance(code, int):  # a record without it: take it from the status word of the first line
+            m = re.search(r" status=(\w+)", text.split("\n", 1)[0])
+            code = dict(PRIORITY, ok=0).get(m.group(1) if m else "", 1)
+        return text, code
+    started = parse_json(read_text(os.path.join(run_dir, "started.json"))) or {}
+    if run_alive(started):
+        try:
+            secs = max(0, int((utc_now() - parse_iso(started["started"])).total_seconds()))
+        except (KeyError, TypeError, ValueError):
+            secs = 0
+        return "RUN %s running secs=%d run_dir=%s\n" % (run_id, secs, run_dir), EXIT_RUNNING
+    return "RUN %s ended without a report\n" % run_id, EXIT_NO_REPORT
+
+
+def wait_for(run_id, run_dir, secs):
+    """run_report(), repeated every second until the run is not running or `secs` have passed."""
+    deadline = time.monotonic() + secs
+    while True:
+        text, code = run_report(run_id, run_dir)
+        left = deadline - time.monotonic()
+        if code != EXIT_RUNNING or left <= 0:
+            return text, code
+        time.sleep(min(1.0, left))
+
+
+def lookup(args):
+    """--status ID / --wait ID [--secs N]."""
+    run_id = args.status if args.status is not None else args.wait
+    if not RUN_ID.fullmatch(run_id):
+        return fail("invalid run id %r: give a name under <state dir>/runs/" % run_id)
+    runs = os.path.join(statelib.state_dir(os.getcwd()), "runs")
+    run_dir = os.path.join(runs, run_id)
+    if not os.path.isdir(run_dir):
+        return fail("no run %s under %s" % (run_id, runs))
+    if args.wait is None:
+        text, code = run_report(run_id, run_dir)
+    else:
+        secs = WAIT_DEFAULT if args.secs is None else args.secs
+        if not 0 <= secs <= WAIT_MAX:
+            return fail("--secs must be 0 to %d" % WAIT_MAX)
+        text, code = wait_for(run_id, run_dir, secs)
+    sys.stdout.write(text)
+    return code
+
+
 # ---- main ---------------------------------------------------------------------------------
 
+RUN_ONLY = ("vendor", "model", "effort", "prompt_file", "cwd", "timeout", "read_only", "run_commands", "allow_command")
+
+
 def parse_args(argv):
-    p = argparse.ArgumentParser(prog="run.py", description="Run one worker through a vendor CLI.")
-    p.add_argument("--vendor", required=True, choices=["claude", "openai", "google"])
-    p.add_argument("--model", required=True)
-    p.add_argument("--effort", required=True)
-    p.add_argument("--prompt-file", required=True)
+    p = argparse.ArgumentParser(prog="run.py", description="Run one worker through a vendor CLI, or look up a run.")
+    p.add_argument("--vendor", choices=["claude", "openai", "google"])
+    p.add_argument("--model")
+    p.add_argument("--effort")
+    p.add_argument("--prompt-file")
     p.add_argument("--cwd", default=None)
-    p.add_argument("--timeout", type=int, default=1800)
+    p.add_argument("--timeout", type=int, default=None, help="seconds, default %d" % DEFAULT_TIMEOUT)
     p.add_argument("--read-only", action="store_true")
     p.add_argument("--run-commands", action="store_true",
                    help="google only: with --read-only, use accept-edits so the worker can run commands")
     p.add_argument("--allow-command", action="append", default=[], metavar="CMD",
                    help="google only, repeatable: exact command agy may run (default: any command)")
-    return p.parse_args(argv)
+    look = p.add_mutually_exclusive_group()
+    look.add_argument("--status", metavar="ID", help="print the report of run ID (a name under <state dir>/runs/), or "
+                      "`running` (exit %d), or `ended without a report` (exit %d); no other option but --wait"
+                      % (EXIT_RUNNING, EXIT_NO_REPORT))
+    look.add_argument("--wait", metavar="ID", help="like --status, but wait for the report up to --secs seconds")
+    p.add_argument("--secs", type=int, default=None,
+                   help="with --wait: seconds to wait, default %d, at most %d" % (WAIT_DEFAULT, WAIT_MAX))
+    args = p.parse_args(argv)
+    given = [o for o in RUN_ONLY if getattr(args, o) != p.get_default(o)]
+    if args.status is None and args.wait is None:
+        missing = [o for o in ("vendor", "model", "effort", "prompt_file") if getattr(args, o) is None]
+        if missing:
+            p.error("the following arguments are required: " + ", ".join("--" + o.replace("_", "-") for o in missing))
+        if args.secs is not None:
+            p.error("--secs applies to --wait only")
+    elif given or (args.secs is not None and args.wait is None):
+        p.error("--status takes a run id and nothing else; --wait takes a run id and --secs")
+    if args.timeout is None:
+        args.timeout = DEFAULT_TIMEOUT
+    return args
 
 
 def resolve_cli(vendor, cfg):
@@ -461,6 +645,8 @@ def main(argv):
     args = parse_args(argv)
     if os.environ.get("HARNESS_DELEGATE_RUN") == "1":
         return fail("refused: this process is already a launcher worker (no re-delegation)")
+    if args.status is not None or args.wait is not None:
+        return lookup(args)
     config_dir = os.environ.get("TAGTEAM_CONFIG_DIR") or HERE
     try:
         with open(os.path.join(config_dir, "models.json"), encoding="utf-8") as fh:
@@ -518,9 +704,14 @@ def main(argv):
     except ValueError as exc:
         return fail(str(exc))
     env = dict(os.environ, HARNESS_DELEGATE_RUN="1")
-    if args.vendor != "claude":
-        for key in CLAUDE_HOST_ENV:
-            env.pop(key, None)
+    for owner, keys in HOST_ENV.items():
+        if args.vendor != owner:
+            for key in keys:
+                env.pop(key, None)
+    hook_lines = copy_agy_hooks(cwd) if args.vendor == "google" else []  # before the first git snapshot
+    write_atomic(os.path.join(run_dir, "started.json"), json.dumps(
+        {"pid": os.getpid(), "started": iso(start), "vendor": args.vendor, "model": args.model, "effort": args.effort,
+         "timeout": args.timeout}, indent=2) + "\n")
     # the run id and log paths before the CLI starts, so a long run can be found and watched
     sys.stdout.write("RUN %s started run_dir=%s stdout=%s stderr=%s\n" % (
         run_id, run_dir, os.path.join(run_dir, "stdout.txt"), os.path.join(run_dir, "stderr.txt")))
@@ -586,6 +777,7 @@ def main(argv):
               "exit_code": code, "secs": secs, "actual_model": found, "model_match": matches if found or status in ("ok", "model_mismatch") else None,
               "read_only": args.read_only, "run_dir": run_dir}
     result["git_check"] = git_check
+    result["run_exit"] = exit_code  # run.py's own exit code (exit_code above is the CLI's): --status repeats it
     if status == "exhausted":
         evidence, epoch = hit
         until = datetime.fromtimestamp(epoch, timezone.utc) if epoch else start + timedelta(minutes=int(vcfg.get("cooldown_minutes", 60)))
@@ -597,7 +789,7 @@ def main(argv):
     write_text(os.path.join(run_dir, "result.json"), json.dumps(result, indent=2) + "\n")
     if start_error:
         lines.append("ERROR: could not start the CLI (%s)" % start_error)
-    lines.extend(git_lines)
+    lines.extend(hook_lines + git_lines)
     if status == "no_output":
         denied = [d.get("display_name") or d.get("action") for d in (data or {}).get("denied_actions") or []
                   if isinstance(d, dict)] if isinstance(data, dict) else []
@@ -606,7 +798,12 @@ def main(argv):
     lines.append("OUTPUT: " + os.path.join(run_dir, "last.txt"))
     lines.append("---")
     lines.append(last[:REPORT_CHARS] + ("\n[truncated, see OUTPUT]" if len(last) > REPORT_CHARS else ""))
-    sys.stdout.write("\n".join(lines) + "\n")
+    text = "\n".join(lines) + "\n"
+    try:  # written last, so a report.txt that exists is a whole one
+        write_atomic(os.path.join(run_dir, "report.txt"), text)
+    except OSError as exc:
+        sys.stderr.write("run.py: warning: could not write report.txt (%s); --status will not show this report\n" % exc)
+    sys.stdout.write(text)
     return exit_code
 
 

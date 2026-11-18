@@ -1,11 +1,8 @@
 """tagteam state folder: where role records, exhaustion, run records and proposals live.
 
-The folder is <main work tree>/.tagteam/ (inside a git submodule: the superproject's work
-tree, because the submodule's git common dir is <super>/.git/modules/<name>). Codex sandboxes
-cannot write inside .git, which is why it is not <git common dir>/tagteam/ any more.
-TAGTEAM_STATE_DIR overrides everything (tests, manual use). Outside git the folder is
-<install root>/.tagteam/ (two levels above this file).
-
+Where it is and why: docs/manual.md, section 2. In short: <main work tree>/.tagteam/ (a submodule uses the
+superproject's work tree; a Codex sandbox cannot write inside .git, so it is not <git common dir>/tagteam/ any
+more); <install root>/.tagteam/ outside git; TAGTEAM_STATE_DIR overrides everything (tests, manual use).
 Standard library only. Every tool that needs the folder calls this module and nothing else.
 """
 import filecmp
@@ -108,17 +105,11 @@ def state_dir(cwd=None):
     if override:
         return override
     cwd = os.path.abspath(cwd or os.getcwd())
-    if cwd in _cache:
-        return _cache[cwd]
-    result = None
-    root = _resolve(cwd)[1]
-    if root:
-        result = os.path.join(root, NAME)
-    if result is None:
+    if cwd not in _cache:
+        root = _resolve(cwd)[1]
         here = os.path.dirname(os.path.abspath(__file__))  # <root>/.claude/tagteam (or .../harness/tagteam)
-        result = os.path.join(os.path.dirname(os.path.dirname(here)), NAME)
-    _cache[cwd] = result
-    return result
+        _cache[cwd] = os.path.join(root or os.path.dirname(os.path.dirname(here)), NAME)
+    return _cache[cwd]
 
 
 def ensure_writable(path):
