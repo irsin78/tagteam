@@ -130,7 +130,7 @@ The *state folder* is `<main work tree>/.tagteam/` (git-ignored), so all worktre
 inside a submodule uses the superproject's work tree, and outside git it is `<project>/.tagteam/`. It is outside `.git`
 because Codex sandboxes cannot write there. `TAGTEAM_STATE_DIR` overrides the location. `--update` moves the contents of an
 old `<git common dir>/tagteam/` here once (nothing is deleted: the old folder is renamed `tagteam.moved`); `--check` warns
-while one remains. If the folder cannot be written, `run.py`, `route.py --mark-exhausted` and the collector stop with a
+while one remains. If the folder cannot be written, `run.py`, `route.py --mark-exhausted`/`--clear-exhausted` and the collector stop with a
 message that names it (plain routing only reads it); the hook only warns and allows the action, so a role record that cannot be written leaves the guard off for that session.
 
 | Entry | Written by | Meaning |
