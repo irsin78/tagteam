@@ -79,7 +79,6 @@ class CollectTest(unittest.TestCase):
     def kinds(self, prop):
         return sorted({c["kind"] for c in prop["changes"]})
 
-    # 1
     def test_parsers(self):
         ids, info = mc.parse_codex(read(os.path.join(FIX, "codex_models.json")))
         self.assertNotIn("gpt-reserve", ids)
@@ -94,7 +93,6 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(info["gpt-oss-120b"]["efforts"], ["medium"])
         self.assertEqual(info["claude-sonnet-4-6"]["efforts"], [])
 
-    # 2
     def test_real_registry_against_real_lists(self):
         code, prop = self.collect()
         self.assertEqual(code, 0)
@@ -131,6 +129,50 @@ class CollectTest(unittest.TestCase):
         self.assertIn(("no_longer_available", "gemini-4-argon"), gby)
         self.assertNotIn(("missing_registered", "gemini-4-argon"), gby)  # free-tier lists omit it
 
+    ORCH = "gemini-pro-orchestrator-g1-pro"
+
+    def agy_listing(self, *extra_lines):
+        lines = read(os.path.join(FIX, "agy_models.txt")).rstrip("\n").split("\n") + list(extra_lines)
+        return mc.parse_agy("\n".join(lines))
+
+    def test_an_orchestrator_id_is_never_a_new_model(self):
+        ids, info = self.agy_listing(self.ORCH + "\tOrchestrator (Argon)")
+        self.assertIn(self.ORCH, ids)
+        listing = {"ids": ids, "models": info}
+        kinds = [(c["kind"], c.get("id") or c.get("model")) for c in mc.compare("google", listing, self.models, {})]
+        self.assertNotIn(("new_model", self.ORCH), kinds)
+        del self.models["orchestrators"]  # control: without the block the same id is reported
+        kinds = [(c["kind"], c.get("id") or c.get("model")) for c in mc.compare("google", listing, self.models, {})]
+        self.assertIn(("new_model", self.ORCH), kinds)
+
+    def test_a_full_run_lists_the_orchestrator_as_available_but_proposes_nothing_for_it(self):
+        path = os.path.join(self.tmp, "agy_orch.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(read(os.path.join(FIX, "agy_models.txt")).rstrip("\n") + "\n" + self.ORCH + "\tOrchestrator (Argon)\n")
+        code, prop = self.collect(google=self.cli(path))
+        self.assertEqual(code, 0)
+        self.assertIn(self.ORCH, prop["available"]["google"]["ids"])
+        self.assertFalse([c for c in prop["changes"] if self.ORCH in (c.get("id"), c.get("model"))])
+
+    def test_orchestrators_block_is_checked_for_shape_only(self):
+        bad = {"not an object": [1], "entry not an object": {"o": 5}, "unknown vendor": {"o": {"vendor": "nope", "compare_as": "a:high"}},
+               "no compare_as": {"o": {"vendor": "google"}}, "compare_as not a string": {"o": {"vendor": "google", "compare_as": 5}}}
+        for name, block in bad.items():
+            with self.subTest(name):
+                self.models["orchestrators"] = block
+                with open(os.path.join(self.cfg, "models.json"), "w", encoding="utf-8") as f:
+                    json.dump(self.models, f)
+                self.assertEqual(self.collect()[0], 2)
+        # the reference itself is route.py's to check: an unknown compare_as target still loads here
+        self.models["orchestrators"] = {"o": {"vendor": "google", "compare_as": "nothing:high"}}
+        with open(os.path.join(self.cfg, "models.json"), "w", encoding="utf-8") as f:
+            json.dump(self.models, f)
+        self.assertEqual(self.collect()[0], 0)
+        del self.models["orchestrators"]  # the block is optional
+        with open(os.path.join(self.cfg, "models.json"), "w", encoding="utf-8") as f:
+            json.dump(self.models, f)
+        self.assertEqual(self.collect()[0], 0)
+
     def test_same_proposal_same_digest_and_applied_marker(self):
         _, first = self.collect()
         time.sleep(1.1)
@@ -143,7 +185,6 @@ class CollectTest(unittest.TestCase):
         self.assertIn("applied_at", applied)
         self.assertEqual(self.collect()[1]["digest"], applied["digest"])
 
-    # 3
     def test_missing_error_skipped_and_all_failed(self):
         self.local({"available": {"openai": {"ids": ["gpt-6.1-sol"]}}})
         code, prop = self.collect(openai="[]")
@@ -214,17 +255,17 @@ class CollectTest(unittest.TestCase):
         path = os.path.join(self.tmp, "claude_odd.json")
         for text in ('{"result": "no list here"}', "not json", '{"result": "Available: best, default"}',
                      '{"result": {"message": "unavailable"}}', '[1, 2]'):
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(text)
-            code, prop = self.collect(claude=self.cli(path))
-            self.assertEqual((code, prop["cli"]["claude"]["status"]), (1, "error"), text)
-            self.assertNotIn("claude", prop["available"])
+            with self.subTest(text):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                code, prop = self.collect(claude=self.cli(path))
+                self.assertEqual((code, prop["cli"]["claude"]["status"]), (1, "error"))
+                self.assertNotIn("claude", prop["available"])
 
     def test_empty_output_is_error(self):
         code, prop = self.collect(google=self.cli("-"))
         self.assertEqual((code, prop["cli"]["google"]["status"]), (1, "error"))
 
-    # 4
     def test_timeout_is_error(self):
         started = time.time()
         code, prop = self.collect(openai=self.cli(delay=30), extra=["--timeout", "1"])
@@ -232,7 +273,6 @@ class CollectTest(unittest.TestCase):
         self.assertEqual((code, prop["cli"]["openai"]["status"]), (1, "error"))
         self.assertIn("timeout", prop["cli"]["openai"]["detail"])
 
-    # 5
     def test_schema_and_config_files_untouched(self):
         self.local({"plans": {"google": "free"}})
         before = {n: digest_of(os.path.join(self.cfg, n))
@@ -275,27 +315,28 @@ class CollectTest(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(repo, ".tagteam")))
         self.assertFalse(os.path.exists(os.path.join(repo, ".git", "tagteam")))
 
-    # 6
     def test_mark_applied_needs_proposal(self):
         self.assertEqual(self.collect(extra=["--mark-applied"])[0], 2)
         self.assertFalse(os.path.exists(os.path.join(self.state, "model-update.applied")))
 
     def test_malformed_codex_payload_is_error_and_others_continue(self):
         for body in ("[]", '{"models": 3}', '{"models": [1]}'):
-            path = os.path.join(self.tmp, "bad.json")
-            with open(path, "w") as f:
-                f.write(body)
-            code, prop = self.collect(openai=self.cli(path))
-            self.assertEqual((code, prop["cli"]["openai"]["status"], prop["cli"]["google"]["status"]),
-                             (1, "error", "ok"), body)
-            self.assertIn("codex payload", prop["cli"]["openai"]["detail"])
+            with self.subTest(body):
+                path = os.path.join(self.tmp, "bad.json")
+                with open(path, "w") as f:
+                    f.write(body)
+                code, prop = self.collect(openai=self.cli(path))
+                self.assertEqual((code, prop["cli"]["openai"]["status"], prop["cli"]["google"]["status"]),
+                                 (1, "error", "ok"))
+                self.assertIn("codex payload", prop["cli"]["openai"]["detail"])
 
     def test_config_missing_required_keys_is_exit_2(self):
         for body in ("{}", '{"vendors": {}, "models": []}',
                      '{"vendors": {"openai": {"model_arg": "{model}"}}, "models": {"m": {"vendor": "x", "grades": {}}}}', '{"vendors": {"openai": {"model_arg": "{model}"}}, "models": {"m": {"vendor": "openai", "efforts": ["low"]}}}'):
-            with open(os.path.join(self.cfg, "models.json"), "w") as f:
-                f.write(body)
-            self.assertEqual(self.collect()[0], 2, body)
+            with self.subTest(body):
+                with open(os.path.join(self.cfg, "models.json"), "w") as f:
+                    f.write(body)
+                self.assertEqual(self.collect()[0], 2)
 
     def test_broken_config_is_exit_2(self):
         with open(os.path.join(self.cfg, "models.json"), "w") as f:

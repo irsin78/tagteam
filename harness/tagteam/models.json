@@ -59,6 +59,12 @@
       "gpt-oss-120b": "other vendor's model through agy breaks vendor independence"
     }
   },
+  "orchestrators": {
+    "gemini-pro-orchestrator-g1-pro": {
+      "vendor": "google", "label": "Orchestrator (Argon)", "compare_as": "gemini-4-argon:high",
+      "note": "agy built-in model: plans with Argon, hands execution to an internal model, takes no --effort. compare_as is an assumption from the change log and the /model list name, not a measurement. Never a worker model: run.py rejects it."
+    }
+  },
   "models": {
     "claude-fable-5-2": {
       "vendor": "claude", "grades": {"low": "A", "medium": "S", "high": "S", "xhigh": "S", "max": "S"}

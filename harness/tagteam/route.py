@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 """Router: pick model, effort and launch method for a role.
 
-  route.py --role design|implement|review|read|translate [--task NAME]
-           [--host claude-desktop|claude|codex|agy]
-           [--author-vendor V] [--author-model M --author-effort E] [--grade S|A|B|C]
-           [--orchestrator-model M] [--orchestrator-effort E] [--json]
-  route.py --task NAME [...]        (the role comes from the task's `base`)
-  route.py --mark-exhausted VENDOR --evidence TEXT [--until ISO8601]
-  route.py --clear-exhausted VENDOR
+Options: `route.py --help`. Launch kinds (session, subagent, run) and what each host does with them: skill
+`cycle`, hosts.md. Grading and routing rules: docs/design.md, section 7.
 
-launch.kind: session (Claude desktop), subagent (a definition's name, only when its pinned model and effort
-equal the pick; Codex without a matching definition: agent "default" with model arguments) or run (a run.py
-command; "escalate": true on Codex hosts). A review needs the author's grade (--grade, or --author-model with
---author-effort). Tasks (models.local.json "tasks") layer a per-task preference over the role's rules.
+A review needs the author's grade (--grade, or --author-model with --author-effort); on --host agy it is at least A.
+An orchestrator in models.json "orchestrators" (agy's built-in model) is compared as its `compare_as` pair and takes no
+effort. Tasks (models.local.json "tasks") layer a per-task preference over the role's rules.
 
-Exit: 0 chosen, 2 usage or config error, 3 no independent reviewer (incomplete),
-4 no model available. Config dir: next to this script (TAGTEAM_CONFIG_DIR in tests). Install root for the
-agent definitions: three folders above this script (TAGTEAM_ROOT in tests).
-State dir (exhausted.json): state.state_dir (TAGTEAM_STATE_DIR in tests).
+Exit: 0 chosen, 2 usage or config error, 3 no independent reviewer (incomplete), 4 no model available.
+Config dir: next to this script (TAGTEAM_CONFIG_DIR in tests). Install root for the agent definitions: three
+folders above this script (TAGTEAM_ROOT in tests). State dir (exhausted.json): state.state_dir (TAGTEAM_STATE_DIR in tests).
 """
 import argparse
 import json
@@ -139,7 +132,11 @@ def clamp_effort(model, want):
 
 
 def default_host():
-    """A guess (Codex started from Claude inherits CLAUDECODE): the notice shows host=<value>, so a wrong guess is visible."""
+    """A guess: the notice shows host=<value>, so a wrong guess is visible.
+
+    Codex and agy started from Claude inherit CLAUDECODE, so the agy variable is checked first."""
+    if os.environ.get("ANTIGRAVITY_CONVERSATION_ID"):
+        return "agy"
     if os.environ.get("CLAUDECODE") == "1":
         return "claude-desktop" if os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop" else "claude"
     return "codex"
@@ -288,11 +285,11 @@ class Router:
     def spec(self, role, grade, task=None):
         spec = dict(self.m["roles"][role])
         lr = (self.local.get("roles") or {}).get(role) or {}
-        for key in ("model", "vendor", "grade"):
+        for key in ("model", "vendor"):
             if lr.get(key):
                 spec["user_" + key] = lr[key]
-                if key == "grade":
-                    spec["grade"] = lr[key]
+        if lr.get("grade"):
+            spec["grade"] = lr["grade"]
         if lr.get("effort"):
             spec["user_effort"] = lr["effort"]
         if task:  # the task's keys override the role's: a model or vendor choice replaces the role-level pins
@@ -342,8 +339,8 @@ class Router:
         """Best (model, effort, clamped) of this vendor whose grades[effort] is the role grade, or None.
 
         Tiers: 0 cost known and within caps[grade] -> highest index; 1 no cost, index known -> highest index;
-        2 cost above the cap -> lowest cost; 3 nothing known -> defaults[vendor][grade], else models.json order
-        at the lowest effort. A later tier is used only when the earlier ones are empty.
+        2 cost above the cap -> lowest cost; 3 nothing known -> defaults[vendor][grade], else the first candidate
+        (models.json order, lowest effort). A later tier is used only when the earlier ones are empty.
         """
         want = spec.get("user_effort")
         cands = []
@@ -359,7 +356,7 @@ class Router:
         if not cands:
             return None
         limit = (self.m.get("grading") or {}).get("caps", {}).get(grade)
-        tiers = ([], [], [], [])
+        tiers = ([], [], [])
         for c in cands:
             idx, cost = self.bench(c[0], "index", c[1]), self.bench(c[0], "cost_per_task", c[1])
             order = self.order[c[0]]
@@ -369,9 +366,7 @@ class Router:
                 tiers[1].append(((-idx, order), c))
             elif cost is not None and limit is not None:
                 tiers[2].append(((cost, -(idx or 0), order), c))
-            else:
-                tiers[3].append(((order, EFFORTS.index(c[1])), c))
-        for tier in tiers[:3]:
+        for tier in tiers:
             if tier:
                 return min(tier, key=lambda t: t[0])[1] + (False,)
         wanted = ((self.m.get("defaults") or {}).get(vendor) or {}).get(grade) or []
@@ -379,17 +374,16 @@ class Router:
             mid, _, effort = entry.rpartition(":")
             if (mid, effort) in cands:
                 return mid, effort, False
-        return min(tiers[3], key=lambda t: t[0])[1] + (False,)
+        return cands[0] + (False,)  # nothing scored: every candidate is tier 3, in models.json order
 
     def over_cap(self, mid, effort, orch_model, orch_effort):
         """True when a native Claude session cannot take this model or effort.
 
         A model listed earlier in models.json than the orchestrator's (same vendor) counts as stronger."""
-        model, oe = self.m["models"][mid], orch_effort or os.environ.get("CLAUDE_EFFORT")
-        om = self.m["models"].get(orch_model)
+        model, om = self.m["models"][mid], self.m["models"].get(orch_model)
         if om and om["vendor"] == model["vendor"] and self.order[mid] < self.order[orch_model]:
             return True
-        return oe in EFFORTS and EFFORTS.index(effort) > EFFORTS.index(oe)
+        return orch_effort in EFFORTS and EFFORTS.index(effort) > EFFORTS.index(orch_effort)
 
     def definition(self, vendor, role):
         """(agent name, pinned (model, effort) or None) of the vendor host's definition for this role."""
@@ -440,27 +434,50 @@ class Router:
 
     def stronger(self, mid, effort, orch_model, orch_effort):
         """(ask_user, reason): does the pick outrank (or cost more than) the orchestrator? None = unknown."""
-        oe = orch_effort or os.environ.get("CLAUDE_EFFORT")
         om = self.m["models"].get(orch_model)
-        if not om or oe not in EFFORTS:
+        if not om or orch_effort not in EFFORTS:
             return None, "orchestrator model or effort unknown"
         model = self.m["models"][mid]
         if model["vendor"] == om["vendor"] and self.order[mid] < self.order[orch_model]:
             return True, "listed before the orchestrator's model (stronger)"
-        mine, theirs = model["grades"].get(effort), om["grades"].get(oe)
+        mine, theirs = model["grades"].get(effort), om["grades"].get(orch_effort)
         if mine and theirs and GRADES[mine] > GRADES[theirs]:
             return True, "grade %s is above the orchestrator's %s" % (mine, theirs)
-        cost, orch_cost = self.bench(mid, "cost_per_task", effort), self.bench(orch_model, "cost_per_task", oe)
+        cost, orch_cost = self.bench(mid, "cost_per_task", effort), self.bench(orch_model, "cost_per_task", orch_effort)
         if cost is not None and orch_cost is not None and cost > orch_cost:
             return True, "costs more per task than the orchestrator (bench)"
         return False, "not stronger or costlier than the orchestrator"
 
+    def orchestrator(self, host, model, effort):
+        """(model, effort, note): the pair the caps and ask_user compare with.
+
+        A model in "orchestrators" is compared as its compare_as pair and takes no effort. CLAUDE_EFFORT stands in
+        for a missing effort on Claude hosts only: an agy started from Claude inherits the variable."""
+        entry = (self.m.get("orchestrators") or {}).get(model)
+        if entry:
+            if effort:
+                raise ConfigError("orchestrator %s takes no effort: drop --orchestrator-effort" % model)
+            base, _, base_effort = str(entry.get("compare_as")).rpartition(":")
+            if base not in self.m["models"] or base_effort not in model_efforts(self.m["models"][base]):
+                raise ConfigError("orchestrators.%s: compare_as must be <registered model>:<its effort>" % model)
+            return base, base_effort, "Orchestrator compared as %s %s (assumed, not measured)." % (base, base_effort)
+        if not effort and host_family(host) == "claude":
+            effort = os.environ.get("CLAUDE_EFFORT")
+        return model, effort, None
+
     def route(self, role, host, author=None, grade=None, orch_model=None, orch_effort=None, task=None, task_name=None):
+        orch_model, orch_effort, assumed = self.orchestrator(host, orch_model, orch_effort)
+        result, code = self.route_task(role, host, author, grade, orch_model, orch_effort, task, task_name)
+        if assumed:
+            result["notice"] += " " + assumed
+        return result, code
+
+    def route_task(self, role, host, author, grade, orch_model, orch_effort, task, task_name):
         if not task:
             return self._route(role, host, author, self.spec(role, grade), orch_model, orch_effort)
         spec = self.spec(role, grade, task)
         result, code = self._route(role, host, author, spec, orch_model, orch_effort)
-        if code == 0 and self.honors(task, result):
+        if code == 0 and self.honors(task, result, self.review_floor(role, host)):
             result.update({"task": task_name, "task_applied": True})
             return result, code
         cause = self.task_cause(role, host, author, spec, task, (orch_model, orch_effort), result)
@@ -471,14 +488,22 @@ class Router:
         return base, code
 
     @staticmethod
-    def honors(task, result):
+    def review_floor(role, host):
+        """On agy a review is graded at least A: the agy executor may be a Flash-class model the orchestrator cannot see."""
+        return role == "review" and host == "agy"
+
+    @staticmethod
+    def honors(task, result, floor=False):
         if task.get("model"):
             return result["model"] == task["model"]
         if task.get("vendor") and result["vendor"] != task["vendor"]:
             return False
         if task.get("effort") and result["effort"] != task["effort"] and "effort_clamped" not in result["reason"]:
             return False
-        return not task.get("grade") or result["grade"] == task["grade"]
+        want = task.get("grade")
+        if want and floor and GRADES[want] < GRADES["A"]:
+            want = "A"  # the task's grade, raised like the route's
+        return not want or result["grade"] == want
 
     def task_cause(self, role, host, author, spec, task, cap, result):
         """Why the task's preference was not used (design 2.3.6: exhausted, plan_none, unavailable, cli_missing, author_vendor)."""
@@ -497,6 +522,8 @@ class Router:
             effort = self.model_effort(mid, spec, grade)[0]
             if not self.usable(mid, effort):
                 return "unavailable:" + mid
+            if self.review_floor(role, host) and GRADES[self.m["models"][mid]["grades"][effort]] < GRADES["A"]:
+                return "agy_review_floor_A"
         else:
             hit = self.pick(role, spec, vendor, grade, cap, False)
             if hit is None:
@@ -509,24 +536,32 @@ class Router:
     def _route(self, role, host, author, spec, orch_model, orch_effort):
         grade = spec["grade"]
         reason, notes = [], []
+        floor = self.review_floor(role, host)
+        if floor and GRADES[grade] < GRADES["A"]:
+            reason.append("agy_review_floor_A")
+            notes.append("agy host: review grade raised from %s to A" % grade)
+            grade = spec["grade"] = "A"
         cap = (orch_model, orch_effort)
         choice = None
         um = spec.get("user_model")
         if um:
             vendor = self.m["models"][um]["vendor"]
             effort, clamped = self.model_effort(um, spec, grade)
+            pinned = (self.m["models"][um].get("grades") or {}).get(effort)
             if not self.usable(um, effort):
                 reason.append("override_unusable")
             elif vendor in self.exh:
                 reason.append("override_exhausted")
             elif role == "review" and vendor == author:
                 reason.append("override_same_vendor_as_author")
+            elif floor and GRADES[pinned] < GRADES["A"]:  # a pinned effort can land below the floor
+                reason.append("override_below_floor")
+                notes.append("user-pinned reviewer is grade %s, below the agy review floor A, substituted" % pinned)
             elif self.cli_missing(role, um, effort, host, cap):
                 reason.append("cli_missing:" + vendor)
             else:
                 choice = (um, effort, clamped)
                 reason.append("user_override")
-                pinned = (self.m["models"][um].get("grades") or {}).get(effort)
                 if role == "review" and pinned != grade:
                     reason.append("override_grade_mismatch")
                     notes.append("user-pinned reviewer is grade %s, the author's grade is %s" % (pinned, grade))
@@ -572,7 +607,7 @@ class Router:
         launch = self.make_launch(role, mid, effort, host, cap, reason)
         extra = ""
         if launch["kind"] == "session":
-            if not (orch_model in self.m["models"] and (orch_effort or os.environ.get("CLAUDE_EFFORT")) in EFFORTS):
+            if not (orch_model in self.m["models"] and orch_effort in EFFORTS):
                 extra = " Check orchestrator cap."
         elif "native_model_cap" in reason:
             extra = " Orchestrator cap exceeded, launching via run.py."

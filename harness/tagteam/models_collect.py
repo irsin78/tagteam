@@ -5,21 +5,9 @@
   models_collect.py --write-bench [--timeout 60]
   models_collect.py --write-available [--timeout 60]
 
-No LLM and no model run. The weekly run never edits models.json or models.local.json. --write-bench rewrites
-bench.local.json (next to models.json, machine-local, git-ignored) from Artificial Analysis for
-every registered model and effort that has a value; entries of other sources are kept. Without a
-key it writes nothing and exits 0; on an AA error it exits 1 and leaves the file alone. Writes
-<state dir>/model-update.json (overwritten each run) and appends to collect.log.
---mark-applied records the current proposal's digest in <state dir>/model-update.applied.
---write-available asks the vendor CLIs for their model lists (claude: /model families) and writes them to
-"available" in models.local.json for the vendors that answered; other keys are kept. Install runs it once.
-With env TAGTEAM_AA_API_KEY set, also reads the Artificial Analysis /free model list (urllib,
-max 10 pages) for vendors that have "aa_creator" in models.json: exact slug+effort matching,
-bench_changed/bench_added (compared with bench.local.json; no file = no bench changes and
-bench.local "missing") and AA-sourced new_model changes, and a "bench" block in the proposal. Without
-the key bench.status is "skipped" and nothing is requested. The key is never written anywhere.
-grade_changed: bench.local.json index values put against grading.floors give another grade than models.json
-grades (needs the file, not the key); AA-sourced new_model changes carry proposed grades from the floors.
+No LLM and no model run; it never edits models.json or models.local.json. What each mode reads and writes, the change
+kinds and the apply step: docs/manual.md, section 8. The Artificial Analysis key (TAGTEAM_AA_API_KEY) is never written
+anywhere. Ids in models.json "orchestrators" are known to the collector and never reported as new models.
 Data source: Artificial Analysis (https://artificialanalysis.ai/).
 Exit: 0 collected, 1 some vendor error or missing (or key set and bench error), 2 usage or
 config error, 3 every vendor CLI failed.
@@ -184,10 +172,11 @@ def compare(vendor, listing, models, local):
     changes = []
     registered = {k: m for k, m in models["models"].items() if m["vendor"] == vendor}
     unreg = (models.get("unregistered") or {}).get(vendor) or {}
+    orchestrators = models.get("orchestrators") or {}
     had = set(((local.get("available") or {}).get(vendor) or {}).get("ids") or [])
     ids, info = set(listing["ids"]), listing["models"]
     for base, i in info.items():
-        if base not in registered and base not in unreg:
+        if base not in registered and base not in unreg and base not in orchestrators:
             changes.append({"kind": "new_model", "vendor": vendor, "id": base, "label": i["label"],
                             "efforts": sorted(i["efforts"], key=EFFORTS.index)})
     for mid, m in registered.items():
@@ -450,6 +439,12 @@ def load_config(cdir):
             raise ValueError("models.json: model %s needs a known vendor and a grades table" % mid)
     if any(not isinstance(v, dict) or "model_arg" not in v for v in models["vendors"].values()):
         raise ValueError("models.json: every vendor needs a model_arg")
+    orchestrators = models.get("orchestrators", {})
+    if not isinstance(orchestrators, dict):
+        raise ValueError("models.json: 'orchestrators' must be an object")
+    for oid, o in orchestrators.items():
+        if not (isinstance(o, dict) and o.get("vendor") in models["vendors"] and isinstance(o.get("compare_as"), str)):
+            raise ValueError("models.json: orchestrator %s needs a known vendor and a compare_as string" % oid)
     return models, local
 
 
@@ -486,7 +481,7 @@ def write_available(cdir, timeout):
     except (OSError, ValueError) as exc:
         sys.stderr.write("models_collect: %s\n" % exc)
         return 2
-    today =datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     got = {}
     for vendor in sorted(models["vendors"]):
         status, listing = collect_vendor(vendor, models, local, timeout)
