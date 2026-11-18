@@ -35,7 +35,8 @@ class RoleGuardTest(unittest.TestCase):
         e.update(env or {})
         cmd = [sys.executable, GUARD, event] + (["--host", host] if host else [])
         data = raw if raw is not None else json.dumps(payload or {})
-        return subprocess.run(cmd, input=data, capture_output=True, text=True, env=e, timeout=30)
+        return subprocess.run(cmd, input=data, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=e, timeout=30)
 
     def prompt(self, text, sid="s1"):
         return self.run_guard("UserPromptSubmit", {"session_id": sid, "prompt": text})

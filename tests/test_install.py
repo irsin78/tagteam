@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -8,12 +9,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 INSTALL = Path(__file__).resolve().parent.parent / "install.py"
 REAL_STATE = INSTALL.parent / "harness/tagteam/state.py"
+REAL_GUARD = INSTALL.parent / "harness/tagteam/role_guard.py"
+REAL_PAYLOADS = INSTALL.parent / "harness/tagteam/tests/fixtures/codex_payloads.json"
 sys.path.insert(0, str(INSTALL.parent))
 import install  # noqa: E402
 
@@ -58,6 +62,19 @@ ALLOW_ALL = "import sys\nsys.exit(0)\n"
 TEMPLATE_AGENTS = "# Agents\n\nintro v2\n\n## Project policy\n\ntemplate placeholder\n"
 
 
+def hook(event, **extra):
+    h = {"type": "command", "command": f"python3 .claude/tagteam/role_guard.py {event} --host codex", "timeout": 10,
+         "statusMessage": "tagteam role guard", "commandWindows": f"python .claude/tagteam/role_guard.py {event} --host codex"}
+    h.update(extra)
+    return h
+
+
+HOOKS_TEMPLATE = {"hooks": {
+    "SessionStart": [{"hooks": [hook("SessionStart")]}],
+    "PreToolUse": [{"matcher": ".*", "hooks": [hook("PreToolUse")]}],
+}}
+
+
 def build_source(root, guard=STUB):
     h = root / "harness"
     files = {
@@ -69,8 +86,9 @@ def build_source(root, guard=STUB):
         "tagteam/models.json": "{}",
         "tagteam/models_collect.py": FAKE_COLLECT,
         "tagteam/models.local.json.example": '{"plans": {}}',
-        "codex/hooks.json": json.dumps({"hooks": {"PreToolUse": [{"command": "python3 .claude/tagteam/role_guard.py PreToolUse --host codex", "commandWindows": "python .claude/tagteam/role_guard.py PreToolUse --host codex"}]}}),
+        "codex/hooks.json": json.dumps(HOOKS_TEMPLATE),
         "codex/agents/b.toml": "x = 1",
+        "tagteam/tests/fixtures/codex_payloads.json": REAL_PAYLOADS.read_text(encoding="utf-8"),  # read from the source by --check
     }
     for rel, text in files.items():
         p = h / rel
@@ -189,11 +207,556 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue((self.dst / ".git/tagteam/exhausted.json").is_file())
 
+    # ---- U7: Codex hook drift, --repair-hooks, --check split -----------------------------------
+
+    def hooks_path(self):
+        return self.dst / ".codex/hooks.json"
+
+    def hooks(self):
+        return json.loads(self.hooks_path().read_text(encoding="utf-8"))
+
+    def write_hooks(self, data):
+        self.hooks_path().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    def issues(self):
+        expected = install.expected_codex_hooks(self.src, self.dst)
+        current, err = install.load_codex_hooks(self.dst)
+        self.assertIsNone(err)
+        return install.diagnose_hooks(self.dst, expected, current)
+
+    def kinds(self):
+        return sorted((e, k) for e, k, _ in self.issues())
+
+    def use_real_guard(self):
+        self.src = build_source(self.src.parent / "src-real", guard=REAL_GUARD.read_text(encoding="utf-8"))
+
+    def run_main(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = install.main([str(self.dst), "--source", str(self.src), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_fresh_install_has_no_hook_drift(self):
+        self.run_install()
+        self.assertEqual(self.issues(), [])
+
+    def test_drift_is_found_per_event_and_field(self):
+        self.run_install()
+        data = self.hooks()
+        del data["hooks"]["SessionStart"]
+        data["hooks"]["PreToolUse"][0]["matcher"] = "Bash"
+        data["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"] = 99
+        self.write_hooks(data)
+        found = self.issues()
+        self.assertEqual(sorted((e, k) for e, k, _ in found), [("PreToolUse", "different"), ("PreToolUse", "different"),
+                                                                ("SessionStart", "missing")])
+        text = "\n".join(t for _, _, t in found)
+        self.assertIn('matcher: have "Bash", want ".*"', text)
+        self.assertIn("timeout: have 99, want 10", text)
+
+    def test_wrong_guard_path_is_reported(self):
+        self.run_install()
+        data = self.hooks()
+        h = data["hooks"]["SessionStart"][0]["hooks"][0]
+        h["command"] = h["command"].replace(str(self.dst.resolve()).replace("\\", "/"), "C:/gone/elsewhere")
+        self.write_hooks(data)
+        kinds = self.kinds()
+        self.assertIn(("SessionStart", "different"), kinds)
+        self.assertIn(("SessionStart", "path"), kinds)
+        # the file is simply not installed: same definition, missing script
+        self.run_main("--repair-hooks", "--yes")  # --update keeps an existing hooks.json
+        self.assertEqual(self.issues(), [])
+        (self.dst / ".claude/tagteam/role_guard.py").unlink()
+        self.assertEqual({k for _, k in self.kinds()}, {"path"})
+
+    def test_other_entries_are_ignored_and_extra_tagteam_entries_only_noted(self):
+        self.run_install()
+        data = self.hooks()
+        data["hooks"]["PreToolUse"][0]["hooks"].append({"type": "command", "command": "python3 mine.py"})
+        data["hooks"]["PreToolUse"].insert(0, {"hooks": [{"type": "command", "command": "echo mine", "timeout": 1}]})
+        data["hooks"]["Stop"] = [{"hooks": [{"type": "command", "command": "echo stop"}]}]
+        self.write_hooks(data)
+        self.assertEqual(self.issues(), [])
+        data["hooks"]["PreToolUse"].append(copy.deepcopy(data["hooks"]["PreToolUse"][1]))  # an exact second copy
+        self.write_hooks(data)
+        self.assertEqual(self.kinds(), [("PreToolUse", "extra")])
+        data["hooks"]["PreToolUse"][-1]["matcher"] = "Bash"  # a second, different tagteam hook
+        self.write_hooks(data)
+        self.assertEqual(self.kinds(), [("PreToolUse", "stale")])
+
+    def test_repair_previews_by_default_and_changes_nothing(self):
+        self.run_install()
+        data = self.hooks()
+        del data["hooks"]["SessionStart"]
+        self.write_hooks(data)
+        before = self.hooks_path().read_bytes()
+        code, out, _ = self.run_main("--repair-hooks")
+        self.assertEqual(code, 0, out)
+        self.assertIn("preview only", out)
+        self.assertIn("SessionStart: appended", out)
+        self.assertIn("+", out)
+        self.assertEqual(self.hooks_path().read_bytes(), before)
+        self.assertFalse((self.dst / ".codex/hooks.json.bak").exists())
+
+    def test_repair_yes_keeps_other_entries_in_place_and_leaves_a_backup(self):
+        self.run_install()
+        data = self.hooks()
+        foreign_group = {"hooks": [{"type": "command", "command": "echo mine", "timeout": 1}]}
+        data["hooks"]["PreToolUse"].insert(0, foreign_group)  # tagteam's hook is now group 1
+        data["hooks"]["PreToolUse"][1]["hooks"][0]["timeout"] = 99
+        data["hooks"]["Stop"] = [{"hooks": [{"type": "command", "command": "echo stop"}]}]
+        del data["hooks"]["SessionStart"]
+        data["hooks"] = {"Stop": data["hooks"]["Stop"], "PreToolUse": data["hooks"]["PreToolUse"]}  # order matters to Codex
+        self.write_hooks(data)
+        original = self.hooks_path().read_bytes()
+        code, out, _ = self.run_main("--repair-hooks", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertIn("trust", out)
+        self.assertIn("silently", out)
+        self.assertEqual((self.dst / ".codex/hooks.json.bak").read_bytes(), original)
+        new = self.hooks()
+        self.assertEqual(list(new["hooks"]), ["Stop", "PreToolUse", "SessionStart"])  # the missing event goes last
+        self.assertEqual(new["hooks"]["PreToolUse"][0], foreign_group)  # same index, same content
+        self.assertEqual(new["hooks"]["Stop"], data["hooks"]["Stop"])
+        self.assertEqual(new["hooks"]["PreToolUse"][1]["hooks"][0]["timeout"], 10)  # replaced in place (group 1)
+        self.assertEqual(len(new["hooks"]["PreToolUse"]), 2)
+        self.assertEqual(self.issues(), [])
+
+    def test_repair_appends_a_missing_hook_at_the_end_of_an_existing_event(self):
+        self.run_install()
+        data = self.hooks()
+        data["hooks"]["SessionStart"] = [{"hooks": [{"type": "command", "command": "echo mine"}]}]  # no tagteam hook here
+        self.write_hooks(data)
+        self.run_main("--repair-hooks", "--yes")
+        groups = self.hooks()["hooks"]["SessionStart"]
+        self.assertEqual(groups[0]["hooks"][0]["command"], "echo mine")
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(groups[1], {"hooks": [install.expected_codex_hooks(self.src, self.dst)["hooks"]["SessionStart"][0]["hooks"][0]]})
+
+    def test_repair_is_idempotent_and_numbers_backups(self):
+        self.run_install()
+        data = self.hooks()
+        data["hooks"]["PreToolUse"][0]["matcher"] = "Bash"
+        self.write_hooks(data)
+        self.run_main("--repair-hooks", "--yes")
+        code, out, _ = self.run_main("--repair-hooks", "--yes")
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to do", out)
+        self.assertEqual(sorted(p.name for p in (self.dst / ".codex").glob("hooks.json*")), ["hooks.json", "hooks.json.bak"])
+        data = self.hooks()
+        data["hooks"]["PreToolUse"][0]["matcher"] = "Edit"
+        self.write_hooks(data)
+        self.run_main("--repair-hooks", "--yes")
+        self.assertTrue((self.dst / ".codex/hooks.json.bak-2").is_file())
+
+    def test_repair_creates_a_missing_file_without_a_backup(self):
+        self.run_install()
+        self.hooks_path().unlink()
+        code, out, _ = self.run_main("--repair-hooks", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.issues(), [])
+        self.assertFalse((self.dst / ".codex/hooks.json.bak").exists())
+
+    def test_repair_refuses_a_file_it_cannot_understand(self):
+        self.run_install()
+        for body in ("{broken", '{"hooks": []}', "[1]"):
+            self.hooks_path().write_text(body, encoding="utf-8")
+            code, out, err = self.run_main("--repair-hooks", "--yes")
+            self.assertEqual(code, 1, body)
+            self.assertEqual(self.hooks_path().read_text(encoding="utf-8"), body)
+            self.assertFalse((self.dst / ".codex/hooks.json.bak").exists())
+        code, out, err = self.run_main("--check", "--host", "codex")
+        self.assertEqual(code, 1)
+
+    def test_repair_never_edits_a_group_that_shares_its_matcher_with_other_hooks(self):
+        expected = install.expected_codex_hooks(self.src, self.dst)
+        shared = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine"},
+                                               hook("PreToolUse", timeout=99)]}
+        new, actions = install.plan_repair({"hooks": {"PreToolUse": [shared]}}, expected)
+        self.assertEqual(new["hooks"]["PreToolUse"][0], shared)  # untouched
+        self.assertEqual(new["hooks"]["PreToolUse"][1], expected["hooks"]["PreToolUse"][0])
+        self.assertTrue(any("shares a matcher" in a for a in actions))
+
+    def test_a_drifted_hook_sharing_a_matcher_is_repaired_once(self):
+        self.use_real_guard()
+        self.run_install()
+        data = self.hooks()
+        shared = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine"}, hook("PreToolUse", timeout=99)]}
+        data["hooks"]["PreToolUse"] = [shared]
+        self.write_hooks(data)
+        self.assertEqual({k for _, k in self.kinds()}, {"different"})
+        code, out, _ = self.run_main("--repair-hooks", "--yes")
+        self.assertEqual(code, 0, out)
+        groups = self.hooks()["hooks"]["PreToolUse"]
+        self.assertEqual(groups[0], shared)  # the user's group is untouched
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(self.kinds(), [("PreToolUse", "stale")])  # the old entry is classified apart, not as drift
+        code, out, _ = self.run_main("--repair-hooks", "--yes")
+        self.assertIn("nothing to do", out)
+        self.assertEqual(len(self.hooks()["hooks"]["PreToolUse"]), 2)  # a second repair appends nothing
+        self.assertEqual(sorted(p.name for p in (self.dst / ".codex").glob("hooks.json*")), ["hooks.json", "hooks.json.bak"])
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 0, out)  # a warning, not a failure
+        self.assertIn("WARN", out)
+        self.assertIn("differs from the template", out)
+
+    def test_an_exact_entry_is_found_wherever_it_stands(self):
+        self.run_install()
+        data = self.hooks()
+        data["hooks"]["PreToolUse"].insert(0, {"matcher": "Bash", "hooks": [hook("PreToolUse", timeout=1)]})  # stale first
+        self.write_hooks(data)
+        self.assertEqual(self.kinds(), [("PreToolUse", "stale")])  # the correct one (second) is recognized
+        new, actions = install.plan_repair(data, install.expected_codex_hooks(self.src, self.dst))
+        self.assertEqual(actions, [])
+        self.assertEqual(new, data)
+
+    def test_repair_refuses_structures_it_cannot_edit_without_writing(self):
+        self.run_install()
+        good = self.hooks()
+        broken = []
+        for mutate in (lambda d: d["hooks"].update(PreToolUse="oops"),
+                       lambda d: d["hooks"].update(PreToolUse={"hooks": []}),
+                       lambda d: d["hooks"].update(PreToolUse=["x"]),
+                       lambda d: d["hooks"].update(PreToolUse=[{"matcher": "Bash"}]),
+                       lambda d: d["hooks"].update(PreToolUse=[{"hooks": "x"}]),
+                       lambda d: d["hooks"].update(PreToolUse=[{"hooks": ["x"]}]),
+                       lambda d: d["hooks"].update(SessionStart=5)):
+            data = copy.deepcopy(good)
+            mutate(data)
+            broken.append(data)
+        for data in broken:
+            self.write_hooks(data)
+            before = self.hooks_path().read_bytes()
+            code, out, err = self.run_main("--repair-hooks", "--yes")
+            self.assertEqual(code, 1, data)
+            self.assertIn("nothing was written", err)
+            self.assertEqual(self.hooks_path().read_bytes(), before)
+            self.assertFalse((self.dst / ".codex/hooks.json.bak").exists())
+            self.assertEqual(self.run_main("--repair-hooks")[0], 1)  # the preview refuses too
+        self.use_real_guard()
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 1)
+        self.assertIn("structure repair does not edit", out)
+        # an odd event the template does not use is none of our business
+        data = copy.deepcopy(good)
+        data["hooks"]["Stop"] = "whatever"
+        data["hooks"]["PreToolUse"][0]["matcher"] = "Bash"
+        self.write_hooks(data)
+        code, out, _ = self.run_main("--repair-hooks", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.hooks()["hooks"]["Stop"], "whatever")
+
+    def test_install_gives_trust_guidance_and_warns_about_drift(self):
+        code, out = self.run_install()
+        self.assertIn("trust", out)
+        self.assertNotIn("--repair-hooks", out)
+        data = self.hooks()
+        data["hooks"]["PreToolUse"][0]["matcher"] = "Bash"
+        self.write_hooks(data)
+        code, out = self.run_install("--update")
+        self.assertIn("kept (machine-local trust)", out)
+        self.assertIn("--repair-hooks", out)
+        self.run_main("--repair-hooks", "--yes")
+        code, out = self.run_install("--update")
+        self.assertNotIn("--repair-hooks", out)
+
+    def test_flag_combinations(self):
+        for argv in (["--repair-hooks", "--check"], ["--live"], ["--host", "codex"], ["--repair-hooks", "--update"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit, msg=argv):
+                install.main([str(self.dst), *argv])
+
+    def codex_check(self, *extra, **env):
+        with mock.patch.dict(os.environ, env):
+            return self.run_main("--check", "--host", "codex", *extra)
+
+    def test_check_codex_reports_static_handler_and_live_parts(self):
+        self.use_real_guard()
+        self.run_install()
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("check host=codex", out)
+        self.assertIn("static: ok", out)
+        self.assertIn("handler (codex): ok", out)
+        self.assertIn("handler (claude): unverified", out)
+        self.assertIn("handler (agy): unverified", out)
+        self.assertIn("live (codex): unverified (not requested", out)
+        self.assertIn("git writes", out)  # the approval note
+        self.assertIn("needs approval" if False else "need approval", out)
+
+    def test_check_codex_fails_on_drift_with_the_fix(self):
+        self.use_real_guard()
+        self.run_install()
+        data = self.hooks()
+        del data["hooks"]["SessionStart"]
+        self.write_hooks(data)
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 1)
+        self.assertIn("ERROR    hooks.json missing: SessionStart", out)
+        self.assertIn("--repair-hooks", out)
+        self.assertIn("static: FAILED", out)
+        self.hooks_path().unlink()
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 1)
+        self.assertIn("hooks.json is missing", out)
+
+    def test_check_codex_needs_the_codex_files(self):
+        self.use_real_guard()
+        self.run_install()
+        for f in (self.dst / ".codex/agents").glob("*.toml"):
+            f.unlink()
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 1)
+        self.assertIn(".codex/agents has no agent definition", out)
+
+    def test_check_codex_handler_fails_when_the_guard_denies_nothing(self):
+        self.src = build_source(self.src.parent / "src-allow", guard=ALLOW_ALL)
+        self.run_install()
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 1)
+        self.assertIn("handler (codex): FAILED", out)
+        self.assertIn("codex 'subagent git commit'", out)
+        self.assertIn("codex 'worker apply_patch on AGENTS.md'", out)
+
+    def test_check_codex_handler_is_unverified_without_the_fixture(self):
+        self.use_real_guard()
+        self.run_install()
+        (self.src / "harness/tagteam/tests/fixtures/codex_payloads.json").unlink()
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("handler (codex): unverified (payload fixture not found", out)
+
+    def test_check_without_host_runs_the_claude_handler_only(self):
+        self.run_install()
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 0, out)
+        self.assertIn("handler (claude): ok", out)
+        self.assertIn("handler (codex): unverified (run with --host codex)", out)
+        self.assertIn("handler (agy): unverified", out)
+
+    def test_check_agy_is_unverified_everywhere(self):
+        self.run_install()
+        code, out, _ = self.run_main("--check", "--host", "agy", "--live")
+        self.assertEqual(code, 0, out)
+        self.assertIn("handler (agy): unverified (adapter not installed)", out)
+        self.assertIn("live (agy): unverified (adapter not installed", out)
+        self.assertIn("no hook adapter", out)
+
+    def fake_cli(self, name, writes=True, host="codex", role="worker", exit_code=0, ts_offset=0, session_name=None,
+                 raw=None, print_id=True, record_host=None):
+        """A stand-in CLI: records its argv and (like a trusted hook would) writes a role record."""
+        script = self.dst.parent / (name + ".py")
+        lines = ["import json, os, sys, time", "state = os.environ['TAGTEAM_STATE_DIR']",
+                 "open(os.path.join(state, 'argv.txt'), 'w').write(' '.join(sys.argv[1:]))"]
+        if host == "codex" and print_id:  # what codex exec --json prints first
+            lines.append("print(json.dumps({'type': 'thread.started', 'thread_id': 'thread-under-test'}))")
+        if writes:
+            lines += ["name = %r or 'thread-under-test.json'" % session_name,
+                      "if %r is None and '--session-id' in sys.argv:" % session_name,
+                      "    name = sys.argv[sys.argv.index('--session-id') + 1] + '.json'",
+                      "os.makedirs(os.path.join(state, 'sessions'), exist_ok=True)",
+                      "rec = %r if %r is not None else json.dumps({'role': %r, 'host': %r, 'ts': int(time.time()) + %d})"
+                      % (raw, raw, role, record_host or host, ts_offset),
+                      "open(os.path.join(state, 'sessions', name), 'w').write(rec)"]
+        lines.append("sys.exit(%d)" % exit_code)
+        script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return json.dumps([sys.executable, str(script)])
+
+    def live_env(self):
+        state = self.dst.parent / "live-state"
+        (state / "sessions").mkdir(parents=True, exist_ok=True)
+        for f in (state / "sessions").glob("*"):
+            f.unlink()
+        return state, {"TAGTEAM_STATE_DIR": str(state)}
+
+    def live_codex(self, **cli):
+        state, env = self.live_env()
+        return self.codex_check("--live", TAGTEAM_CLI_OPENAI=self.fake_cli("codexcli", **cli), **env) + (state,)
+
+    def test_live_check_accepts_the_record_of_its_own_run(self):
+        self.use_real_guard()
+        self.run_install()
+        code, out, _, state = self.live_codex()
+        self.assertEqual(code, 0, out)
+        self.assertIn("live (codex): ok", out)
+        argv = (state / "argv.txt").read_text(encoding="utf-8")
+        self.assertTrue(argv.startswith("exec --json -s read-only"), argv)
+        self.assertIn("HARNESS ROLE: DELEGATE", argv)  # the marker that makes the record a worker's
+        state, env = self.live_env()
+        with mock.patch.dict(os.environ, {"TAGTEAM_CLI_CLAUDE": self.fake_cli("claudecli", host="claude"), **env}):
+            code, out, _ = self.run_main("--check", "--live")
+        self.assertEqual(code, 0, out)
+        self.assertIn("live (claude): ok", out)
+        self.assertIn("-p", (state / "argv.txt").read_text(encoding="utf-8"))
+        self.assertIn("--session-id", (state / "argv.txt").read_text(encoding="utf-8"))
+
+    def test_live_check_rejects_everything_that_is_not_this_run(self):
+        self.use_real_guard()
+        self.run_install()
+        cases = {
+            "no record (hooks did not run)": dict(writes=False),
+            "record of an ordinary session": dict(role="orchestrator"),
+            "record of another host": dict(record_host="claude"),
+            "record from before the run": dict(ts_offset=-3600),
+            "record that is not JSON": dict(raw="not json"),
+            "record that is not an object": dict(raw="[1]"),
+            "the CLI failed": dict(exit_code=1),
+        }
+        for label, cli in cases.items():
+            code, out, _, _ = self.live_codex(**cli)
+            self.assertEqual(code, 1, label)
+            self.assertIn("live (codex): FAILED", out, label)
+        self.assertIn("trust them", self.live_codex(writes=False)[1])
+        self.assertIn("exited 1", self.live_codex(exit_code=1)[1])
+
+    def test_live_check_needs_the_record_of_the_reported_session_not_any_codex_record(self):
+        self.use_real_guard()
+        self.run_install()
+        # an unrelated worker session (valid, recent, same host) writes its record meanwhile; ours never does
+        code, out, _, _ = self.live_codex(session_name="unrelated-concurrent-worker.json")
+        self.assertEqual(code, 1, out)
+        self.assertIn("live (codex): FAILED", out)
+        self.assertNotIn("live (codex): ok", out)
+        # the CLI never reports its session id: nothing can be tied to this run, however valid the record looks
+        code, out, _, _ = self.live_codex(print_id=False)
+        self.assertEqual(code, 0, out)
+        self.assertIn("live (codex): unverified (the session id was not found", out)
+        self.assertNotIn("live (codex): ok", out)
+        # the id is read from the thread.started event only
+        self.assertEqual(install.codex_thread_id('noise\n{"type": "turn.started"}\n{"type": "thread.started", "thread_id": "abc-1"}\n'), "abc-1")
+        for text in ("", "not json", '{"type": "thread.started"}', '{"type": "thread.started", "thread_id": 5}',
+                     '{"type": "turn.started", "thread_id": "x"}', '[1]'):
+            self.assertIsNone(install.codex_thread_id(text), text)
+
+    def test_live_check_ignores_records_that_existed_before(self):
+        self.use_real_guard()
+        self.run_install()
+        state, env = self.live_env()
+        (state / "sessions" / "live.json").write_text(
+            json.dumps({"role": "worker", "host": "codex", "ts": int(time.time())}), encoding="utf-8")  # another session, just now
+        code, out, _ = self.codex_check("--live", TAGTEAM_CLI_OPENAI=self.fake_cli("codexno", writes=False), **env)
+        self.assertEqual(code, 1)
+        self.assertIn("live (codex): FAILED", out)
+
+    def test_live_claude_record_must_carry_the_session_id_it_was_given(self):
+        self.run_install()
+        state, env = self.live_env()
+        with mock.patch.dict(os.environ, {"TAGTEAM_CLI_CLAUDE": self.fake_cli("claudecli", host="claude", session_name="other.json"), **env}):
+            code, out, _ = self.run_main("--check", "--live")
+        self.assertEqual(code, 1)
+        self.assertIn("live (claude): FAILED", out)
+
+    def test_live_is_off_unless_asked(self):
+        self.run_install()
+        called = []
+        with mock.patch.object(install, "live_check", lambda *a: called.append(a) or ("ok", "")):
+            self.run_main("--check", "--host", "codex")
+        self.assertEqual(called, [])
+
+    def test_windows_elevated_sandbox_warning(self):
+        self.use_real_guard()
+        self.run_install()
+        home = self.dst.parent / "codex-home"
+        home.mkdir()
+        cfg = home / "config.toml"
+        cases = (('[windows]\nsandbox = "elevated"\n', True), ('windows.sandbox = "elevated"\n', True),
+                 ('[windows]\nsandbox = "unelevated"\n', False), ('[other]\nsandbox = "elevated"\n', False), ("", False))
+        for text, warns in cases:
+            cfg.write_text(text, encoding="utf-8")
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+                with mock.patch.object(install, "is_windows", return_value=True):
+                    code, out, _ = self.run_main("--check", "--host", "codex")
+                    self.assertEqual(code, 0, out)
+                    self.assertEqual("windows.sandbox is elevated" in out, warns, text)
+                with mock.patch.object(install, "is_windows", return_value=False):
+                    code, out, _ = self.run_main("--check", "--host", "codex")
+                    self.assertNotIn("windows.sandbox is elevated", out)
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(home / "none")}):
+            self.assertIsNone(install.codex_windows_sandbox())
+
+    def test_check_state_folder_problems(self):
+        self.run_install()
+        self.git_init(self.dst)
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.dst / ".git" / "tagteam")}):
+            code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 1)
+        self.assertIn("is inside .git", out)
+        blocker = self.dst.parent / "blocker"
+        blocker.write_text("x", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(blocker / "state")}):
+            code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 1)
+        self.assertIn("not writable", out)
+        (self.dst / ".gitignore").write_text("node_modules\n", encoding="utf-8")
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 0, out)
+        self.assertIn("does not ignore .tagteam/", out)
+
+    def test_codex_handler_check_leaves_no_bytecode_even_when_the_parent_allows_it(self):
+        self.use_real_guard()
+        self.run_install()
+        os.environ.pop("PYTHONDONTWRITEBYTECODE", None)  # restored by the setUp patch
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("handler (codex): ok", out)
+        self.assertEqual([t for t in self.tree(self.dst) if "__pycache__" in t], [])
+
+    def test_static_checks_call_no_file_creating_operation(self):
+        import builtins
+        import pathlib
+        import shutil as shutil_mod
+        self.use_real_guard()
+        self.run_install()
+        real_open = builtins.open
+
+        def guarded_open(file, mode="r", *a, **k):
+            if set(mode) & set("wax+"):
+                raise AssertionError(f"static check opened {file!r} for writing")
+            return real_open(file, mode, *a, **k)
+
+        def boom(name):
+            def f(*a, **k):
+                raise AssertionError(f"static check called {name}")
+            return f
+        patches = [mock.patch.object(builtins, "open", guarded_open)]
+        for obj, attr in ((tempfile, "mkstemp"), (tempfile, "mkdtemp"), (tempfile, "NamedTemporaryFile"), (os, "makedirs"),
+                          (os, "mkdir"), (shutil_mod, "copy2"), (shutil_mod, "copyfile"), (pathlib.Path, "mkdir"),
+                          (pathlib.Path, "write_text"), (pathlib.Path, "write_bytes"), (pathlib.Path, "touch")):
+            patches.append(mock.patch.object(obj, attr, boom(f"{obj.__name__}.{attr}")))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        notes = []
+        for host in ("claude", "codex", "agy"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                errors, warnings, n = install.static_checks(self.dst, self.src, host)
+            notes += n
+            self.assertEqual([e for e in errors if "static check" in e], [], host)
+        self.assertTrue(any("writability unverified" in n for n in notes), notes)
+
+    def test_state_access_problem_reads_flags_only(self):
+        blocker = self.dst.parent / "blocker"
+        blocker.write_text("x", encoding="utf-8")
+        self.assertIn("is not a folder", install.state_access_problem(blocker / "state"))
+        self.assertIsNone(install.state_access_problem(self.dst / "does" / "not" / "exist"))
+        self.assertFalse((self.dst / "does").exists())
+        with mock.patch.object(install.os, "access", return_value=False):
+            self.assertIn("no write permission", install.state_access_problem(self.dst))
+
+    def test_check_codex_creates_nothing(self):
+        self.use_real_guard()
+        self.run_install()
+        before = self.tree(self.dst)
+        code, out, _ = self.codex_check()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.tree(self.dst), before)
+        self.assertFalse((self.dst / ".tagteam").exists())
+
     def tree(self, root):
         return sorted(p.relative_to(root).as_posix() for p in Path(root).rglob("*") if ".git" not in p.relative_to(root).parts)
 
     def test_install_and_check_leave_no_bytecode_in_the_project(self):
         self.src = build_source(self.src.parent / "src2", guard="import state\n" + STUB)  # a guard that imports state.py
+        os.environ.pop("PYTHONDONTWRITEBYTECODE", None)  # restored by the setUp patch
         self.git_init(self.dst)
         self.write_old("exhausted.json", "old")
         self.run_install()
@@ -278,7 +841,7 @@ class InstallTests(unittest.TestCase):
     def test_codex_hooks_absolute_path(self):
         self.run_install()
         raw = (self.dst / ".codex/hooks.json").read_text(encoding="utf-8")
-        h = json.loads(raw)["hooks"]["PreToolUse"][0]
+        h = json.loads(raw)["hooks"]["PreToolUse"][0]["hooks"][0]
         guard = (self.dst / ".claude/tagteam/role_guard.py").resolve().as_posix()
         self.assertEqual(h["command"], f'python3 "{guard}" PreToolUse --host codex')
         self.assertEqual(h["commandWindows"], f'python "{guard}" PreToolUse --host codex')
