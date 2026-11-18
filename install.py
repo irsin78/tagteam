@@ -610,17 +610,143 @@ def state_access_problem(path):
     return None
 
 
+SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"  # what an app started from the desktop, or launchd, hands its children
+
+
+def interpreter_problems(host):
+    """(errors, warnings) about the interpreter name the host's hooks call: python3 or python (claude), python3 on
+    macOS/Linux and python on Windows (codex). A bare name that is missing makes the hook die with 127, which the
+    host reads as 'no objection': the role guard would be off without a word."""
+    errors, warnings = [], []
+    have = [n for n in ("python3", "python") if shutil.which(n)]
+    if host == "claude" and not have:
+        errors.append("neither python3 nor python is on PATH: the Claude hooks cannot run the role guard "
+                      "(PreToolUse then blocks every tool call until Python is installed)")
+    if host == "codex":
+        name = "python" if is_windows() else "python3"
+        if name not in have:
+            errors.append(f"{name} is not on PATH: the Codex hooks call it and would silently not run")
+    if have and not is_windows():
+        if not any(shutil.which(n, path=SYSTEM_PATH) for n in have):
+            warnings.append(f"{have[0]} is found through your shell PATH only; an app started from the desktop (or launchd) "
+                            f"gets {SYSTEM_PATH} and may not find it (unverified)")
+    return errors, warnings
+
+
+def hook_shell():
+    """The shell Claude Code runs a hook command with: sh on macOS and Linux; Git Bash on Windows (measured with
+    Claude Code 2.1.327: BASH_VERSION set, /usr/bin/bash). None when none can be found."""
+    if not is_windows():
+        return "/bin/sh" if os.path.exists("/bin/sh") else shutil.which("sh")
+    cands = [os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")]
+    git = shutil.which("git")
+    if git:
+        for root in (Path(git).resolve().parent.parent, Path(git).resolve().parent.parent.parent):
+            cands += [str(root / "bin" / "bash.exe"), str(root / "usr" / "bin" / "bash.exe")]
+    return next((c for c in cands if c and os.path.isfile(c)), None)
+
+
+HOOK_TIMEOUT_DEFAULT = 60  # seconds a command hook may take when settings.json names no timeout (assumed, not measured)
+
+
+def settings_guard_hooks(target, event):
+    """[(matcher, timeout seconds, command)] of the tagteam hooks of one event in the installed .claude/settings.json."""
+    try:
+        groups = json.loads((target / ".claude/settings.json").read_text(encoding="utf-8"))["hooks"][event]
+        out = []
+        for g in groups:
+            for h in g["hooks"]:
+                if GUARD_NAME in str(h.get("command", "")):
+                    t = h.get("timeout")
+                    ok = isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0
+                    out.append((g.get("matcher"), t if ok else HOOK_TIMEOUT_DEFAULT, h["command"]))
+        return out
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+
+
+def settings_guard_commands(target, event):
+    """The tagteam hook commands of one event in the installed .claude/settings.json."""
+    return [command for _, _, command in settings_guard_hooks(target, event)]
+
+
+def matcher_hits(matcher, tool):
+    """Whether Claude Code would call a hook with this matcher for this tool name (a regex over the whole name)."""
+    if not matcher or matcher == "*":
+        return True
+    try:
+        return re.fullmatch(matcher, tool) is not None
+    except re.error:
+        return False
+
+
+def hook_command_test(target):
+    """(failures, unverified reason): run the installed settings.json hook commands as written, in the shell Claude
+    Code uses, with this PATH (so the interpreter the command picks is the one that gets tested) and within the
+    hook's own timeout (a hook that overruns it is not enforced). A PreToolUse hook whose matcher does not select
+    the tested tool is a failure: Claude Code would never call it for that tool."""
+    pre = settings_guard_hooks(target, "PreToolUse")
+    if not pre:
+        return [], "no tagteam PreToolUse command in .claude/settings.json"
+    shell = hook_shell()
+    if not shell:
+        return [], "no sh (Git Bash on Windows) found to run the hook commands"
+    fails = []
+    with tempfile.TemporaryDirectory() as state:
+        env = {k: v for k, v in os.environ.items() if k != "HARNESS_DELEGATE_RUN"}
+        env.update(TAGTEAM_STATE_DIR=state, PYTHONDONTWRITEBYTECODE="1", CLAUDE_PROJECT_DIR=str(target))
+
+        def run(name, command, timeout, payload, want, worker=False, expect_out=None):
+            e = dict(env, HARNESS_DELEGATE_RUN="1") if worker else env
+            try:
+                p = subprocess.run([shell, "-c", command], input=json.dumps(payload), capture_output=True, text=True,
+                                   env=e, timeout=timeout, cwd=str(target))  # Claude Code runs a hook in the project
+            except subprocess.TimeoutExpired:
+                fails.append(f"hook command '{name}': no answer within the hook's timeout of {timeout}s "
+                             "(Claude Code would drop the hook and not block)")
+                return
+            except Exception as exc:  # noqa: BLE001
+                fails.append(f"hook command '{name}': {type(exc).__name__}: {exc}")
+                return
+            text = (p.stdout + p.stderr).strip()
+            if p.returncode != want or (expect_out and expect_out not in text):
+                hint = " (python3/python was not found by the command: the guard did not run)" \
+                    if "not found on PATH" in text or p.returncode == 127 else ""
+                fails.append(f"hook command '{name}': expected exit {want}, got {p.returncode}{hint}. Output: {text[:100]!r}")
+
+        # the tagteam hooks may sit in several groups (Bash in one, Edit|Write in another): test those that select Bash
+        chosen = [(m, t, c) for m, t, c in pre if matcher_hits(m, "Bash")]
+        if not chosen:
+            fails.append("hook command 'PreToolUse': no tagteam hook selects Bash (matchers: "
+                         + ", ".join(repr(m) for m, _, _ in pre) + "), so Claude Code would not call the guard for shell commands")
+        for _, timeout, command in chosen:
+            base = {"session_id": "hook-smoke", "tool_name": "Bash", "cwd": str(target)}
+            run("PreToolUse worker git commit", command, timeout, dict(base, tool_input={"command": "git commit -m x"}), 2,
+                worker=True)
+            run("PreToolUse git status", command, timeout, dict(base, tool_input={"command": "git status"}), 0, worker=True)
+        for event, marker in (("SessionStart", "TAGTEAM:"), ("UserPromptSubmit", None)):
+            for _, timeout, command in settings_guard_hooks(target, event):
+                run(event, command, timeout,
+                    {"session_id": "hook-smoke", "hook_event_name": event, "prompt": "hello", "cwd": str(target)},
+                    0, expect_out=marker)
+    return fails, None
+
+
 def static_checks(target, source, host):
     """(errors, warnings, notes) that need no hook run. Prints the tool lines as it goes."""
     errors, warnings, notes = [], [], []
-    for tool in ("python", "git", "claude", "codex", "agy"):
-        path = shutil.which(tool) or (shutil.which("python3") if tool == "python" else None)
+    for tool in ("python3", "python", "git", "claude", "codex", "agy"):
+        path = shutil.which(tool)  # the name a hook calls: python is not a stand-in for python3 (a default macOS has no python)
         if not path:
-            warnings.append(f"{tool}: missing on PATH")
+            if tool not in ("python3", "python"):
+                warnings.append(f"{tool}: missing on PATH")
             continue
         print(f"  found    {tool}: {path}")
         if os.name == "nt" and "windowsapps" in path.lower():
             warnings.append(f"{tool}: resolves to a WindowsApps alias stub ({path})")
+    bad, shaky = interpreter_problems(host)
+    errors += bad
+    warnings += shaky
     for rel in (GUARD_REL, STATE_REL):
         if not (target / rel).is_file():
             errors.append(f"{rel} is missing; run install.py")
@@ -864,6 +990,11 @@ def check(target, source=None, host=None, live=False):
                 print(f"  ERROR    {f}")
             failed |= bool(fails)
             print("handler (claude): " + ("FAILED" if fails else "ok"))
+            cmd_fails, why = hook_command_test(target)
+            for f in cmd_fails:
+                print(f"  ERROR    {f}")
+            failed |= bool(cmd_fails)
+            print("hook commands (claude): " + (f"unverified ({why})" if why else "FAILED" if cmd_fails else "ok"))
         else:
             fails, why = handler_codex(target, source)
             for f in fails:
@@ -884,7 +1015,7 @@ def check(target, source=None, host=None, live=False):
 # Opt-in. The task runs the installed collector (no LLM); it never edits models.json.
 
 COLLECTOR_REL = ".claude/tagteam/models_collect.py"
-PROPOSAL_FILES = ("model-update.json", "model-update.applied")
+PROPOSAL_FILES = ("model-update.json", "model-update.applied", "model-update.log")  # the log: macOS job output
 MARK_FALLBACK = "missed runs will not be re-run"
 
 
@@ -963,12 +1094,51 @@ class CronReadError(Exception):
     pass
 
 
+def env_runtime(path):
+    """x of a '#!/usr/bin/env x' first line (an npm CLI needs node on PATH), else None."""
+    try:
+        with open(path, "rb") as f:
+            first = f.readline(256).decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    parts = first[2:].split() if first.startswith("#!") else []
+    if len(parts) < 2 or os.path.basename(parts[0]) != "env":
+        return None
+    return next((t for t in parts[1:] if not t.startswith("-") and "=" not in t), None)
+
+
+def cli_paths(target):
+    """The vendor CLIs (claude, codex, agy) as found on PATH now. A launchd or cron job does not get the shell's
+    PATH, so the job is given their folders explicitly."""
+    names = ["claude", "codex", "agy"]
+    try:
+        vendors = json.loads((target / ".claude/tagteam/models.json").read_text(encoding="utf-8"))["vendors"]
+        names = [v["cli"] for v in vendors.values() if isinstance(v, dict) and v.get("cli")] or names
+    except (OSError, ValueError, KeyError, AttributeError):
+        pass
+    return [p for p in (shutil.which(n) for n in names) if p]
+
+
+def probe_cli(argv, path):
+    """(exit code, first output line) of argv run with only this PATH (and HOME), as a launchd job would, in an
+    empty temporary folder (a CLI wrapper may write next to its working directory)."""
+    env = {"PATH": path, "HOME": os.environ.get("HOME", "")}
+    try:
+        with tempfile.TemporaryDirectory() as cwd:
+            p = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=30, stdin=subprocess.DEVNULL, cwd=cwd)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 127, str(exc)
+    return p.returncode, ((p.stdout or p.stderr).strip().splitlines() or [""])[0][:120]
+
+
 class Scheduler:
-    def __init__(self, target, plat=None, runner=run_cmd, dry=False, python=None, home=None, uid=None):
+    def __init__(self, target, plat=None, runner=run_cmd, dry=False, python=None, home=None, uid=None, clis=None, probe=None):
         self.target, self.dry, self.runner = target, dry, runner
         self.plat = plat or {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
         self.name = task_name(target)
         self.argv = [python or sys.executable, str(target / COLLECTOR_REL), "--project", str(target)]
+        self.clis = clis  # CLI executables; None: look them up when the job is registered
+        self.probe = probe or probe_cli  # looked up late: a test replaces probe_cli
         self.uid = uid
         self.plist = Path(home or Path.home()) / "Library/LaunchAgents" / f"net.tagteam.{self.name}.plist"
 
@@ -990,8 +1160,33 @@ class Scheduler:
         lines = text.splitlines()
         return lines, [ln for ln in lines if not ln.rstrip().endswith(mark)]
 
+    def cli_files(self):
+        return self.clis if self.clis is not None else cli_paths(self.target)
+
+    def job_path(self):
+        """PATH of a macOS/Linux job: the CLI folders, the folders of the runtime a CLI script asks for with
+        '#!/usr/bin/env x' (node), the interpreter's folder, then the system folders. Short and reproducible; the
+        shell's whole PATH is not copied."""
+        files = self.cli_files()
+        runtimes = [shutil.which(r) for r in dict.fromkeys(env_runtime(f) for f in files) if r]
+        dirs = [os.path.dirname(f) for f in files] + [os.path.dirname(r) for r in runtimes if r]             + [os.path.dirname(self.argv[0])] + SYSTEM_PATH.split(":")
+        return ":".join(dict.fromkeys(d for d in dirs if d))
+
+    def log_path(self):
+        state = installed_state_dir(self.target)
+        return state / "model-update.log" if state else None
+
     def schedule(self):
         print(f"task {self.name} ({self.plat}): {subprocess.list2cmdline(self.argv)}")
+        if self.plat in ("macos", "linux"):
+            path = self.job_path()
+            print("  PATH     " + path + (" (linux: cron, unverified)" if self.plat == "linux" else ""))
+            for f in self.cli_files():  # the job's PATH must be enough to start each CLI, not only to find it
+                if self.dry:  # a preview starts nothing
+                    print(f"  cli      [dry-run] would run: {f} --version with that PATH")
+                    continue
+                rc, line = self.probe([f, "--version"], path)
+                print(f"  cli      {os.path.basename(f)} --version with that PATH: " + ("ok" if rc == 0 else f"WARN failed ({rc}): {line}"))
         try:
             rc = getattr(self, "_add_" + self.plat)()
         except CronReadError as e:
@@ -1019,12 +1214,19 @@ class Scheduler:
         return rc
 
     def _add_macos(self):
-        data = plistlib.dumps({"Label": "net.tagteam." + self.name, "ProgramArguments": self.argv,
-                               "StartCalendarInterval": {"Weekday": 1, "Hour": 9, "Minute": 0},
-                               "WorkingDirectory": str(self.target)})
+        job = {"Label": "net.tagteam." + self.name, "ProgramArguments": self.argv,
+               "StartCalendarInterval": {"Weekday": 1, "Hour": 9, "Minute": 0},
+               "WorkingDirectory": str(self.target),
+               "EnvironmentVariables": {"PATH": self.job_path()}}  # launchd's own PATH is /usr/bin:/bin:/usr/sbin:/sbin
+        log = self.log_path()
+        if log:  # without these a failing run leaves no trace anywhere
+            job["StandardOutPath"] = job["StandardErrorPath"] = str(log)
+        data = plistlib.dumps(job)
         if self.dry:
             print(data.decode("utf-8"))
         else:
+            if log:
+                log.parent.mkdir(parents=True, exist_ok=True)  # launchd does not create the folder of its log
             if self.plist.exists():
                 self.run(["launchctl", "bootout", f"{self._gui()}/net.tagteam.{self.name}"])
             self.plist.parent.mkdir(parents=True, exist_ok=True)
@@ -1032,7 +1234,9 @@ class Scheduler:
         return self.run(["launchctl", "bootstrap", self._gui(), str(self.plist)])[0]
 
     def _add_linux(self):
-        line = "0 9 * * 1 %s # %s" % (shlex.join(self.argv).replace("%", "\\%"), self.name)  # % is special in crontab
+        # cron's PATH is as short as launchd's; % is special in crontab
+        line = "0 9 * * 1 %s # %s" % (("PATH=%s %s" % (shlex.quote(self.job_path()), shlex.join(self.argv))).replace("%", "\\%"),
+                                      self.name)
         return self.run(["crontab", "-"], "\n".join(self._cron()[1] + [line]) + "\n")[0]
 
     def unschedule(self):

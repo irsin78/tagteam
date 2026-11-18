@@ -18,8 +18,11 @@ INSTALL = Path(__file__).resolve().parent.parent / "install.py"
 REAL_STATE = INSTALL.parent / "harness/tagteam/state.py"
 REAL_GUARD = INSTALL.parent / "harness/tagteam/role_guard.py"
 REAL_PAYLOADS = INSTALL.parent / "harness/tagteam/tests/fixtures/codex_payloads.json"
+REAL_SETTINGS = INSTALL.parent / "harness/claude/settings.json"
 sys.path.insert(0, str(INSTALL.parent))
 import install  # noqa: E402
+
+REAL_PROBE = install.probe_cli  # the tests replace install.probe_cli with a fake; one test needs the real one
 
 STUB = '''import json, os, sys
 event = sys.argv[1]
@@ -112,6 +115,9 @@ class InstallTests(unittest.TestCase):
         self.addCleanup(env.stop)
         for k in ("TAGTEAM_AA_API_KEY", "TAGTEAM_CONFIG_DIR", "FAKE_COLLECT_FAIL", "TAGTEAM_STATE_DIR"):
             os.environ.pop(k, None)
+        probe = mock.patch.object(install, "probe_cli", lambda argv, path: (0, ""))  # --schedule must not start a real CLI
+        probe.start()
+        self.addCleanup(probe.stop)
         self.calls = self.dst / ".claude/tagteam/calls.log"
         self.bench = self.dst / ".claude/tagteam/bench.local.json"
 
@@ -974,6 +980,196 @@ class InstallTests(unittest.TestCase):
             code = install.main([str(self.dst), "--check"])
         self.assertEqual(code, 0, out.getvalue())
 
+    def use_real_hooks(self):
+        self.use_real_guard()
+        shutil.copy(REAL_SETTINGS, self.src / "harness/claude/settings.json")
+
+    def test_check_runs_the_installed_hook_commands_as_written(self):
+        self.use_real_hooks()
+        self.run_install()
+        if not install.hook_shell():
+            self.skipTest("no sh / Git Bash")
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 0, out)
+        self.assertIn("hook commands (claude): ok", out)
+        # the wiring in the template's settings.json is what is tested: a guard that allows everything fails it
+        (self.dst / ".claude/tagteam/role_guard.py").write_text(ALLOW_ALL, encoding="utf-8")
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 1)
+        self.assertIn("hook commands (claude): FAILED", out)
+        self.assertIn("hook command 'PreToolUse worker git commit': expected exit 2, got 0", out)
+
+    def test_check_reports_a_hook_command_whose_interpreter_is_not_on_path(self):
+        # MAC4: an old settings.json calls a bare `python`. The shell cannot find it (127), the host reads that as
+        # 'no objection', and the sys.executable smoke test never sees it.
+        self.use_real_hooks()
+        self.run_install()
+        if not install.hook_shell():
+            self.skipTest("no sh / Git Bash")
+        path = self.dst / ".claude/settings.json"
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text)
+        for groups in data["hooks"].values():
+            for g in groups:
+                for h in g["hooks"]:
+                    h["command"] = 'tagteam-no-such-python "${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py" ' \
+                                   + h["command"].rsplit(" ", 1)[1]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 1, out)
+        self.assertIn("hook commands (claude): FAILED", out)
+        self.assertIn("hook command 'PreToolUse worker git commit': expected exit 2, got 127", out)
+        self.assertIn("python3/python was not found", out)
+
+    def edit_settings(self, fn):
+        path = self.dst / ".claude/settings.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        fn(data)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_check_fails_when_the_pretooluse_matcher_does_not_select_bash(self):
+        # Claude Code calls the hook only for tools the matcher selects: a Read-only matcher guards nothing
+        self.use_real_hooks()
+        self.run_install()
+        if not install.hook_shell():
+            self.skipTest("no sh / Git Bash")
+        self.edit_settings(lambda d: d["hooks"]["PreToolUse"][0].update(matcher="Read"))
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 1, out)
+        self.assertIn("hook commands (claude): FAILED", out)
+        self.assertIn("no tagteam hook selects Bash (matchers: 'Read')", out)
+        for matcher, hits in (("Bash", True), ("Edit|Bash", True), (None, True), ("*", True), ("", True), ("Bas", False),
+                              ("Bash2", False), ("(", False)):
+            self.assertEqual(install.matcher_hits(matcher, "Bash"), hits, matcher)
+        self.edit_settings(lambda d: d["hooks"]["PreToolUse"][0].update(matcher="Edit|Bash"))
+        self.assertEqual(self.run_main("--check")[0], 0)
+
+    def test_check_accepts_tagteam_hooks_split_over_groups_if_one_selects_bash(self):
+        self.use_real_hooks()
+        self.run_install()
+        if not install.hook_shell():
+            self.skipTest("no sh / Git Bash")
+
+        def split(d):
+            group = d["hooks"]["PreToolUse"][0]
+            other = copy.deepcopy(group)
+            group["matcher"], other["matcher"] = "Bash", "Edit|Write"
+            d["hooks"]["PreToolUse"].append(other)
+        self.edit_settings(split)
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 0, out)
+        self.assertIn("hook commands (claude): ok", out)
+        self.assertEqual([m for m, _, _ in install.settings_guard_hooks(self.dst, "PreToolUse")], ["Bash", "Edit|Write"])
+        # the Bash group is the one that counts: without it nothing guards shell commands
+        self.edit_settings(lambda d: d["hooks"]["PreToolUse"][0].update(matcher="Read"))
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 1)
+        self.assertIn("no tagteam hook selects Bash (matchers: 'Read', 'Edit|Write')", out)
+
+    def test_check_runs_the_hooks_in_the_project_wherever_it_is_started_from(self):
+        # a hook with a relative path works only from the project folder, which is where Claude Code runs it
+        self.use_real_hooks()
+        self.run_install()
+        if not install.hook_shell():
+            self.skipTest("no sh / Git Bash")
+        py = Path(sys.executable).as_posix()
+
+        def relative(d):
+            for event, groups in d["hooks"].items():
+                for g in groups:
+                    for h in g["hooks"]:
+                        h["command"] = f'"{py}" .claude/tagteam/role_guard.py {event}'
+        self.edit_settings(relative)
+        elsewhere = self.dst.parent / "elsewhere"
+        elsewhere.mkdir()
+        here = os.getcwd()
+        os.chdir(elsewhere)
+        try:
+            code, out, _ = self.run_main("--check")
+        finally:
+            os.chdir(here)
+        self.assertEqual(code, 0, out)
+        self.assertIn("hook commands (claude): ok", out)
+
+    def test_check_runs_each_hook_within_its_own_timeout(self):
+        self.use_real_hooks()
+        self.run_install()
+        if not install.hook_shell():
+            self.skipTest("no sh / Git Bash")
+        self.edit_settings(lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=7))
+        seen = []
+        real = subprocess.run
+
+        def spy(argv, *a, **kw):
+            seen.append(kw.get("timeout"))
+            if kw.get("timeout") == 7:
+                raise subprocess.TimeoutExpired(argv, 7)  # the shim is slower than the hook may be
+            return real(argv, *a, **kw)
+        with mock.patch.object(install.subprocess, "run", spy):
+            fails, _ = install.hook_command_test(self.dst)
+        self.assertEqual(seen.count(7), 2)  # both PreToolUse runs
+        self.assertEqual(seen.count(10), 2)  # SessionStart and UserPromptSubmit keep the template's 10 seconds
+        self.assertEqual(len(fails), 2)
+        self.assertIn("no answer within the hook's timeout of 7s", fails[0])
+        self.edit_settings(lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].pop("timeout"))
+        self.assertEqual(install.settings_guard_hooks(self.dst, "PreToolUse")[0][1], install.HOOK_TIMEOUT_DEFAULT)
+
+    def test_check_fails_when_no_python_name_is_on_path(self):
+        self.use_real_hooks()
+        self.run_install()
+        shell = install.hook_shell()
+        if not shell:
+            self.skipTest("no sh / Git Bash")
+        empty = self.dst.parent / "empty-path"
+        empty.mkdir()
+        with mock.patch.dict(os.environ, {"PATH": str(empty), "CLAUDE_CODE_GIT_BASH_PATH": shell}):
+            code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 1, out)
+        self.assertIn("neither python3 nor python is on PATH", out)
+        self.assertIn("python3/python was not found", out)
+        self.assertIn("hook commands (claude): FAILED", out)
+
+    def test_check_names_the_python_the_codex_hooks_call(self):
+        self.use_real_guard()
+        self.run_install()
+        empty = self.dst.parent / "empty-path"
+        empty.mkdir()
+        name = "python" if install.is_windows() else "python3"
+        with mock.patch.dict(os.environ, {"PATH": str(empty)}):
+            code, out, _ = self.run_main("--check", "--host", "codex")
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"{name} is not on PATH: the Codex hooks call it", out)
+
+    def test_check_does_not_stand_in_python_for_python3(self):
+        self.run_install()
+        only = self.dst.parent / "only-python"
+        only.mkdir()
+        fake = only / ("python.bat" if os.name == "nt" else "python")
+        fake.write_text("x", encoding="utf-8")
+        fake.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": str(only)}):
+            self.assertEqual(install.interpreter_problems("claude")[0], [])  # one of the two names is enough for Claude
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                install.static_checks(self.dst, self.src, "claude")
+        self.assertIn("found    python:", printed.getvalue())
+        self.assertNotIn("found    python3", printed.getvalue())
+
+    @unittest.skipIf(os.name == "nt", "the system PATH of an app started from the desktop is a macOS/Linux matter")
+    def test_check_warns_when_python_is_only_on_the_shell_path(self):
+        self.run_install()
+        only = self.dst.parent / "shell-only"
+        only.mkdir()
+        fake = only / "python3"
+        fake.write_text("x", encoding="utf-8")
+        fake.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": str(only)}), mock.patch.object(install.shutil, "which", wraps=shutil.which) as w:
+            real = shutil.which
+            w.side_effect = lambda n, path=None: None if path == install.SYSTEM_PATH else real(n, path=path)
+            errors, warnings = install.interpreter_problems("claude")
+        self.assertEqual(errors, [])
+        self.assertTrue(any("found through your shell PATH only" in x for x in warnings), warnings)
+
     def test_check_fails_when_guard_allows_everything(self):
         self.run_install()
         (self.dst / ".claude/tagteam/role_guard.py").write_text(ALLOW_ALL, encoding="utf-8")
@@ -992,8 +1188,90 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
 
 
+class HookCommandTests(unittest.TestCase):
+    """The commands of harness/claude/settings.json, run as the host runs them (sh -c; Git Bash on Windows), with
+    fake interpreters on a PATH that holds nothing else."""
+
+    def setUp(self):
+        self.shell = install.hook_shell()
+        if not self.shell:
+            self.skipTest("no sh / Git Bash")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name)
+        self.project = self.base / "my proj"  # a space: the guard path must stay one argument
+        (self.project / ".claude").mkdir(parents=True)
+        shutil.copy(REAL_SETTINGS, self.project / ".claude/settings.json")
+        self.bin = self.base / "bin"
+        self.bin.mkdir()
+
+    def fake(self, name, body):
+        f = self.bin / name
+        f.write_text("#!/bin/sh\n" + body, encoding="utf-8", newline="\n")
+        f.chmod(0o755)
+
+    def probing(self, tag, code=3):
+        """A fake interpreter: -c (the probe) succeeds; running the guard prints its tag, then one line per argument."""
+        return f'if [ "$1" = "-c" ]; then exit 0; fi\necho "{tag}"\nfor a in "$@"; do echo "[$a]"; done\nexit {code}\n'
+
+    def run_hook(self, event):
+        (command,) = install.settings_guard_commands(self.project, event)
+        env = {k: v for k, v in os.environ.items() if k not in ("HARNESS_DELEGATE_RUN", "PATH")}
+        env.update(PATH=str(self.bin), CLAUDE_PROJECT_DIR=str(self.project.as_posix() if os.name == "nt" else self.project))
+        p = subprocess.run([self.shell, "-c", command], input="{}", capture_output=True, text=True, env=env, timeout=60)
+        return p.returncode, p.stdout.strip(), p.stderr.strip()
+
+    def test_without_any_python_pretooluse_blocks_and_the_others_warn(self):
+        code, out, err = self.run_hook("PreToolUse")
+        self.assertEqual(code, 2)  # fail closed: 127 would read as 'no objection'
+        self.assertIn("python3/python not found on PATH", err)
+        for event in ("SessionStart", "UserPromptSubmit"):  # exit 2 here would stop every prompt, and the fix with it
+            code, out, err = self.run_hook(event)
+            self.assertEqual(code, 0, event)
+            self.assertIn("role guard is off", out, event)
+
+    def test_python3_only_python_only_and_both(self):
+        self.fake("python3", self.probing("p3"))
+        code, out, _ = self.run_hook("PreToolUse")
+        self.assertEqual(code, 3)  # the guard's own exit code comes through
+        # exactly two arguments: the guard path (with its space, in one piece) and the event
+        guard = f"[{self.project.as_posix()}/.claude/tagteam/role_guard.py]"
+        self.assertEqual(out.splitlines(), ["p3", guard, "[PreToolUse]"])
+        self.fake("python", self.probing("p2"))
+        self.assertEqual(self.run_hook("SessionStart")[1].splitlines(), ["p3", guard, "[SessionStart]"], "python3 comes first")
+        (self.bin / "python3").unlink()
+        self.assertEqual(self.run_hook("UserPromptSubmit")[1].splitlines(), ["p2", guard, "[UserPromptSubmit]"])
+
+    def test_a_python3_that_cannot_run_is_skipped(self):
+        # the Microsoft Store alias, or a pyenv shim without a version: present on PATH, unusable
+        self.fake("python3", "exit 9\n")
+        self.fake("python", self.probing("p2"))
+        code, out, _ = self.run_hook("PreToolUse")
+        self.assertEqual((code, out.splitlines()[0]), (3, "p2"))
+        (self.bin / "python").unlink()
+        code, _, err = self.run_hook("PreToolUse")
+        self.assertEqual(code, 2)
+        self.assertIn("not found on PATH", err)
+
+    def test_a_denial_is_never_followed_by_the_other_interpreter(self):
+        self.fake("python3", self.probing("p3", code=2))
+        self.fake("python", self.probing("p2"))
+        code, out, _ = self.run_hook("PreToolUse")
+        self.assertEqual(code, 2)
+        self.assertEqual(out.splitlines()[0], "p3")
+        self.assertNotIn("p2", out)
+
+    def test_all_three_commands_name_the_guard_and_their_event(self):
+        for event in ("SessionStart", "UserPromptSubmit", "PreToolUse"):
+            (command,) = install.settings_guard_commands(self.project, event)
+            self.assertTrue(command.endswith(f'role_guard.py" {event}'), command)
+            self.assertEqual(command.count("role_guard.py"), 1, "the guard is named once: no 'python3 ... || python ...'")
+
+
 SKILL = INSTALL.parent / "harness/skills/model-update/SKILL.md"
 STATE_STUB = "import os\ndef state_dir(cwd=None):\n    return os.environ['TAGTEAM_STATE_DIR']\n"
+CLI_FILES = ["/opt/cli/claude", "/home/u/.local/bin/codex"]
+JOB_PATH = "/opt/cli:/home/u/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"  # CLI folders, the interpreter's (/usr/bin), system
 
 
 class ScheduleTests(unittest.TestCase):
@@ -1011,6 +1289,15 @@ class ScheduleTests(unittest.TestCase):
         self.calls = []
         self.fail = lambda argv: False
         self.crontab = ""
+        self.probed = []
+        self.probe_rc = 0
+
+        def fake_probe(argv, path):  # never start a real CLI from a test
+            self.probed.append((argv, path))
+            return (self.probe_rc, "cli 1.0" if self.probe_rc == 0 else "env: node: No such file or directory")
+        patcher = mock.patch.object(install, "probe_cli", fake_probe)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def runner(self, argv, input_text=None):
         self.calls.append((argv, input_text))
@@ -1019,7 +1306,8 @@ class ScheduleTests(unittest.TestCase):
         return (1, "boom") if self.fail(argv) else (0, "")
 
     def sched(self, plat, dry=False):
-        return install.Scheduler(self.proj, plat, self.runner, dry, python="/usr/bin/py", home=self.home, uid=501)
+        return install.Scheduler(self.proj, plat, self.runner, dry, python="/usr/bin/py", home=self.home, uid=501,
+                                 clis=CLI_FILES)
 
     def name(self):
         return "tagteam-models-" + hashlib.sha1(str(self.proj).encode("utf-8")).hexdigest()[:8]
@@ -1080,12 +1368,20 @@ class ScheduleTests(unittest.TestCase):
 
     def test_macos_schedule_and_unschedule(self):
         s = self.sched("macos")
-        self.quiet(s.schedule)
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state / "new")}):
+            code, out = self.quiet(s.schedule)
         plist = self.home / f"Library/LaunchAgents/net.tagteam.{self.name()}.plist"
         data = plistlib.loads(plist.read_bytes())
         self.assertEqual(data["ProgramArguments"], self.cmd())
         self.assertEqual(data["StartCalendarInterval"], {"Weekday": 1, "Hour": 9, "Minute": 0})
         self.assertEqual(data["WorkingDirectory"], str(self.proj))
+        # launchd hands a job /usr/bin:/bin:/usr/sbin:/sbin: the CLI folders and the interpreter's must be named
+        self.assertEqual(data["EnvironmentVariables"], {"PATH": JOB_PATH})
+        self.assertIn("PATH     " + JOB_PATH, out)
+        # a failing run must leave a trace: the log is in the state folder, whose folder launchd does not create
+        log = str(self.state / "new" / "model-update.log")
+        self.assertEqual((data["StandardOutPath"], data["StandardErrorPath"]), (log, log))
+        self.assertTrue((self.state / "new").is_dir())
         self.assertEqual(self.calls[-1][0], ["launchctl", "bootstrap", "gui/501", str(plist)])
         self.quiet(self.sched("macos").schedule)  # overwrite: boots out the old one first
         self.assertIn(["launchctl", "bootout", f"gui/501/net.tagteam.{self.name()}"], [c[0] for c in self.calls])
@@ -1093,6 +1389,94 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(self.quiet(self.sched("macos").unschedule)[0], 0)
         self.assertEqual(self.calls[0][0], ["launchctl", "bootout", f"gui/501/net.tagteam.{self.name()}"])
         self.assertFalse(plist.exists())
+
+    def test_macos_dry_run_shows_path_and_log_but_creates_nothing(self):
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state / "new")}):
+            code, out = self.quiet(self.sched("macos", dry=True).schedule)
+        self.assertEqual(code, 0)
+        self.assertIn("EnvironmentVariables", out)
+        self.assertIn(JOB_PATH, out)
+        self.assertIn("StandardOutPath", out)
+        self.assertEqual(self.probed, [], "a preview starts no CLI")
+        for f in CLI_FILES:
+            self.assertIn(f"[dry-run] would run: {f} --version", out)
+        self.assertFalse((self.state / "new").exists())
+        self.assertFalse((self.home / "Library").exists())
+
+    def test_macos_without_a_computable_state_folder_has_no_log_paths(self):
+        (self.proj / ".claude/tagteam/state.py").unlink()
+        self.quiet(self.sched("macos").schedule)
+        data = plistlib.loads(next((self.home / "Library/LaunchAgents").glob("*.plist")).read_bytes())
+        self.assertNotIn("StandardOutPath", data)
+        self.assertEqual(data["EnvironmentVariables"], {"PATH": JOB_PATH})
+
+    def test_unschedule_deletes_the_job_log_too(self):
+        for fn in ("model-update.log", "keep.txt"):
+            (self.state / fn).write_text("x", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state)}):
+            self.quiet(self.sched("macos").unschedule)
+        self.assertEqual(sorted(p.name for p in self.state.iterdir()), ["keep.txt"])
+
+    def make_cli(self, folder, name, first_line=None):
+        folder.mkdir(exist_ok=True)
+        f = folder / (name + (".bat" if os.name == "nt" else ""))
+        f.write_text((first_line + "\n" if first_line else "") + "x\n", encoding="utf-8", newline="\n")
+        f.chmod(0o755)
+        return f
+
+    def test_cli_paths_are_the_vendor_clis_found_on_path(self):
+        a, b = self.state / "a", self.state / "b"
+        fa, fb = self.make_cli(a, "claude"), self.make_cli(b, "codex")
+        self.make_cli(b, "other")
+        models = self.proj / ".claude/tagteam/models.json"
+        models.write_text(json.dumps(
+            {"vendors": {"claude": {"cli": "claude"}, "openai": {"cli": "codex"}, "google": {"cli": "agy"}}}), encoding="utf-8")
+        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join([str(a), str(b)])}):
+            self.assertEqual(install.cli_paths(self.proj), [shutil.which("claude"), shutil.which("codex")])
+            models.unlink()  # no models.json: the three known names
+            self.assertEqual(len(install.cli_paths(self.proj)), 2)
+            s = install.Scheduler(self.proj, "macos", self.runner, True, python="/opt/py/python3")
+            self.assertEqual(s.job_path(), f"{a}:{b}:/opt/py:/usr/bin:/bin:/usr/sbin:/sbin")
+
+    def test_a_cli_script_that_needs_node_gets_the_folder_of_node(self):
+        # npm CLI in ~/.npm-global/bin, node in /opt/homebrew/bin: '#!/usr/bin/env node' fails unless node is on PATH
+        cli, node = self.state / "npm-global-bin", self.state / "brew-bin"
+        script = self.make_cli(cli, "codex", "#!/usr/bin/env node")
+        native = self.make_cli(cli, "claude")
+        self.make_cli(node, "node")
+        self.assertEqual((install.env_runtime(script), install.env_runtime(native)), ("node", None))
+        with mock.patch.dict(os.environ, {"PATH": str(node)}):
+            s = install.Scheduler(self.proj, "macos", self.runner, True, python="/usr/bin/py", clis=[str(script), str(native)])
+            self.assertEqual(s.job_path(), f"{cli}:{node}:/usr/bin:/bin:/usr/sbin:/sbin")
+        for first, want in (("#!/usr/bin/env -S node --no-warnings", "node"), ("#!/usr/bin/env FOO=1 python3", "python3"),
+                            ("#!/bin/sh", None), ("#!/usr/bin/env", None), ("", None)):
+            f = self.make_cli(cli, "t", first)
+            self.assertEqual(install.env_runtime(f), want, first)
+        self.assertIsNone(install.env_runtime(cli / "missing"))
+
+    def test_the_version_check_runs_in_an_empty_folder_with_only_the_job_path(self):
+        here = os.getcwd()
+        code = "import os; print(os.getcwd() + '|' + os.environ.get('PATH', '') + '|' + str(sorted(os.listdir('.'))))"
+        rc, line = REAL_PROBE([sys.executable, "-c", code], "/the/job/path")
+        self.assertEqual(rc, 0, line)
+        cwd, path, listing = line.split("|")
+        self.assertNotEqual(os.path.realpath(cwd), os.path.realpath(here))
+        self.assertEqual((path, listing), ("/the/job/path", "[]"))
+        self.assertEqual(REAL_PROBE([str(self.state / "no-such-cli"), "--version"], "/x")[0], 127)
+
+    def test_schedule_starts_each_cli_with_the_job_path_and_warns_when_it_fails(self):
+        code, out = self.quiet(self.sched("macos").schedule)
+        self.assertEqual(code, 0)
+        self.assertEqual([a for a, _ in self.probed], [[f, "--version"] for f in CLI_FILES])
+        self.assertTrue(all(path == JOB_PATH for _, path in self.probed))
+        self.assertIn("claude --version with that PATH: ok", out)
+        self.probe_rc = 127
+        code, out = self.quiet(self.sched("macos").schedule)
+        self.assertEqual(code, 0, "a CLI that does not start is a warning, not a refusal to schedule")
+        self.assertIn("WARN failed (127): env: node: No such file or directory", out)
+        self.probed.clear()
+        self.quiet(self.sched("windows").schedule)  # no PATH problem on Windows: nothing to probe
+        self.assertEqual(self.probed, [])
 
     def test_linux_crontab_replaces_marked_line_only(self):
         mark = "# " + self.name()
@@ -1103,7 +1487,7 @@ class ScheduleTests(unittest.TestCase):
         lines = written.splitlines()
         self.assertEqual(lines[0], "5 5 * * * other job")
         self.assertEqual(sum(ln.endswith(mark) for ln in lines), 1)
-        self.assertTrue(lines[1].startswith("0 9 * * 1 /usr/bin/py "))
+        self.assertTrue(lines[1].startswith(f"0 9 * * 1 PATH={JOB_PATH} /usr/bin/py "), lines[1])  # cron's PATH is minimal too
         self.assertIn("--project", lines[1])
         self.crontab = written
         self.calls.clear()

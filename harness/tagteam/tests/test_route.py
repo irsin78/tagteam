@@ -120,6 +120,12 @@ class RouteTest(RouteBase):
         r = self.assertPick(self.route("translate"), "gemini-4-hydrogen", "medium", "run")
         self.assertNotIn("--read-only", r["launch"]["command"])
 
+    def test_run_launch_names_the_interpreter_that_runs_the_router(self):
+        # a bare "python" does not exist on a default macOS; sys.executable exists wherever route.py ran
+        for host in ("claude-desktop", "codex"):
+            r = self.assertPick(self.route("translate", host=host), "gemini-4-hydrogen", "medium", "run")
+            self.assertEqual(r["launch"]["command"][:2], [sys.executable, ".claude/tagteam/run.py"])
+
     # 2
     def test_defaults_host_codex(self):
         r = self.assertPick(self.route("implement", host="codex"), "gpt-6.1-sol", "medium", "subagent")

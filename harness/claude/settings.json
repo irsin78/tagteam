@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py\" SessionStart",
+            "command": "p=; for c in python3 python; do \"$c\" -c \"\" </dev/null >/dev/null 2>&1 && { p=$c; break; }; done; [ -n \"$p\" ] || { echo \"tagteam: python3/python not found on PATH; the role guard is off in this session\"; exit 0; }; exec \"$p\" \"${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py\" SessionStart",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py\" UserPromptSubmit",
+            "command": "p=; for c in python3 python; do \"$c\" -c \"\" </dev/null >/dev/null 2>&1 && { p=$c; break; }; done; [ -n \"$p\" ] || { echo \"tagteam: python3/python not found on PATH; the role guard is off in this session\"; exit 0; }; exec \"$p\" \"${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py\" UserPromptSubmit",
             "timeout": 10
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py\" PreToolUse",
+            "command": "p=; for c in python3 python; do \"$c\" -c \"\" </dev/null >/dev/null 2>&1 && { p=$c; break; }; done; [ -n \"$p\" ] || { echo \"tagteam: python3/python not found on PATH; tool calls are blocked until Python is installed (the role guard cannot run)\" >&2; exit 2; }; exec \"$p\" \"${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py\" PreToolUse",
             "timeout": 10
           }
         ]

@@ -399,7 +399,8 @@ class Router:
         return agent, read_definition(self.root, self.m["vendors"][vendor]["host"], agent)
 
     def run_launch(self, role, vendor, mid, effort, host):
-        cmd = ["python", ".claude/tagteam/run.py", "--vendor", vendor, "--model", mid,
+        # the interpreter that runs route.py exists on this machine; a bare "python" is missing on a default macOS
+        cmd = [sys.executable, ".claude/tagteam/run.py", "--vendor", vendor, "--model", mid,
                "--effort", effort, "--prompt-file", "<PROMPT_FILE>"]
         if self.m["roles"][role].get("read_only"):
             cmd.append("--read-only")
