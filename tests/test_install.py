@@ -1163,8 +1163,8 @@ class InstallTests(unittest.TestCase):
         fake = only / "python3"
         fake.write_text("x", encoding="utf-8")
         fake.chmod(0o755)
-        with mock.patch.dict(os.environ, {"PATH": str(only)}), mock.patch.object(install.shutil, "which", wraps=shutil.which) as w:
-            real = shutil.which
+        real = shutil.which  # read before patching: install.shutil is this same module, so inside the patch it is the mock
+        with mock.patch.dict(os.environ, {"PATH": str(only)}), mock.patch.object(install.shutil, "which") as w:
             w.side_effect = lambda n, path=None: None if path == install.SYSTEM_PATH else real(n, path=path)
             errors, warnings = install.interpreter_problems("claude")
         self.assertEqual(errors, [])
