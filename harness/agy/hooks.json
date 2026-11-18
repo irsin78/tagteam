@@ -1,0 +1,18 @@
+{
+  "tagteam": {
+    "SessionStart": [
+      {"type": "command", "command": "python3 .claude/tagteam/role_guard.py SessionStart --host agy", "timeout": 10}
+    ],
+    "PreInvocation": [
+      {"type": "command", "command": "python3 .claude/tagteam/role_guard.py PreInvocation --host agy", "timeout": 10}
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "run_command|invoke_subagent|define_subagent|run_workflow|swarm",
+        "hooks": [
+          {"type": "command", "command": "python3 .claude/tagteam/role_guard.py PreToolUse --host agy", "timeout": 10}
+        ]
+      }
+    ]
+  }
+}

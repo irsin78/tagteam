@@ -19,6 +19,7 @@ REAL_STATE = INSTALL.parent / "harness/tagteam/state.py"
 REAL_GUARD = INSTALL.parent / "harness/tagteam/role_guard.py"
 REAL_PAYLOADS = INSTALL.parent / "harness/tagteam/tests/fixtures/codex_payloads.json"
 REAL_SETTINGS = INSTALL.parent / "harness/claude/settings.json"
+REAL_AGY_HOOKS = INSTALL.parent / "harness/agy/hooks.json"
 sys.path.insert(0, str(INSTALL.parent))
 import install  # noqa: E402
 
@@ -91,6 +92,7 @@ def build_source(root, guard=STUB):
         "tagteam/models.local.json.example": '{"plans": {}}',
         "codex/hooks.json": json.dumps(HOOKS_TEMPLATE),
         "codex/agents/b.toml": "x = 1",
+        "agy/hooks.json": REAL_AGY_HOOKS.read_text(encoding="utf-8"),
         "tagteam/tests/fixtures/codex_payloads.json": REAL_PAYLOADS.read_text(encoding="utf-8"),  # read from the source by --check
     }
     for rel, text in files.items():
@@ -419,7 +421,6 @@ class InstallTests(unittest.TestCase):
     def test_repair_refuses_structures_it_cannot_edit_without_writing(self):
         self.run_install()
         good = self.hooks()
-        broken = []
         for mutate in (lambda d: d["hooks"].update(PreToolUse="oops"),
                        lambda d: d["hooks"].update(PreToolUse={"hooks": []}),
                        lambda d: d["hooks"].update(PreToolUse=["x"]),
@@ -429,8 +430,6 @@ class InstallTests(unittest.TestCase):
                        lambda d: d["hooks"].update(SessionStart=5)):
             data = copy.deepcopy(good)
             mutate(data)
-            broken.append(data)
-        for data in broken:
             self.write_hooks(data)
             before = self.hooks_path().read_bytes()
             code, out, err = self.run_main("--repair-hooks", "--yes")
@@ -539,13 +538,579 @@ class InstallTests(unittest.TestCase):
         self.assertIn("handler (codex): unverified (run with --host codex)", out)
         self.assertIn("handler (agy): unverified", out)
 
-    def test_check_agy_is_unverified_everywhere(self):
+    # ---- agy: .agents/hooks.json, --check --host agy ----------------------------------------------
+
+    def agy_path(self):
+        return self.dst / ".agents/hooks.json"
+
+    def agy_doc(self):
+        return json.loads(self.agy_path().read_text(encoding="utf-8"))
+
+    def write_agy(self, doc):
+        self.agy_path().parent.mkdir(parents=True, exist_ok=True)
+        self.agy_path().write_text(doc if isinstance(doc, str) else json.dumps(doc, indent=2), encoding="utf-8")
+
+    def agy_check(self, *extra, **env):
+        with mock.patch.dict(os.environ, env):
+            return self.run_main("--check", "--host", "agy", *extra)
+
+    def test_install_writes_the_agy_hooks_for_this_machine(self):
+        code, out = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"created\s+\.agents/hooks\.json")
+        entry = self.agy_doc()["tagteam"]
+        self.assertEqual(set(entry), {"SessionStart", "PreInvocation", "PreToolUse"})
+        guard = '"' + str((self.dst / ".claude/tagteam/role_guard.py").resolve()).replace("\\", "/") + '"'
+        commands = [h["command"] for g in entry["PreToolUse"] for h in g["hooks"]] + [h["command"] for e in ("SessionStart", "PreInvocation") for h in entry[e]]
+        for event, command in zip(("PreToolUse", "SessionStart", "PreInvocation"), commands):
+            self.assertEqual(command, f"{install.agy_interpreter()} {guard} {event} --host agy")
+        self.assertIn("run_command", entry["PreToolUse"][0]["matcher"])
+        self.assertIn(".agents/hooks.json", (self.dst / ".gitignore").read_text(encoding="utf-8").splitlines())
+
+    def test_agy_interpreter_by_platform(self):
+        with mock.patch.object(install, "is_windows", return_value=True):
+            self.assertEqual(install.agy_interpreter(), "python")
+        with mock.patch.object(install, "is_windows", return_value=False):
+            with mock.patch.object(install.shutil, "which", side_effect=lambda n, **k: "/bin/" + n if n == "python3" else None):
+                self.assertEqual(install.agy_interpreter(), "python3")
+            with mock.patch.object(install.shutil, "which", return_value=None):
+                self.assertEqual(install.agy_interpreter(), "python")
+
+    def test_agy_hooks_keep_other_keys_and_their_order(self):
+        self.write_agy({"herdr": {"SessionStart": [{"type": "command", "command": "herdr"}]}, "tagteam": {"old": 1}, "zzz": 2})
         self.run_install()
-        code, out, _ = self.run_main("--check", "--host", "agy", "--live")
+        doc = self.agy_doc()
+        self.assertEqual(list(doc), ["herdr", "tagteam", "zzz"])
+        self.assertEqual((doc["herdr"], doc["zzz"]), ({"SessionStart": [{"type": "command", "command": "herdr"}]}, 2))
+        self.assertIn("PreToolUse", doc["tagteam"])
+        self.write_agy({"herdr": 1})
+        self.run_install("--update")
+        self.assertEqual(list(self.agy_doc()), ["herdr", "tagteam"])  # a new key goes last
+
+    def test_agy_hooks_update_is_idempotent_and_rewrites_edits(self):
+        self.run_install()
+        before = self.agy_path().read_bytes()
+        code, out = self.run_install("--update")
+        self.assertRegex(out, r"kept\s+\.agents/hooks\.json")
+        self.assertEqual(self.agy_path().read_bytes(), before)
+        doc = self.agy_doc()
+        doc["tagteam"]["PreToolUse"][0]["matcher"] = "nothing"
+        self.write_agy(doc)
+        code, out = self.run_install("--update")
+        self.assertRegex(out, r"updated\s+\.agents/hooks\.json")
+        self.assertEqual(self.agy_path().read_bytes(), before)
+
+    def test_a_tracked_agy_hooks_file_is_not_written_and_fails_the_check(self):
+        self.use_real_guard()
+        self.git_init(self.dst)
+        self.write_agy({"theirs": 1})
+        subprocess.run(["git", "-C", str(self.dst), "add", ".agents/hooks.json"], check=True, capture_output=True)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code, _ = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertIn("agy hooks not installed: .agents/hooks.json is tracked by git", err.getvalue())
+        self.assertEqual(self.agy_doc(), {"theirs": 1})
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 1)
+        self.assertIn("ERROR    .agents/hooks.json is tracked by git", out)
+        self.assertIn("static: FAILED", out)
+
+    def test_agy_hooks_that_are_not_a_json_object_are_left_alone(self):
+        for body in ("{broken", "[1]"):
+            self.write_agy(body)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.run_install("--update")
+            self.assertIn("agy hooks not installed", err.getvalue(), body)
+            self.assertEqual(self.agy_path().read_text(encoding="utf-8"), body)
+
+    def test_agy_hooks_are_not_written_through_a_link(self):
+        real = self.dst / "config"
+        real.mkdir()
+        (real / "hooks.json").write_text('{"theirs": 3}', encoding="utf-8")
+        try:
+            os.symlink(real, self.dst / ".agents", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            if os.name != "nt" or subprocess.run(["cmd", "/c", "mklink", "/J", str(self.dst / ".agents"), str(real)],
+                                                 capture_output=True).returncode != 0:
+                self.skipTest("cannot create links here")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.run_install()
+        self.assertIn("is a link or resolves elsewhere", err.getvalue())
+        self.assertEqual(json.loads((real / "hooks.json").read_text(encoding="utf-8")), {"theirs": 3})
+        self.assertEqual(sorted(p.name for p in real.iterdir()), ["hooks.json"], "the skills were copied through the link")
+        self.assertTrue((self.dst / ".claude/skills/s1/SKILL.md").is_file())  # the rest of the install went on
+
+    def test_a_linked_skills_folder_under_a_real_agents_folder_is_not_written_through(self):
+        real = self.dst / "elsewhere"
+        real.mkdir()
+        (self.dst / ".agents").mkdir()
+        try:
+            os.symlink(real, self.dst / ".agents/skills", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            if os.name != "nt" or subprocess.run(["cmd", "/c", "mklink", "/J", str(self.dst / ".agents/skills"), str(real)],
+                                                 capture_output=True).returncode != 0:
+                self.skipTest("cannot create links here")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.run_install()
+        self.assertIn(".agents/skills is a link or resolves elsewhere", err.getvalue())
+        self.assertEqual(list(real.iterdir()), [])
+        self.assertFalse(self.agy_path().exists())
+        self.assertTrue((self.dst / ".claude/skills/s1/SKILL.md").is_file())
+
+    def test_a_hard_linked_agy_hooks_file_is_refused_and_a_normal_one_is_replaced_atomically(self):
+        other = self.dst / "other.json"
+        other.write_text('{"theirs": 5}', encoding="utf-8")
+        self.agy_path().parent.mkdir()
+        try:
+            os.link(other, self.agy_path())
+        except OSError:
+            self.skipTest("cannot create hard links here")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.run_install()
+        self.assertIn("hard links", err.getvalue())
+        self.assertEqual(other.read_text(encoding="utf-8"), '{"theirs": 5}')
+        self.agy_path().unlink()
+        self.write_agy({"mine": 1})
+        replaced = []
+        real_replace = os.replace
+        with mock.patch.object(install.os, "replace", side_effect=lambda a, b: (replaced.append((Path(a).name, Path(b).name)), real_replace(a, b))[1]):
+            self.run_install()
+        self.assertEqual(len(replaced), 1)
+        self.assertTrue(replaced[0][0].startswith("hooks.json.") and replaced[0][0].endswith(".tmp") and replaced[0][1] == "hooks.json",
+                        replaced)
+        self.assertEqual(self.agy_doc()["mine"], 1)
+        self.assertEqual([p.name for p in self.agy_path().parent.iterdir() if ".tmp" in p.name], [])
+
+    def test_the_temporary_file_is_never_a_predictable_name_that_could_be_a_link(self):
+        victim = self.dst / "victim.txt"
+        victim.write_text("precious", encoding="utf-8")
+        self.agy_path().parent.mkdir()
+        old_name = self.agy_path().with_name(f"hooks.json.tmp-{os.getpid()}")  # what an earlier version opened
+        try:
+            os.link(victim, old_name)
+        except OSError:
+            self.skipTest("cannot create hard links here")
+        self.run_install()
+        self.assertEqual(victim.read_text(encoding="utf-8"), "precious")
+        self.assertIn("tagteam", self.agy_doc())
+        made = []
+        real = tempfile.mkstemp
+        with mock.patch.object(install.tempfile, "mkstemp", side_effect=lambda **kw: made.append(kw) or real(**kw)):
+            self.write_agy({"mine": 1})
+            self.run_install("--update")
+        self.assertEqual([kw["dir"] for kw in made if kw.get("suffix") == ".tmp"], [str(self.agy_path().parent)])  # next to the target, exclusive creation
+
+    def test_a_failed_replacement_is_a_warning_and_leaves_no_temporary_file(self):
+        self.write_agy({"mine": 1})
+        before = self.agy_path().read_bytes()
+        err = io.StringIO()
+        with mock.patch.object(install.os, "replace", side_effect=PermissionError("sharing violation")), contextlib.redirect_stderr(err):
+            code, out = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertIn("agy hooks not installed: could not replace .agents/hooks.json (PermissionError", err.getvalue())
+        self.assertEqual(self.agy_path().read_bytes(), before)
+        self.assertEqual([p.name for p in self.agy_path().parent.iterdir() if p.name.endswith(".tmp")], [])
+        self.assertTrue((self.dst / "AGENTS.md").is_file())  # the later steps ran
+        self.assertTrue((self.dst / ".gitignore").is_file())
+
+    @unittest.skipIf(os.name == "nt", "POSIX access bits")
+    def test_the_access_bits_of_the_replaced_hooks_file_are_kept(self):
+        self.write_agy({"mine": 1})
+        os.chmod(self.agy_path(), 0o600)
+        self.run_install()
+        self.assertEqual(self.agy_path().stat().st_mode & 0o777, 0o600)
+        self.agy_path().unlink()
+        self.run_install()
+        self.assertEqual(self.agy_path().stat().st_mode & 0o777, 0o644)
+
+    def test_a_tracked_file_under_another_case_is_still_tracked(self):
+        self.git_init(self.dst)
+        self.agy_path().parent.mkdir()
+        (self.agy_path().parent / "Hooks.json").write_text('{"theirs": 1}', encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.dst), "add", "-f", ".agents/Hooks.json"], check=True, capture_output=True)
+        self.assertEqual(install.git_tracking(self.dst, ".agents/hooks.json"), "tracked")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.run_install()
+        self.assertIn("is tracked by git", err.getvalue())
+        self.assertEqual(sorted(p.name for p in self.agy_path().parent.iterdir() if p.is_file()), ["Hooks.json"])
+
+    def test_a_failed_git_lookup_is_not_proof_that_there_is_no_repository(self):
+        self.git_init(self.dst)
+        self.agy_path().parent.mkdir()
+        self.write_agy({"theirs": 1})
+        subprocess.run(["git", "-C", str(self.dst), "add", "-f", ".agents/hooks.json"], check=True, capture_output=True)
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(self.dst.parent / "missing.git")}):
+            self.assertEqual(install.git_tracking(self.dst, ".agents/hooks.json"), "unknown")  # was: no repository
+        with mock.patch.dict(os.environ, {"GIT_WORK_TREE": str(self.dst)}):
+            self.assertEqual(install.git_tracking(self.dst.parent, "x"), "unknown")
+        broken = self.dst.parent / "broken"
+        broken.mkdir()
+        (broken / ".git").write_text("gitdir: " + str(self.dst.parent / "nowhere"), encoding="utf-8")  # a worktree pointer that leads nowhere
+        self.assertEqual(install.git_tracking(broken, ".agents/hooks.json"), "unknown")
+        (broken / "sub").mkdir()
+        self.assertEqual(install.git_tracking(broken / "sub", ".agents/hooks.json"), "unknown")  # the marker is above
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(self.dst.parent / "missing.git")}), contextlib.redirect_stderr(err):
+            self.run_install("--update")
+        self.assertIn("cannot tell whether git tracks", err.getvalue())
+        self.assertEqual(self.agy_doc(), {"theirs": 1})
+
+    def test_git_that_cannot_answer_is_not_taken_for_not_tracked(self):
+        self.git_init(self.dst)
+        for label, outcome in (("git missing or timed out", (None, "", "")),
+                               ("index unreadable", (128, "", "fatal: index file corrupt"))):
+            err = io.StringIO()
+            with mock.patch.object(install, "git_says", return_value=outcome), contextlib.redirect_stderr(err):
+                self.run_install()
+            self.assertIn("cannot tell whether git tracks .agents/hooks.json", err.getvalue(), label)
+            self.assertFalse(self.agy_path().exists(), label)
+        # confirmed: not a repository, or no git at all and no checkout around
+        plain = self.dst.parent / "plain"
+        plain.mkdir()
+        self.assertEqual(install.git_tracking(plain, ".agents/hooks.json"), "no repository")
+        with mock.patch.object(install, "git_says", return_value=(None, "", "")):
+            self.assertEqual(install.git_tracking(plain, ".agents/hooks.json"), "no repository")
+            self.assertEqual(install.git_tracking(self.dst, ".agents/hooks.json"), "unknown")  # a .git is there
+        code, _ = self.run_install("--update")
+        self.assertTrue(self.agy_path().exists())  # git answers again
+
+    def test_unsafe_path_characters_depend_on_the_hook_shell(self):
+        for path, windows, bad in (("C:/a b/c", True, []), ("C:/a$b`c!d^e&f(g)", True, []), ("C:/100%PATH%x", True, ["%"]),
+                                   ("C:/a\"b", True, ['"']), ("/a b/c", False, []), ("/a%b!c^d&e(f)", False, []),
+                                   ("/a$HOME", False, ["$"]), ("/b`id`", False, ["`"]), ('/d"q', False, ['"']),
+                                   ("/e\\f", False, ["\\"])):
+            self.assertEqual(install.unsafe_path_chars(path, windows), bad, (path, windows))
+
+    def test_a_guard_path_the_hook_shell_would_expand_is_refused_and_a_literal_one_is_not(self):
+        windows = os.name == "nt"
+        names = {"100%PATH%x": windows, "a$HOME": not windows, "bq`id`": not windows, 'dq"x': True, "bs\\x": not windows,
+                 "pct%x": windows, "bang!x": False, "caret^x": False, "amp&x": False, "dollarless$": not windows}
+        for name, refused in names.items():
+            proj = self.dst.parent / name
+            try:
+                proj.mkdir()
+            except OSError:
+                continue  # not a possible name here
+            self.use_real_guard()
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.run_install_into(proj)
+            if refused:
+                self.assertIn("agy hooks not installed: the guard path", err.getvalue(), name)
+                self.assertFalse((proj / ".agents/hooks.json").exists(), name)
+                self.assertTrue((proj / ".claude/tagteam/role_guard.py").is_file(), name)  # the rest of the install went on
+            else:
+                self.assertNotIn("agy hooks not installed", err.getvalue(), name)
+                with contextlib.redirect_stdout(io.StringIO()) as out:  # the written command really starts the guard
+                    code = install.main([str(proj), "--check", "--host", "agy", "--source", str(self.src)])
+                self.assertEqual(code, 0, (name, out.getvalue()))
+                self.assertIn("hook commands (agy): ok", out.getvalue(), name)
+        self.assertIsNone(install.guard_path_problem(self.dst))
+
+    def test_install_without_an_agy_template_writes_nothing(self):
+        (self.src / "harness/agy/hooks.json").unlink()
+        self.run_install()
+        self.assertFalse(self.agy_path().exists())
+
+    def test_check_agy_runs_every_part_and_leaves_no_trace(self):
+        self.use_real_guard()
+        self.run_install()
+        state = self.dst.parent / "real-state"
+        before = self.tree(self.dst)
+        code, out, _ = self.agy_check(TAGTEAM_STATE_DIR=str(state))
         self.assertEqual(code, 0, out)
-        self.assertIn("handler (agy): unverified (adapter not installed)", out)
-        self.assertIn("live (agy): unverified (adapter not installed", out)
-        self.assertIn("no hook adapter", out)
+        for line in ("check host=agy", "static: ok", "handler (agy): ok", "hook commands (agy): ok",
+                     "handler (claude): unverified", "handler (codex): unverified", "live (agy): unverified (not requested"):
+            self.assertIn(line, out)
+        self.assertNotIn("no hook adapter", out)
+        self.assertFalse((state / "sessions").exists(), "the handler cases must not write records into the real state folder")
+        self.assertEqual(self.tree(self.dst), before)
+
+    def test_check_agy_handler_fails_when_the_guard_does_not_answer_in_json(self):
+        self.src = build_source(self.src.parent / "src-allow", guard=ALLOW_ALL)
+        self.run_install()
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 1)
+        self.assertIn("handler (agy): FAILED", out)
+        self.assertIn("hook commands (agy): FAILED", out)
+        for case in ("worker git commit", "orchestrator invoke_subagent", "broken payload", "SessionStart",
+                     "PreInvocation without user input"):
+            self.assertIn(f"agy '{case}'", out)
+
+    def test_check_agy_needs_the_hooks_file(self):
+        self.use_real_guard()
+        self.run_install()
+        self.agy_path().unlink()
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 1)
+        self.assertIn(".agents/hooks.json is missing", out)
+        self.assertIn("hook commands (agy): unverified", out)
+
+    def test_check_agy_reports_drift_a_missing_interpreter_and_a_missing_guard(self):
+        self.use_real_guard()
+        self.run_install()
+        doc = self.agy_doc()
+        doc["tagteam"]["PreToolUse"][0]["matcher"] = "nothing"
+        self.write_agy(doc)
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 1)
+        self.assertIn('"tagteam" differs from the template', out)
+        self.assertIn("hook commands (agy): unverified (skipped: static checks failed)", out)
+        self.run_install("--update")
+        doc = self.agy_doc()
+        for event in ("SessionStart", "PreInvocation"):
+            doc["tagteam"][event][0]["command"] = "no-such-python-xyz " + doc["tagteam"][event][0]["command"].split(" ", 1)[1]
+        self.write_agy(doc)
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 1)
+        self.assertIn('"tagteam" differs from the template', out)
+        self.assertNotIn("no-such-python-xyz", out)  # a command that is not ours is not inspected any further
+        self.run_install("--update")
+        real = shutil.which
+        with mock.patch.object(install.shutil, "which", side_effect=lambda n, **k: None if n in ("python", "python3") else real(n, **k)):
+            code, out, _ = self.agy_check()
+        self.assertEqual(code, 1)
+        self.assertIn(f"{install.agy_interpreter()} is not on PATH", out)
+        self.run_install("--update")
+        (self.dst / ".claude/tagteam/role_guard.py").unlink()
+        code, out, _ = self.agy_check()
+        self.assertIn("role_guard.py is missing", out)
+
+    def test_check_agy_runs_the_command_as_written(self):
+        self.use_real_guard()
+        self.run_install()
+        (self.dst / ".claude/tagteam/role_guard.py").write_text(
+            "import json, sys\nprint(json.dumps({'decision': 'ask'}))\n", encoding="utf-8")  # answers ask to everything
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 1)
+        self.assertIn("hook commands (agy): FAILED", out)  # the worker's git commit is not denied
+        self.assertIn("agy hook command 'worker git commit'", out)
+
+    def test_check_agy_never_runs_a_hook_command_that_the_static_check_rejected(self):
+        self.use_real_guard()
+        self.run_install()
+        marker = self.dst.parent / "ran.txt"
+        script = self.dst.parent / "mark.py"
+        script.write_text(f"open({str(marker)!r}, 'w').write('x')\nprint('{{}}')\n", encoding="utf-8")
+        for label, edit in (("a drifted command", lambda: None), ("a tracked file", lambda: (
+                self.git_init(self.dst), subprocess.run(["git", "-C", str(self.dst), "add", "-f", ".agents/hooks.json"],
+                                                        check=True, capture_output=True)))):
+            doc = self.agy_doc()
+            doc["tagteam"]["PreToolUse"][0]["hooks"][0]["command"] = f'"{sys.executable}" "{script}"'
+            self.write_agy(doc)
+            edit()
+            code, out, _ = self.agy_check("--live", TAGTEAM_CLI_GOOGLE=json.dumps([sys.executable, str(script)]))
+            self.assertEqual(code, 1, label)
+            self.assertFalse(marker.exists(), f"{label}: the command was run")
+            self.assertIn("hook commands (agy): unverified (", out)
+            self.assertIn("live (agy): unverified (", out)
+
+    def test_check_agy_does_not_run_a_hooks_file_it_cannot_compare_with_a_template(self):
+        self.use_real_guard()
+        self.run_install()
+        (self.src / "harness/agy/hooks.json").unlink()
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("hook commands (agy): unverified (not run: no template", out)
+
+    def test_hook_command_agy_fails_when_no_hook_selects_run_command(self):
+        self.use_real_guard()
+        self.run_install()
+        entry = self.agy_doc()["tagteam"]
+        entry["PreToolUse"][0]["matcher"] = "nothing"
+        fails, why = install.hook_command_agy(self.dst, entry)
+        self.assertIsNone(why)
+        self.assertIn("selects run_command", fails[0])
+
+    def test_check_agy_reports_malformed_hook_data_as_static_failures(self):
+        self.use_real_guard()
+        self.run_install()
+        good = self.agy_doc()["tagteam"]
+        bad = {
+            "PreToolUse is a number": lambda e: e.update(PreToolUse=5),
+            "PreToolUse is missing": lambda e: e.pop("PreToolUse"),
+            "a matcher that is not a string": lambda e: e["PreToolUse"][0].update(matcher=5),
+            "a group without hooks": lambda e: e["PreToolUse"][0].pop("hooks"),
+            "an invalid type": lambda e: e["PreToolUse"][0]["hooks"][0].update(type="shell"),
+            "a command that is not a string": lambda e: e["PreToolUse"][0]["hooks"][0].update(command=7),
+            "a timeout of zero": lambda e: e["PreToolUse"][0]["hooks"][0].update(timeout=0),
+            "SessionStart is a string": lambda e: e.update(SessionStart="x"),
+            "a hook that is not an object": lambda e: e["PreInvocation"].append("x"),
+            "a NUL in a command": lambda e: e["SessionStart"][0].update(command="py\x00thon x"),
+        }
+        for label, mutate in bad.items():
+            entry = copy.deepcopy(good)
+            mutate(entry)
+            self.write_agy({"tagteam": entry})
+            code, out, err = self.agy_check("--live", TAGTEAM_CLI_GOOGLE=json.dumps([sys.executable, "-c", "raise SystemExit(5)"]))
+            self.assertEqual(code, 1, label)
+            self.assertNotIn("Traceback", err, label)
+            self.assertIn("static: FAILED", out, label)
+            self.assertIn("hook commands (agy): unverified (", out, label)
+            # without a template to compare with, the format check alone must still stop it
+            (self.src / "harness/agy/hooks.json").rename(self.src / "harness/agy/hooks.json.off")
+            try:
+                code, out, err = self.agy_check()
+            finally:
+                (self.src / "harness/agy/hooks.json.off").rename(self.src / "harness/agy/hooks.json")
+            self.assertEqual(code, 1, label)
+            self.assertNotIn("Traceback", err, label)
+        self.write_agy({"tagteam": ["x"]})
+        self.assertEqual(self.agy_check()[0], 1)  # an entry that is not an object
+
+    def test_a_later_negation_does_not_leave_the_hooks_file_unignored(self):
+        self.git_init(self.dst)
+        (self.dst / ".gitignore").write_text("node_modules\n.agents/hooks.json\n!.agents/hooks.json\n", encoding="utf-8")
+        self.run_install()
+        lines = (self.dst / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[-1], ".agents/hooks.json")
+        self.assertEqual(subprocess.run(["git", "-C", str(self.dst), "check-ignore", "-q", ".agents/hooks.json"]).returncode, 0)
+        before = (self.dst / ".gitignore").read_text(encoding="utf-8")
+        self.run_install("--update")
+        self.assertEqual((self.dst / ".gitignore").read_text(encoding="utf-8"), before)  # once is enough
+
+    def test_the_ignore_repair_leaves_tracked_files_alone_and_reports_a_rule_it_cannot_beat(self):
+        self.git_init(self.dst)
+        # a rule of higher precedence in a deeper .gitignore: appending to the root file cannot help
+        self.agy_path().parent.mkdir()
+        (self.agy_path().parent / ".gitignore").write_text("!hooks.json\n", encoding="utf-8")
+        for _ in range(2):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.run_install("--update")
+            self.assertIn("git still does not ignore .agents/hooks.json", err.getvalue())
+            rules = (self.dst / ".gitignore").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(rules.count(".agents/hooks.json"), 1, rules)  # never appended again
+        (self.agy_path().parent / ".gitignore").unlink()
+        # a tracked file reads as "not ignored" too: the repair does not touch .gitignore for it
+        (self.dst / ".gitignore").write_text("node_modules\n!.agents/hooks.json\n", encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.run_install("--update")  # untracked and negated: repaired
+        self.assertEqual(subprocess.run(["git", "-C", str(self.dst), "check-ignore", "-q", ".agents/hooks.json"]).returncode, 0)
+        subprocess.run(["git", "-C", str(self.dst), "add", "-f", ".agents/hooks.json"], check=True, capture_output=True)
+        before = (self.dst / ".gitignore").read_bytes()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.run_install("--update")
+        self.assertEqual((self.dst / ".gitignore").read_bytes(), before)
+
+    def test_check_agy_warns_when_the_hooks_file_is_not_ignored(self):
+        self.use_real_guard()
+        self.run_install()
+        self.git_init(self.dst)
+        (self.dst / ".gitignore").write_text("node_modules\n", encoding="utf-8")
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARN     .agents/hooks.json is not git-ignored", out)
+
+    # ---- agy --live ----------------------------------------------------------------------------
+
+    MODELS_FOR_LIVE = {"vendors": {"google": {"cli": "agy", "model_arg": "{model}-{effort}"}},
+                       "defaults": {"google": {"C": ["gemini-3.8-flash:low", "gemini-4-hydrogen:low"]}}}
+
+    def live_agy(self, body, models=None):
+        """--check --host agy --live with a stand-in agy CLI. `body` is the Python it runs (after `state` is defined)."""
+        self.use_real_guard()
+        self.run_install()
+        (self.dst / ".claude/tagteam/models.json").write_text(json.dumps(models or self.MODELS_FOR_LIVE), encoding="utf-8")
+        state, env = self.live_env()
+        script = self.dst.parent / "agycli.py"
+        script.write_text("import json, os, sys, time\nstate = os.environ['TAGTEAM_STATE_DIR']\n"
+                          "def record(name, role='worker', host='agy', ts=0):\n"
+                          "    os.makedirs(os.path.join(state, 'sessions'), exist_ok=True)\n"
+                          "    open(os.path.join(state, 'sessions', name), 'w').write(json.dumps({'role': role, 'host': host, 'ts': int(time.time()) + ts}))\n"
+                          + body, encoding="utf-8")
+        env["TAGTEAM_CLI_GOOGLE"] = json.dumps([sys.executable, str(script)])
+        code, out, _ = self.agy_check("--live", **env)
+        return code, out, state
+
+    def test_live_agy_accepts_the_only_new_agy_record(self):
+        code, out, state = self.live_agy(
+            "open(os.path.join(state, 'argv.txt'), 'w').write(json.dumps(sys.argv[1:]))\n"
+            "open(os.path.join(state, 'env.txt'), 'w').write(json.dumps({k: os.environ.get(k) for k in "
+            "('HARNESS_DELEGATE_RUN', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'ANTIGRAVITY_CONVERSATION_ID')}))\n"
+            "record('some-cid.json')\nprint('{\"response\": \"ok\"}')\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("live (agy): ok", out)
+        argv = json.loads((state / "argv.txt").read_text(encoding="utf-8"))
+        self.assertEqual(argv[0], "-p")
+        self.assertTrue(argv[1].startswith("HARNESS ROLE: DELEGATE\n"), argv[1])
+        self.assertEqual(argv[2:], ["--model", "gemini-3.8-flash-low", "--effort", "low", "--mode", "accept-edits",
+                                    "--settings", '{"permissions":{"allow":[]}}', "--output-format", "json"])
+        self.assertEqual(set(json.loads((state / "env.txt").read_text(encoding="utf-8")).values()), {None})
+
+    def test_live_agy_env_is_cleaned_of_host_markers(self):
+        with mock.patch.dict(os.environ, {"HARNESS_DELEGATE_RUN": "1", "CLAUDECODE": "1", "ANTIGRAVITY_CONVERSATION_ID": "c"}):
+            code, out, state = self.live_agy(
+                "open(os.path.join(state, 'env.txt'), 'w').write(json.dumps([k for k in os.environ if k in "
+                "('HARNESS_DELEGATE_RUN', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'ANTIGRAVITY_CONVERSATION_ID')]))\n"
+                "record('c1.json')\n")
+        self.assertEqual(json.loads((state / "env.txt").read_text(encoding="utf-8")), [])
+
+    def test_live_agy_uses_the_printed_conversation_id_when_there_is_one(self):
+        body = "record('other.json')\nrecord('cid-7.json')\nprint(json.dumps({'conversationId': 'cid-7', 'response': 'ok'}))\n"
+        code, out, _ = self.live_agy(body)
+        self.assertEqual(code, 0, out)  # two new agy records, but the printed id names ours
+        self.assertIn("live (agy): ok", out)
+        code, out, _ = self.live_agy("record('other.json')\nprint(json.dumps({'conversationId': 'cid-7'}))\n")
+        self.assertEqual(code, 1, out)
+        self.assertIn("live (agy): FAILED", out)
+
+    def test_live_agy_ignores_records_that_existed_before_the_launch(self):
+        self.use_real_guard()
+        self.run_install()
+        for label, body in (("agy wrote nothing and printed no id", "pass\n"),
+                            ("agy printed the id of an old conversation", "print(json.dumps({'conversationId': 'old'}))\n")):
+            state, env = self.live_env()
+            (state / "sessions" / "old.json").write_text(
+                json.dumps({"role": "worker", "host": "agy", "ts": int(time.time())}), encoding="utf-8")  # a second ago
+            self.live_agy_with(body, state, env)
+            code, out, _ = self.agy_check("--live", **env)
+            self.assertEqual(code, 1, label)
+            self.assertIn("live (agy): FAILED", out, label)
+            self.assertNotIn("live (agy): ok", out, label)
+
+    def live_agy_with(self, body, state, env):
+        (self.dst / ".claude/tagteam/models.json").write_text(json.dumps(self.MODELS_FOR_LIVE), encoding="utf-8")
+        script = self.dst.parent / "agycli2.py"
+        script.write_text("import json\n" + body, encoding="utf-8")
+        env["TAGTEAM_CLI_GOOGLE"] = json.dumps([sys.executable, str(script)])
+
+    def test_live_agy_is_unverified_when_the_record_cannot_be_told_from_others(self):
+        code, out, _ = self.live_agy("record('a.json')\nrecord('b.json')\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("live (agy): unverified (agy printed no conversation id and 2 new agy records", out)
+
+    def test_live_agy_fails_without_a_worker_record_of_this_run(self):
+        cases = {"no record": "pass\n", "an orchestrator record": "record('a.json', role='orchestrator')\n",
+                 "a record of another host": "record('a.json', host='codex')\n", "an old record": "record('a.json', ts=-3600)\n",
+                 "the CLI failed": "record('a.json')\nsys.exit(1)\n"}
+        for label, body in cases.items():
+            code, out, _ = self.live_agy(body)
+            self.assertEqual(code, 1, label)
+            self.assertIn("live (agy): FAILED", out, label)
+
+    def test_live_agy_is_unverified_when_the_model_is_not_available_or_unknown(self):
+        code, out, _ = self.live_agy("sys.stderr.write('Error: model gemini-3.8-flash-low is not available for this account\\n')\nsys.exit(1)\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("live (agy): unverified (this account cannot use gemini-3.8-flash-low", out)
+        code, out, _ = self.live_agy("record('a.json')\n", models={"vendors": {}})
+        self.assertEqual(code, 0, out)
+        self.assertIn("live (agy): unverified (no google C-grade default model", out)
+
+    def test_live_agy_without_the_cli_is_unverified(self):
+        self.use_real_guard()
+        self.run_install()
+        real = shutil.which  # read before patching: install.shutil is this same module
+        with mock.patch.object(install.shutil, "which", side_effect=lambda n, **k: None if n == "agy" else real(n, **k)):
+            code, out, _ = self.agy_check("--live")
+        self.assertIn("live (agy): unverified (the agy CLI was not found)", out)
 
     def fake_cli(self, name, writes=True, host="codex", role="worker", exit_code=0, ts_offset=0, session_name=None,
                  raw=None, print_id=True, record_host=None):
@@ -697,14 +1262,6 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("does not ignore .tagteam/", out)
 
-    def test_codex_handler_check_leaves_no_bytecode_even_when_the_parent_allows_it(self):
-        self.use_real_guard()
-        self.run_install()
-        os.environ.pop("PYTHONDONTWRITEBYTECODE", None)  # restored by the setUp patch
-        code, out, _ = self.codex_check()
-        self.assertEqual(code, 0, out)
-        self.assertIn("handler (codex): ok", out)
-        self.assertEqual([t for t in self.tree(self.dst) if "__pycache__" in t], [])
 
     def test_static_checks_call_no_file_creating_operation(self):
         import builtins
@@ -748,13 +1305,16 @@ class InstallTests(unittest.TestCase):
         with mock.patch.object(install.os, "access", return_value=False):
             self.assertIn("no write permission", install.state_access_problem(self.dst))
 
-    def test_check_codex_creates_nothing(self):
+    def test_check_codex_creates_nothing_not_even_bytecode(self):
         self.use_real_guard()
         self.run_install()
+        os.environ.pop("PYTHONDONTWRITEBYTECODE", None)  # the parent allows bytecode; restored by the setUp patch
         before = self.tree(self.dst)
         code, out, _ = self.codex_check()
         self.assertEqual(code, 0, out)
+        self.assertIn("handler (codex): ok", out)
         self.assertEqual(self.tree(self.dst), before)
+        self.assertEqual([t for t in self.tree(self.dst) if "__pycache__" in t], [])
         self.assertFalse((self.dst / ".tagteam").exists())
 
     def tree(self, root):
@@ -821,28 +1381,24 @@ class InstallTests(unittest.TestCase):
         self.run_install()
         self.git_init(self.dst)
         self.write_old("exhausted.json", "old")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            code = install.main([str(self.dst), "--check"])
-        self.assertEqual(code, 0, out.getvalue())
-        self.assertIn("old state folder", out.getvalue())
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 0, out)
+        self.assertIn("old state folder", out)
         self.run_install("--update")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            install.main([str(self.dst), "--check"])
-        self.assertNotIn("old state folder", out.getvalue())
+        self.assertNotIn("old state folder", self.run_main("--check")[1])
 
     def test_check_fails_when_the_skill_copies_differ_or_one_is_missing(self):
         self.run_install()
         (self.dst / ".agents/skills/s1/SKILL.md").write_text("changed", encoding="utf-8")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(install.main([str(self.dst), "--check"]), 1)
-        self.assertIn("differ", out.getvalue())
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 1)
+        self.assertIn("differ", out)
         self.run_install("--update")
-        with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(install.main([str(self.dst), "--check"]), 0)
+        self.assertEqual(self.run_main("--check")[0], 0)
         shutil.rmtree(self.dst / ".agents/skills")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(install.main([str(self.dst), "--check"]), 1)
-        self.assertIn("missing", out.getvalue())
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 1)
+        self.assertIn("missing", out)
 
     def test_codex_hooks_absolute_path(self):
         self.run_install()
@@ -906,7 +1462,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual((self.dst / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\nextra\n")
 
     def test_gitignore_lists_local_files_and_the_state_folder_in_every_project(self):
-        local = [".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json"]
+        local = [".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", ".agents/hooks.json"]
         self.run_install()
         text = (self.dst / ".gitignore").read_text(encoding="utf-8")
         for line in local + [".tagteam/"]:
@@ -919,7 +1475,7 @@ class InstallTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             install.main([str(git_dst), "--source", str(self.src), "--yes"])
         lines = (git_dst / ".gitignore").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(lines, ["node_modules", local[0], local[1], ".tagteam/"])
+        self.assertEqual(lines, ["node_modules", *local, ".tagteam/"])
 
     def test_bench_written_once_when_key_set_and_file_missing(self):
         os.environ["TAGTEAM_AA_API_KEY"] = "k-123"
@@ -976,9 +1532,8 @@ class InstallTests(unittest.TestCase):
 
     def test_check_passes_with_stub(self):
         self.run_install()
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            code = install.main([str(self.dst), "--check"])
-        self.assertEqual(code, 0, out.getvalue())
+        code, out, _ = self.run_main("--check")
+        self.assertEqual(code, 0, out)
 
     def use_real_hooks(self):
         self.use_real_guard()
@@ -1098,14 +1653,14 @@ class InstallTests(unittest.TestCase):
             self.skipTest("no sh / Git Bash")
         self.edit_settings(lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=7))
         seen = []
-        real = subprocess.run
+        real = install.run_bounded
 
-        def spy(argv, *a, **kw):
-            seen.append(kw.get("timeout"))
-            if kw.get("timeout") == 7:
+        def spy(argv, input_text, env, timeout, cwd):
+            seen.append(timeout)
+            if timeout == 7:
                 raise subprocess.TimeoutExpired(argv, 7)  # the shim is slower than the hook may be
-            return real(argv, *a, **kw)
-        with mock.patch.object(install.subprocess, "run", spy):
+            return real(argv, input_text, env, timeout, cwd)
+        with mock.patch.object(install, "run_bounded", spy):
             fails, _ = install.hook_command_test(self.dst)
         self.assertEqual(seen.count(7), 2)  # both PreToolUse runs
         self.assertEqual(seen.count(10), 2)  # SessionStart and UserPromptSubmit keep the template's 10 seconds
@@ -1173,19 +1728,58 @@ class InstallTests(unittest.TestCase):
     def test_check_fails_when_guard_allows_everything(self):
         self.run_install()
         (self.dst / ".claude/tagteam/role_guard.py").write_text(ALLOW_ALL, encoding="utf-8")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            code = install.main([str(self.dst), "--check"])
+        code, out, _ = self.run_main("--check")
         self.assertEqual(code, 1)
-        self.assertIn("ERROR", out.getvalue())
+        self.assertIn("ERROR", out)
 
     def test_check_fails_when_guard_missing(self):
-        with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(install.main([str(self.dst), "--check"]), 1)
+        self.assertEqual(self.run_main("--check")[0], 1)
 
     def test_cli_runs_as_script(self):
         p = subprocess.run([sys.executable, str(INSTALL), str(self.dst), "--source", str(self.src),
                             "--yes"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
         self.assertEqual(p.returncode, 0, p.stderr)
+
+
+class KillTreeTests(unittest.TestCase):
+    def test_taskkill_gets_a_short_timeout(self):
+        seen = []
+
+        class Proc:
+            pid = 4242
+
+            def kill(self):
+                pass
+        with mock.patch.object(install, "is_windows", return_value=True), \
+                mock.patch.object(install.subprocess, "run", side_effect=lambda argv, **kw: seen.append((argv, kw.get("timeout")))):
+            install.kill_tree(Proc())
+        self.assertEqual(seen, [(["taskkill", "/T", "/F", "/PID", "4242"], install.KILL_TIMEOUT)])
+        self.assertLessEqual(install.KILL_TIMEOUT, 5)
+
+
+class RunBoundedTests(unittest.TestCase):
+    """The timeout of a hook run holds for the whole process tree (a child that keeps the pipes open used to hold it)."""
+
+    CHILD = ("import subprocess, sys, time\n"
+             "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+             "time.sleep(30)\n")
+
+    def test_a_timeout_ends_the_tree_and_does_not_wait_for_the_pipes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "holder.py"
+            script.write_text(self.CHILD, encoding="utf-8")
+            argv = "cmd /c " + subprocess.list2cmdline([sys.executable, str(script)]) if os.name == "nt" else \
+                ["sh", "-c", f'"{sys.executable}" "{script}"']
+            t0 = time.monotonic()
+            with self.assertRaises(subprocess.TimeoutExpired):
+                install.run_bounded(argv, "", dict(os.environ), 0.5, tmp)
+            elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 0.5 + install.PIPE_DRAIN_SECONDS + 3, elapsed)  # plain run() waited the child's 30 s
+
+    def test_a_normal_run_returns_like_subprocess_run(self):
+        p = install.run_bounded([sys.executable, "-c", "import sys; print(sys.stdin.read().upper()); sys.exit(3)"], "abc",
+                                dict(os.environ), 30, None)
+        self.assertEqual((p.returncode, p.stdout.strip(), p.stderr), (3, "ABC", ""))
 
 
 class HookCommandTests(unittest.TestCase):
@@ -1215,7 +1809,7 @@ class HookCommandTests(unittest.TestCase):
         return f'if [ "$1" = "-c" ]; then exit 0; fi\necho "{tag}"\nfor a in "$@"; do echo "[$a]"; done\nexit {code}\n'
 
     def run_hook(self, event):
-        (command,) = install.settings_guard_commands(self.project, event)
+        (command,) = [c for _, _, c in install.settings_guard_hooks(self.project, event)]
         env = {k: v for k, v in os.environ.items() if k not in ("HARNESS_DELEGATE_RUN", "PATH")}
         env.update(PATH=str(self.bin), CLAUDE_PROJECT_DIR=str(self.project.as_posix() if os.name == "nt" else self.project))
         p = subprocess.run([self.shell, "-c", command], input="{}", capture_output=True, text=True, env=env, timeout=60)
@@ -1263,7 +1857,7 @@ class HookCommandTests(unittest.TestCase):
 
     def test_all_three_commands_name_the_guard_and_their_event(self):
         for event in ("SessionStart", "UserPromptSubmit", "PreToolUse"):
-            (command,) = install.settings_guard_commands(self.project, event)
+            (command,) = [c for _, _, c in install.settings_guard_hooks(self.project, event)]
             self.assertTrue(command.endswith(f'role_guard.py" {event}'), command)
             self.assertEqual(command.count("role_guard.py"), 1, "the guard is named once: no 'python3 ... || python ...'")
 
@@ -1493,6 +2087,33 @@ class ScheduleTests(unittest.TestCase):
         self.calls.clear()
         self.quiet(self.sched("linux").unschedule)
         self.assertEqual(self.calls[-1][1], "5 5 * * * other job\n")
+
+    def test_linux_cron_line_logs_to_the_state_folder(self):
+        mark = "# " + self.name()
+        state = self.state / "new state%dir"  # does not exist yet; a space and a percent sign in the path
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(state)}):
+            self.quiet(self.sched("linux").schedule)
+        line = self.calls[-1][1].splitlines()[-1]
+        words = install.shlex.split(line[len("0 9 * * 1 "):])
+        self.assertEqual(words[words.index(">>") + 1].replace("\\%", "%"), str(state / "model-update.log"))
+        self.assertTrue(line.endswith(" 2>&1 " + mark), line)
+        self.assertTrue(state.is_dir(), "the folder of the log is made when the job is registered")
+
+    def test_linux_without_a_state_folder_has_no_redirect(self):
+        self.quiet(self.sched("linux").schedule)
+        self.assertNotIn(">>", self.calls[-1][1])
+
+    def test_linux_dry_run_prints_the_crontab_line_and_writes_nothing(self):
+        mark = "# " + self.name()
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state / "new")}):
+            code, out = self.quiet(self.sched("linux", dry=True).schedule)
+        self.assertEqual(code, 0)
+        (line,) = [ln for ln in out.splitlines() if ln.startswith("  crontab  ")]
+        self.assertTrue(line.startswith(f"  crontab  0 9 * * 1 PATH={JOB_PATH} /usr/bin/py ") and line.endswith(f" 2>&1 {mark}"), line)
+        words = install.shlex.split(line[len("  crontab  0 9 * * 1 "):])  # the shell command as cron would hand it to sh
+        self.assertEqual(words[words.index(">>") + 1], str(self.state / "new" / "model-update.log"))
+        self.assertFalse((self.state / "new").exists())
+        self.assertNotIn(["crontab", "-"], [c[0] for c in self.calls])
 
     def test_crontab_read_error_never_writes(self):
         reads = []

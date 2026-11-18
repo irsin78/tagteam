@@ -63,19 +63,22 @@ GUARD_REL = ".claude/tagteam/role_guard.py"
 STATE_REL = ".claude/tagteam/state.py"
 
 
+def map_strings(v, fn):
+    """v with fn applied to every string inside the JSON value."""
+    if isinstance(v, str):
+        return fn(v)
+    if isinstance(v, list):
+        return [map_strings(x, fn) for x in v]
+    if isinstance(v, dict):
+        return {k: map_strings(x, fn) for k, x in v.items()}
+    return v
+
+
 def localize_hooks(src, guard):
     """Codex runs hooks in the session cwd: point at the absolute, quoted guard path."""
     quoted = '"' + str(guard.resolve()).replace("\\", "/") + '"'
-
-    def walk(v):
-        if isinstance(v, str):
-            return v.replace('"' + GUARD_REL + '"', GUARD_REL).replace(GUARD_REL, quoted)
-        if isinstance(v, list):
-            return [walk(x) for x in v]
-        if isinstance(v, dict):
-            return {k: walk(x) for k, x in v.items()}
-        return v
-    obj = walk(json.loads(src.read_text(encoding="utf-8")))
+    obj = map_strings(json.loads(src.read_text(encoding="utf-8")),
+                      lambda s: s.replace('"' + GUARD_REL + '"', GUARD_REL).replace(GUARD_REL, quoted))
     return (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
@@ -91,6 +94,163 @@ def expected_codex_hooks(source, target):
     if not src.is_file():
         return None
     return json.loads(localize_hooks(src, target / GUARD_REL).decode("utf-8"))
+
+
+AGY_HOOKS_REL = ".agents/hooks.json"  # machine-local like .codex/hooks.json: the guard path in it is absolute
+AGY_TEMPLATE_REL = Path("harness/agy/hooks.json")
+AGY_KEY = "tagteam"  # the only key of that file this installer owns; others (a user's own hooks) stay as they are
+
+
+def agy_interpreter():
+    """What the agy hook commands call: python on Windows, else python3 when this machine has it, else python."""
+    return "python" if is_windows() or not shutil.which("python3") else "python3"
+
+
+def expected_agy_hooks(source, target):
+    """The "tagteam" value of the template's agy hooks.json as install writes it (absolute quoted guard path, this
+    machine's interpreter). None without a template."""
+    src = source / AGY_TEMPLATE_REL
+    if not src.is_file():
+        return None
+    doc = json.loads(localize_hooks(src, target / GUARD_REL).decode("utf-8"))
+    return map_strings(doc.get(AGY_KEY), lambda s: re.sub(r"^python3 ", agy_interpreter() + " ", s))
+
+
+def git_says(target, *args):
+    """(exit code, stdout, stderr) of `git -C target args`; (None, "", "") when git cannot be run or times out."""
+    try:
+        p = subprocess.run(["git", "-C", str(target)] + list(args), capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None, "", ""
+    return p.returncode, p.stdout.strip(), p.stderr.strip()
+
+
+def git_markers(target):
+    """Is there any sign of a git checkout here: GIT_DIR or GIT_WORK_TREE in the environment, or a .git in the folder or
+    above it? A failed git call in such a place is not proof that there is no repository."""
+    return bool(os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE")
+                or any((d / ".git").exists() for d in (target, *target.parents)))
+
+
+def git_tracking(target, rel):
+    """'tracked', 'untracked', 'no repository' (confirmed) or 'unknown'. Only a confirmed 'no repository' lets a caller
+    treat the file as untracked: a failed lookup (git missing, timeout, unreadable index, a broken .git or GIT_DIR) is
+    'unknown' whenever git_markers() sees a checkout. The path is matched case-insensitively and literally, so that
+    .agents/Hooks.json tracked on a case-insensitive file system counts as .agents/hooks.json (a needless refusal on a
+    case-sensitive one is the safe side)."""
+    rc, out, err = git_says(target, "ls-files", "--", ":(icase,literal)" + rel)
+    if rc == 0:
+        return "tracked" if out else "untracked"
+    if git_markers(target):
+        return "unknown"
+    return "no repository" if rc is None or "not a git repository" in err.lower() else "unknown"
+
+
+def agents_link_problem(target):
+    """Why nothing may be written below target/.agents (.agents or .agents/skills is a link, a junction or resolves
+    elsewhere), or None. Deeper links are not looked for (copy_tree has always followed them, .claude/ included)."""
+    for rel in (".agents", ".agents/skills"):
+        path = target / rel
+        plain = os.path.join(os.path.realpath(target), *rel.split("/"))
+        if path.is_symlink() or os.path.normcase(os.path.realpath(path)) != os.path.normcase(plain):
+            return f"{rel} is a link or resolves elsewhere"
+    return None
+
+
+def unsafe_path_chars(path, windows):
+    """The characters of a path that the hook shell would still act on inside double quotes: cmd expands %NAME% (and a
+    path cannot hold "), sh expands $NAME and `...`, and a backslash or a quote changes what follows."""
+    return sorted({c for c in path if c in ('%"' if windows else '$`"\\')})
+
+
+def guard_path_problem(target):
+    """Why the guard path cannot be written into a hook command, or None. The command quotes the path with double
+    quotes, which keeps spaces but not the shell's expansion; a path that would be expanded is refused, not escaped."""
+    path = str((target / GUARD_REL).resolve())
+    bad = unsafe_path_chars(path, is_windows())
+    if bad:
+        return f"the guard path {path} contains {' '.join(repr(c) for c in bad)}, which the hook shell would expand inside quotes"
+    return None
+
+
+def agy_hooks_blocker(target):
+    """Why .agents/hooks.json must not be written, or None: the guard path would be expanded by the shell, .agents or
+    the file is a link or resolves elsewhere (it could be a tracked file), the file has several hard links, git tracks
+    it or cannot be asked (a project's own hooks file would end up in a commit), or it is not a JSON object (a user's
+    file that tagteam does not understand)."""
+    bad = guard_path_problem(target)
+    if bad:
+        return bad
+    path = target / AGY_HOOKS_REL
+    plain = Path(os.path.realpath(target)) / AGY_HOOKS_REL
+    link = agents_link_problem(target)
+    if link:
+        return link
+    if path.is_symlink() or os.path.normcase(os.path.realpath(path)) != os.path.normcase(str(plain)):
+        return f"{AGY_HOOKS_REL} is a link or resolves elsewhere"
+    if path.is_file() and path.stat().st_nlink > 1:
+        return f"{AGY_HOOKS_REL} has {path.stat().st_nlink} hard links"
+    tracking = git_tracking(target, AGY_HOOKS_REL)
+    if tracking == "tracked":
+        return f"{AGY_HOOKS_REL} is tracked by git; tagteam writes machine-local paths into it"
+    if tracking == "unknown":
+        return f"cannot tell whether git tracks {AGY_HOOKS_REL} (git is missing, timed out or cannot read the index)"
+    if path.exists():
+        try:
+            if not isinstance(json.loads(path.read_text(encoding="utf-8")), dict):
+                raise ValueError("not a JSON object")
+        except (OSError, ValueError) as exc:
+            return f"{AGY_HOOKS_REL} is not readable as a JSON object ({exc})"
+    return None
+
+
+def install_agy_hooks(rep, source, target):
+    """Put the "tagteam" key into .agents/hooks.json: created when missing, other keys and their order kept, rewritten
+    on every install and --update (agy has no hook trust that a rewrite would reset). The file is replaced through a
+    temporary sibling, never written in place. Never fails the install."""
+    expected = expected_agy_hooks(source, target)
+    if expected is None:
+        return
+    blocker = agy_hooks_blocker(target)
+    if blocker:
+        print(f"warning: agy hooks not installed: {blocker}; --check --host agy fails until this is fixed", file=sys.stderr)
+        return
+    path = target / AGY_HOOKS_REL
+    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if doc.get(AGY_KEY) == expected:
+        rep.add("kept", AGY_HOOKS_REL)
+        return
+    state = "updated" if path.exists() else "created"
+    doc[AGY_KEY] = expected
+    try:
+        replace_file(path, (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    except OSError as exc:  # e.g. a Windows reader without delete sharing: this file only, the install goes on
+        print(f"warning: agy hooks not installed: could not replace {AGY_HOOKS_REL} ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return
+    rep.add(state, AGY_HOOKS_REL)
+
+
+def replace_file(path, data):
+    """Write data to a new, uniquely named sibling made by mkstemp (exclusive creation: an existing link of that name is
+    never written through), keep the access bits of the file it replaces (POSIX), and swap it in with os.replace. The
+    sibling is removed whatever happens. Raises OSError."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        if not is_windows():
+            if path.exists():
+                shutil.copymode(path, tmp)
+            else:
+                os.chmod(tmp, 0o644)  # mkstemp makes it private; a new file gets the usual mode
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def is_tagteam_hook(hook):
@@ -376,7 +536,7 @@ def ask_tiers():
     return plans
 
 
-LOCAL_IGNORES = (".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json")
+LOCAL_IGNORES = (".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", AGY_HOOKS_REL)
 STATE_IGNORE = ".tagteam/"
 BENCH_REL = Path(".claude/tagteam/bench.local.json")
 SKILL_ROOTS = (".claude/skills", ".agents/skills")  # Claude Code reads the first, Codex the second
@@ -407,13 +567,43 @@ def state_checkout(target):
 def ensure_gitignore(rep, target):
     """Machine-local files are ignored in the target. The state folder (.tagteam/) is ignored in the checkout
     that contains it, which is another one for a submodule or a linked worktree: the target's own .gitignore
-    gets no .tagteam/ rule then, because nothing is created there."""
+    gets no .tagteam/ rule then, because nothing is created there. A rule that is listed but undone by a later
+    one (`!.agents/hooks.json`) does not count: git is asked, and the rule is added once more at the end."""
     root = state_checkout(target)
     if root == target:
         add_ignores(rep, target, LOCAL_IGNORES + (STATE_IGNORE,))
+    else:
+        add_ignores(rep, target, LOCAL_IGNORES)
+        add_ignores(rep, root, (STATE_IGNORE,))
+    ensure_agy_ignored(rep, target)
+
+
+def ensure_agy_ignored(rep, target):
+    """Make git ignore .agents/hooks.json in fact. A rule that is listed but undone by a later one (`!.agents/hooks.json`)
+    is added once more at the end; a tracked file is left alone; when the rule is already last and git still does not
+    ignore the file, a rule of higher precedence (.agents/.gitignore, the global excludes) wins and only a warning helps."""
+    gi = target / ".gitignore"
+    ignored = lambda: git_says(target, "check-ignore", "-q", AGY_HOOKS_REL)[0] != 1  # noqa: E731 - 128 = no repository: leave it
+    if ignored() or not gi.is_file() or git_tracking(target, AGY_HOOKS_REL) != "untracked":
         return
-    add_ignores(rep, target, LOCAL_IGNORES)
-    add_ignores(rep, root, (STATE_IGNORE,))
+    old = gi.read_text(encoding="utf-8")
+    mentions = [ln.strip() for ln in old.splitlines() if ln.strip().lstrip("!") == AGY_HOOKS_REL]
+    if not mentions or mentions[-1] != AGY_HOOKS_REL:  # no rule, or a negation comes last
+        put(rep, target, Path(".gitignore"), (old + ("" if old.endswith("\n") else "\n") + AGY_HOOKS_REL + "\n").encode("utf-8"))
+    if not ignored():
+        print(f"warning: git still does not ignore {AGY_HOOKS_REL}: a rule of higher precedence (.agents/.gitignore, "
+              "a global excludes file) overrides .gitignore; fix it there", file=sys.stderr)
+
+
+def run_collector(collector, flag, fetch_timeout, timeout):
+    """(ok, output) of the collector run with one write flag, against the project's own models.json."""
+    env = {k: v for k, v in os.environ.items() if k != "TAGTEAM_CONFIG_DIR"}
+    try:
+        p = subprocess.run([sys.executable, str(collector), flag, "--timeout", str(fetch_timeout)],
+                           capture_output=True, text=True, env=env, timeout=timeout)
+        return p.returncode == 0, (p.stdout + p.stderr).strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
 
 
 def ensure_bench(target):
@@ -422,13 +612,7 @@ def ensure_bench(target):
     if (target / BENCH_REL).exists() or not os.environ.get("TAGTEAM_AA_API_KEY", "").strip() \
             or not collector.is_file():
         return
-    env = {k: v for k, v in os.environ.items() if k != "TAGTEAM_CONFIG_DIR"}
-    try:
-        p = subprocess.run([sys.executable, str(collector), "--write-bench", "--timeout", "15"],
-                           capture_output=True, text=True, env=env, timeout=90)
-        ok, text = p.returncode == 0, (p.stdout + p.stderr).strip()
-    except (OSError, subprocess.SubprocessError) as exc:
-        ok, text = False, str(exc)
+    ok, text = run_collector(collector, "--write-bench", 15, 90)
     if ok:
         print("  bench    " + BENCH_REL.as_posix() + " written from Artificial Analysis")
     else:
@@ -450,13 +634,7 @@ def ensure_available(target):
     want = {v for v in vendors if plans.get(v) != "none"}
     if not collector.is_file() or (have and want <= have):  # retry while some vendor has no list yet
         return
-    env = {k: v for k, v in os.environ.items() if k != "TAGTEAM_CONFIG_DIR"}
-    try:
-        p = subprocess.run([sys.executable, str(collector), "--write-available", "--timeout", "30"],
-                           capture_output=True, text=True, env=env, timeout=150)
-        ok, text = p.returncode == 0, (p.stdout + p.stderr).strip()
-    except (OSError, subprocess.SubprocessError) as exc:
-        ok, text = False, str(exc)
+    ok, text = run_collector(collector, "--write-available", 30, 150)
     if ok and "wrote available" in text:
         print("  models   available model lists written to models.local.json")
     else:
@@ -470,8 +648,12 @@ def install(target, source, interactive):
     if (h / "claude" / "settings.json").is_file():
         merge_settings(rep, h / "claude" / "settings.json", target)
     copy_tree(rep, h / "claude" / "agents", target, ".claude/agents", "*.md")
+    linked = agents_link_problem(target)
+    if linked:  # checked before the first write: skills and hooks both live below .agents
+        print(f"warning: {linked}: nothing was written through it (.agents/skills, {AGY_HOOKS_REL})", file=sys.stderr)
     for skills_root in SKILL_ROOTS:
-        copy_tree(rep, h / "skills", target, skills_root)
+        if not (linked and skills_root.startswith(".agents/")):
+            copy_tree(rep, h / "skills", target, skills_root)
     copy_tree(rep, h / "tagteam", target, ".claude/tagteam")
     hooks = h / "codex" / "hooks.json"
     if hooks.is_file():
@@ -491,6 +673,7 @@ def install(target, source, interactive):
         else:
             print("note: " + TRUST_NOTE)
     copy_tree(rep, h / "codex" / "agents", target, ".codex/agents", "*.toml")
+    install_agy_hooks(rep, source, target)
     if (source / "AGENTS.md.template").is_file():
         merge_agents_md(rep, source / "AGENTS.md.template", target)
     if (source / "CLAUDE.md.template").is_file():
@@ -665,18 +848,13 @@ def settings_guard_hooks(target, event):
         return []
 
 
-def settings_guard_commands(target, event):
-    """The tagteam hook commands of one event in the installed .claude/settings.json."""
-    return [command for _, _, command in settings_guard_hooks(target, event)]
-
-
 def matcher_hits(matcher, tool):
     """Whether Claude Code would call a hook with this matcher for this tool name (a regex over the whole name)."""
     if not matcher or matcher == "*":
         return True
     try:
         return re.fullmatch(matcher, tool) is not None
-    except re.error:
+    except (re.error, TypeError):
         return False
 
 
@@ -699,8 +877,7 @@ def hook_command_test(target):
         def run(name, command, timeout, payload, want, worker=False, expect_out=None):
             e = dict(env, HARNESS_DELEGATE_RUN="1") if worker else env
             try:
-                p = subprocess.run([shell, "-c", command], input=json.dumps(payload), capture_output=True, text=True,
-                                   env=e, timeout=timeout, cwd=str(target))  # Claude Code runs a hook in the project
+                p = run_bounded([shell, "-c", command], json.dumps(payload), e, timeout, str(target))  # Claude Code runs a hook in the project
             except subprocess.TimeoutExpired:
                 fails.append(f"hook command '{name}': no answer within the hook's timeout of {timeout}s "
                              "(Claude Code would drop the hook and not block)")
@@ -790,13 +967,13 @@ def static_checks(target, source, host):
                             "under codex exec (codex-cli 0.169.0). Interactive behaviour is unverified; unelevated is the "
                             "alternative (your global setting, not changed by tagteam)")
     if host == "agy":
-        notes.append("agy: no hook adapter yet (planned for a later milestone); roles are not enforced there")
+        bad, shaky = agy_static_problems(target, source)
+        errors += bad
+        warnings += shaky
+        notes.append("agy: a guard that cannot start blocks run_command and the delegation tools (PreToolUse); "
+                     "to switch it off, delete the \"tagteam\" key of .agents/hooks.json")
     # the state folder
-    mod = load_installed_state(target)
-    try:
-        state = Path(mod.state_dir(str(target))) if mod else None
-    except Exception:  # noqa: BLE001 - an old state.py
-        state = None
+    state = installed_state_dir(target)
     if state is not None:
         print(f"  state    {state}")
         if ".git" in state.parts:
@@ -811,6 +988,7 @@ def static_checks(target, source, host):
         if state.name == ".tagteam" and (root / ".git").exists() and \
                 (not gi.is_file() or ".tagteam" not in {ln.strip().rstrip("/") for ln in gi.read_text(encoding="utf-8").splitlines()}):
             warnings.append(f"{gi} does not ignore .tagteam/; run install.py --update")
+        mod = load_installed_state(target)
         try:
             old = list(mod.legacy_dirs(str(target)))
         except Exception:  # noqa: BLE001
@@ -820,6 +998,272 @@ def static_checks(target, source, host):
     else:
         warnings.append("state folder: not computed (no usable installed state.py)")
     return errors, warnings, notes
+
+
+def load_agy_hooks(target):
+    """(the "tagteam" value of the installed .agents/hooks.json, None) or (None, why it cannot be used)."""
+    path = target / AGY_HOOKS_REL
+    if not path.is_file():
+        return None, f"{AGY_HOOKS_REL} is missing; run install.py {target} (agy then has no role hooks)"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))[AGY_KEY], None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, f'{AGY_HOOKS_REL} is unreadable or has no "{AGY_KEY}" key; run install.py {target} --update'
+
+
+def agy_commands(entry, event):
+    """[(matcher or None, timeout seconds, command)] of one event of a "tagteam" entry, skipping what is malformed (see
+    agy_format_problems). SessionStart and PreInvocation list their hooks directly; PreToolUse groups them with a matcher."""
+    items = entry.get(event) if isinstance(entry, dict) else None
+    out = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        for h in item["hooks"] if isinstance(item.get("hooks"), list) else [item]:
+            if isinstance(h, dict) and isinstance(h.get("command"), str):
+                t = h.get("timeout")
+                ok = isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0
+                out.append((item.get("matcher"), t if ok else HOOK_TIMEOUT_DEFAULT, h["command"]))
+    return out
+
+
+def agy_format_problems(entry):
+    """What in a "tagteam" entry neither agy nor this checker can read: a non-object entry, an event that is not a list
+    (PreToolUse must be there), a group without a hooks list, a matcher that is not a string, a hook that is not an
+    object, has a type other than "command", no command string, or a timeout that is not a positive number."""
+    if not isinstance(entry, dict):
+        return [f'"{AGY_KEY}" is not an object']
+    out = []
+
+    def hook(h, where):
+        t = h.get("timeout") if isinstance(h, dict) else None
+        if not isinstance(h, dict):
+            out.append(f"{where}: a hook is not an object")
+        elif h.get("type") != "command":
+            out.append(f"{where}: hook type is {h.get('type')!r}, not 'command'")
+        elif not isinstance(h.get("command"), str) or not h["command"].strip() or "\0" in h["command"]:
+            out.append(f"{where}: a hook has no usable command string (empty, not a string, or with a NUL)")
+        elif "timeout" in h and not (isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0):
+            out.append(f"{where}: timeout {t!r} is not a positive number")
+    for event, grouped in (("SessionStart", False), ("PreInvocation", False), ("PreToolUse", True)):
+        items = entry.get(event)
+        if items is None:
+            if grouped:
+                out.append(f"{event} is missing")
+        elif not isinstance(items, list):
+            out.append(f"{event} is not a list")
+        else:
+            for item in items:
+                if not grouped:
+                    hook(item, event)
+                elif not isinstance(item, dict) or not isinstance(item.get("hooks"), list):
+                    out.append(f"{event}: a group is not an object with a hooks list")
+                else:
+                    if item.get("matcher") is not None and not isinstance(item["matcher"], str):
+                        out.append(f"{event}: matcher {item['matcher']!r} is not a string")
+                    for h in item["hooks"]:
+                        hook(h, event)
+    return out
+
+
+def agy_static_problems(target, source):
+    """(errors, warnings) for host agy that need no hook run: the file, its "tagteam" entry against the template, the
+    interpreter and the guard it names, and git (tracked is an error, not ignored a warning)."""
+    errors, warnings = [], []
+    blocker = agy_hooks_blocker(target)
+    entry, why = load_agy_hooks(target)
+    bad = agy_format_problems(entry) if why is None else []
+    if blocker:
+        errors.append(f"{blocker}; install.py does not write it")
+    elif why:
+        errors.append(why)
+    elif bad:
+        errors += [f"{AGY_HOOKS_REL}: {b}" for b in bad]
+    else:
+        expected = expected_agy_hooks(source, target)
+        if expected is not None and entry != expected:  # not ours any more: its commands are not looked at
+            errors.append(f'{AGY_HOOKS_REL}: "{AGY_KEY}" differs from the template (edited, or the checkout moved); '
+                          f"run install.py {target} --update")
+        else:
+            if expected is None:
+                warnings.append(f"{AGY_HOOKS_REL} drift: unverified (no template under {source})")
+            commands = [c for event in ("SessionStart", "PreInvocation", "PreToolUse") for _, _, c in agy_commands(entry, event)]
+            if not agy_commands(entry, "PreToolUse"):
+                errors.append(f"{AGY_HOOKS_REL} has no PreToolUse command: agy would run commands unchecked")
+            for name in dict.fromkeys(m.group(2) or m.group(1) for m in (re.match(r'\s*("([^"]+)"|\S+)', c) for c in commands) if m):
+                if not shutil.which(name):
+                    errors.append(f"{name} is not on PATH: the agy hooks call it (a PreToolUse hook that cannot start blocks "
+                                  "run_command and the delegation tools)")
+            for c in commands:
+                errors += [f"guard {p} is missing; run install.py {target} --update" for p in missing_guard_paths(target, {"command": c})]
+    if not blocker and git_says(target, "check-ignore", "-q", AGY_HOOKS_REL)[0] == 1:
+        warnings.append(f"{AGY_HOOKS_REL} is not git-ignored; run install.py {target} --update")
+    return list(dict.fromkeys(errors)), warnings
+
+
+def agy_runnable_hooks(target, source):
+    """(entry, why): the "tagteam" entry of .agents/hooks.json when its commands may be run by --check: nothing blocks
+    the file, it is well-formed and equal to the template's. Otherwise (None, the reason). What is run afterwards is this
+    entry as read here, never a second read of the file."""
+    blocker = agy_hooks_blocker(target)
+    if blocker:
+        return None, f"not run: {blocker}"
+    entry, why = load_agy_hooks(target)
+    if why:
+        return None, why
+    bad = agy_format_problems(entry)
+    if bad:
+        return None, f"not run: {bad[0]}"
+    expected = expected_agy_hooks(source, target)
+    if expected is None:
+        return None, f"not run: no template under {source} to compare the hook commands with"
+    if entry != expected:
+        return None, f'not run: "{AGY_KEY}" differs from the template'
+    return entry, None
+
+
+def kill_tree(proc):
+    """End a process and what it started: taskkill /T on Windows, the process group elsewhere (run_bounded starts one)."""
+    try:
+        if is_windows():
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=KILL_TIMEOUT)
+        else:
+            import signal
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+KILL_TIMEOUT = 5  # seconds taskkill may take (a tree that survives it is a known limit: no Job Object)
+PIPE_DRAIN_SECONDS = 2  # after a timeout kills the tree, how long the pipes may take to close
+
+
+def run_bounded(argv, input_text, env, timeout, cwd):
+    """subprocess.run(..., capture_output=True, text=True, timeout=timeout) whose timeout holds for the whole tree: a child
+    of the killed shell that keeps the pipes open would make plain run() wait for it (measured on Windows: 2 s for a 0.2 s
+    timeout). On a timeout the tree is killed, the pipes get PIPE_DRAIN_SECONDS, and TimeoutExpired is raised."""
+    kwargs = {} if is_windows() else {"start_new_session": True}
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                            cwd=cwd, **kwargs)
+    try:
+        out, err = proc.communicate(input_text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        try:
+            proc.communicate(timeout=PIPE_DRAIN_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass  # something outside the tree still holds a pipe; its reader threads are daemons, let them go
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
+def agy_run_hook(argv_or_text, payload, env, timeout, cwd):
+    """(exit code, stdout object or None, text) of one hook run; the object is the whole stdout read as one JSON value."""
+    p = run_bounded(argv_or_text, payload, env, timeout, cwd)
+    out = (p.stdout or "").strip()
+    try:
+        obj = json.loads(out)
+    except ValueError:
+        obj = None
+    return p.returncode, obj if isinstance(obj, dict) else None, f"exit {p.returncode}, stdout {out[:80]!r}, stderr {(p.stderr or '').strip()[:80]!r}"
+
+
+def agy_payload(event, cid, cwd, prompt="hello", tool=None, **args):
+    p = {"hookEventName": event, "conversationId": cid, "cwd": cwd, "lastUserInput": prompt, "modelName": "gemini-3.8-flash-low"}
+    if tool:
+        p["toolCall"] = {"name": tool, "args": args}
+    return p
+
+
+def agy_verdict(obj):
+    """'ask' / 'deny' of a PreToolUse answer, else None."""
+    return obj.get("decision") if obj and obj.get("decision") in ("ask", "deny") else None
+
+
+def handler_agy(target):
+    """(failures, unverified reason): fake agy payloads through the installed guard, and what each must answer (design 4.2).
+    Every answer is one JSON object and exit 0; the state folder is a temporary one, no real record is made."""
+    guard = target / GUARD_REL
+    if not guard.is_file():
+        return [], "role_guard.py is missing"
+    fails = []
+    with tempfile.TemporaryDirectory() as tmp:
+        proj, state = os.path.join(tmp, "proj"), os.path.join(tmp, "state")
+        os.makedirs(proj)
+        env = {k: v for k, v in os.environ.items() if k != "HARNESS_DELEGATE_RUN"}
+        env.update(TAGTEAM_STATE_DIR=state, PYTHONDONTWRITEBYTECODE="1")  # the guard imports state.py; leave no __pycache__
+
+        def case(name, event, payload, want, worker=False, raw=None):
+            """want: 'ask', 'deny', {} (an empty object) or 'object' (any object)."""
+            try:
+                code, obj, text = agy_run_hook([sys.executable, str(guard), event, "--host", "agy"],
+                                               raw if raw is not None else json.dumps(payload),
+                                               dict(env, HARNESS_DELEGATE_RUN="1") if worker else env, 30, proj)
+            except Exception as exc:  # noqa: BLE001
+                fails.append(f"agy '{name}': {type(exc).__name__}: {exc}")
+                return
+            good = code == 0 and obj is not None and (agy_verdict(obj) == want if want in ("ask", "deny")
+                                                      else obj == {} if want == {} else True)
+            if not good:
+                fails.append(f"agy '{name}': expected {want if want != {} else 'an empty object'} as one JSON object with exit 0, got {text}")
+
+        commit = dict(tool="run_command", CommandLine="git commit -m x")
+        marked = "HARNESS ROLE: DELEGATE\nwork"
+        case("worker git commit", "PreToolUse", agy_payload("PreToolUse", "smoke-w", proj, marked, **commit), "deny", worker=True)
+        case("worker git status", "PreToolUse",
+             agy_payload("PreToolUse", "smoke-w", proj, marked, tool="run_command", CommandLine="git status"), "ask", worker=True)
+        case("worker invoke_subagent", "PreToolUse",
+             agy_payload("PreToolUse", "smoke-w", proj, marked, tool="invoke_subagent", Prompt="p"), "deny", worker=True)
+        case("orchestrator first model call", "PreInvocation", agy_payload("PreInvocation", "smoke-o", proj, "hello"), {})
+        case("orchestrator invoke_subagent", "PreToolUse",
+             agy_payload("PreToolUse", "smoke-o", proj, "hello", tool="invoke_subagent", Prompt="p"), "ask")
+        case("broken payload", "PreToolUse", None, "ask", raw="this is not json")
+        case("SessionStart", "SessionStart", agy_payload("SessionStart", "smoke-s", proj), "object")
+        case("PreInvocation without user input", "PreInvocation", agy_payload("PreInvocation", "smoke-e", proj, ""), {})
+        try:
+            rec = json.loads(Path(state, "sessions", "smoke-e.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rec = None
+        if not (isinstance(rec, dict) and rec.get("role") == "worker" and rec.get("host") == "agy"):
+            fails.append("agy 'PreInvocation without user input': no worker record with host agy was written")
+    return fails, None
+
+
+def hook_command_agy(target, entry):
+    """(failures, unverified reason): the PreToolUse commands of the validated "tagteam" entry (agy_runnable_hooks) run as
+    written, the way agy runs them (cmd /c on Windows, sh -c elsewhere, in .agents), within each hook's own timeout: a
+    worker's git commit must be denied."""
+    chosen = [h for h in agy_commands(entry, "PreToolUse") if matcher_hits(h[0], "run_command")]
+    if not chosen:
+        return [f"agy hook command 'PreToolUse': no tagteam hook of {AGY_HOOKS_REL} selects run_command, so agy would not call "
+                "the guard for shell commands"], None
+    shell = None if is_windows() else (shutil.which("sh") or "/bin/sh")
+    cwd = target / ".agents"
+    fails = []
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {k: v for k, v in os.environ.items() if k != "HARNESS_DELEGATE_RUN"}
+        env.update(TAGTEAM_STATE_DIR=os.path.join(tmp, "state"), PYTHONDONTWRITEBYTECODE="1", HARNESS_DELEGATE_RUN="1")
+        for _, timeout, command in chosen:
+            # one string on Windows: a list would be quoted for CreateProcess and mangle the quotes cmd /c must see
+            argv = "cmd /c " + command if is_windows() else [shell, "-c", command]
+            for name, line, want in (("worker git commit", "git commit -m x", "deny"), ("worker git status", "git status", "ask")):
+                payload = json.dumps(agy_payload("PreToolUse", "hook-smoke", str(target), "HARNESS ROLE: DELEGATE\nwork",
+                                                 tool="run_command", CommandLine=line))
+                try:
+                    code, obj, text = agy_run_hook(argv, payload, env, timeout, str(cwd) if cwd.is_dir() else str(target))
+                except subprocess.TimeoutExpired:
+                    fails.append(f"agy hook command '{name}': no answer within the hook's timeout of {timeout}s (agy would block the call)")
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    fails.append(f"agy hook command '{name}': {type(exc).__name__}: {exc}")
+                    continue
+                if code != 0 or agy_verdict(obj) != want:
+                    fails.append(f"agy hook command '{name}': expected {want} as one JSON object with exit 0, got {text}")
+    return fails, None
 
 
 def handler_codex(target, source):
@@ -867,23 +1311,20 @@ def handler_codex(target, source):
                              f"stdout {out[:80]!r}")
 
         patch = "*** Begin Patch\n*** Update File: AGENTS.md\n@@\n-a\n+b\n*** End Patch"
-        try:
-            case("spawn_default_with_args", True, "worker spawn", agent_id="smoke-agent")
-            case("spawn_default_with_args", True, "orchestrator default spawn without model and effort",
-                 drop=("model", "reasoning_effort"))
-            case("spawn_custom_with_args", True, "custom definition spawn with model and effort")
-            case("subagent_shell", True, "subagent git commit")
-            case("apply_patch", True, "worker apply_patch on AGENTS.md", agent_id="smoke-agent", tool_input={"command": patch})
-            case("root_shell", False, "git status", tool_input={"command": "git status"})
-            case("spawn_custom", False, "orchestrator custom spawn without arguments")
-        except KeyError as exc:
-            return [], f"payload fixture lacks {exc}"
+        case("spawn_default_with_args", True, "worker spawn", agent_id="smoke-agent")
+        case("spawn_default_with_args", True, "orchestrator default spawn without model and effort",
+             drop=("model", "reasoning_effort"))
+        case("spawn_custom_with_args", True, "custom definition spawn with model and effort")
+        case("subagent_shell", True, "subagent git commit")
+        case("apply_patch", True, "worker apply_patch on AGENTS.md", agent_id="smoke-agent", tool_input={"command": patch})
+        case("root_shell", False, "git status", tool_input={"command": "git status"})
+        case("spawn_custom", False, "orchestrator custom spawn without arguments")
     return fails, None
 
 
 def cli_argv(host):
     """The host's CLI as an argv list: TAGTEAM_CLI_<VENDOR> (a JSON list, as run.py reads it) or the PATH entry."""
-    key, exe = ("CLAUDE", "claude") if host == "claude" else ("OPENAI", "codex")
+    key, exe = {"claude": ("CLAUDE", "claude"), "codex": ("OPENAI", "codex"), "agy": ("GOOGLE", "agy")}[host]
     override = os.environ.get("TAGTEAM_CLI_" + key)
     if override:
         try:
@@ -909,32 +1350,78 @@ def codex_thread_id(stdout):
     return None
 
 
+def agy_live_model(target):
+    """(--model value, --effort value) for the agy live check: the first default of the C grade for google in the installed
+    models.json, written the way run.py writes the model argument (gemini-3.8-flash-low). None when it cannot be told."""
+    try:
+        cfg = json.loads((target / ".claude/tagteam/models.json").read_text(encoding="utf-8"))
+        model, _, effort = cfg["defaults"]["google"]["C"][0].partition(":")
+        return cfg["vendors"]["google"].get("model_arg", "{model}").format(model=model, effort=effort), effort
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return None
+
+
+def agy_conversation_id(stdout):
+    """The conversation id in agy's JSON output, if it prints one (not known whether it does: the key is guessed)."""
+    try:
+        data = json.loads(stdout or "")
+    except ValueError:
+        return None
+    for key in ("conversationId", "conversation_id", "cid"):
+        if isinstance(data, dict) and isinstance(data.get(key), str) and data[key].strip():
+            return data[key].strip()
+    return None
+
+
+def fresh_records(sessions, host, started, before=()):
+    """[(file name, record)] of the role records of `host` written after `started`; files in `before` (the listing taken
+    before the CLI was launched) never count, however recent their timestamp."""
+    out = []
+    for f in sorted(sessions.glob("*.json")) if sessions.is_dir() else []:
+        if f.name in before:
+            continue
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        ts = rec.get("ts") if isinstance(rec, dict) else None
+        if isinstance(rec, dict) and rec.get("host") == host and isinstance(ts, (int, float)) and started - 2 <= ts <= time.time() + 2:
+            out.append((f.name, rec))
+    return out
+
+
 def live_check(target, host):
     """('ok'|'FAILED'|'unverified', text): run the real CLI once, as a marked worker session, and require that it
     succeeded and that the role record of THAT session exists (a worker, this host, written after the start).
-    The session is named by the id we passed (claude --session-id) or the one codex exec --json reports in its
-    thread.started event; without an id the result is unverified, never ok."""
-    if host == "agy":
-        return "unverified", "adapter not installed (planned for a later milestone)"
+    The session is named by the id we passed (claude --session-id), the one codex exec --json reports in its
+    thread.started event, or the one agy prints (unknown whether it does: then the record must be the only new agy
+    one); without that the result is unverified, never ok."""
     base = cli_argv(host)
     if not base:
         return "unverified", f"the {host} CLI was not found"
-    mod = load_installed_state(target)
-    try:
-        state = Path(mod.state_dir(str(target))) if mod else None
-    except Exception:  # noqa: BLE001
-        state = None
+    state = installed_state_dir(target)
     if state is None:
         return "unverified", "state folder not computed"
     sessions = state / "sessions"
     sid = str(uuid.uuid4())
     prompt = "HARNESS ROLE: DELEGATE\n" + LIVE_PROMPT  # the marker makes the record say worker, unlike an ordinary session
-    argv = base + (["-p", prompt, "--session-id", sid] if host == "claude"
-                   else ["exec", "--json", "-s", "read-only", "--skip-git-repo-check", prompt])
+    if host == "claude":
+        argv = base + ["-p", prompt, "--session-id", sid]
+    elif host == "codex":
+        argv = base + ["exec", "--json", "-s", "read-only", "--skip-git-repo-check", prompt]
+    else:  # accept-edits, not plan: plan mode puts "/plan " before the prompt; no allow rules: nothing is run
+        model = agy_live_model(target)
+        if not model:
+            return "unverified", "no google C-grade default model in the installed models.json"
+        argv = base + ["-p", prompt, "--model", model[0], "--effort", model[1], "--mode", "accept-edits",
+                       "--settings", '{"permissions":{"allow":[]}}', "--output-format", "json"]
     env = {k: v for k, v in os.environ.items() if k != "HARNESS_DELEGATE_RUN"}
     if host != "claude":
-        env.pop("CLAUDECODE", None)
-        env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+            env.pop(key, None)
+    if host == "agy":
+        env.pop("ANTIGRAVITY_CONVERSATION_ID", None)  # when this check itself runs inside agy
+    before = {f.name for f in sessions.glob("*.json")} if sessions.is_dir() else set()
     started = time.time()
     try:
         p = subprocess.run(argv, cwd=str(target), stdin=subprocess.DEVNULL, capture_output=True, text=True,
@@ -943,23 +1430,28 @@ def live_check(target, host):
         return "FAILED", f"could not run {host}: {exc}"
     tail = ((p.stderr or p.stdout or "").strip().splitlines() or [""])[-1][:160]
     if p.returncode != 0:
+        if host == "agy" and re.search(r"model.*(not (available|found|supported)|unavailable|unknown|access)", p.stdout + p.stderr, re.I):
+            return "unverified", f"this account cannot use {model[0]}. Last output: {tail}"
         return "FAILED", f"{host} exited {p.returncode}. Last output: {tail}"
-    if host != "claude":
+    if host == "codex":
         sid = codex_thread_id(p.stdout)
         if not sid:
             return "unverified", ("the session id was not found in the codex exec --json output (thread.started event), "
                                   "so no role record can be tied to this run")
-    name = re.sub(r"[^A-Za-z0-9_.-]", "_", sid) + ".json"  # role_guard names the record after the session id
-    try:
-        rec = json.loads((sessions / name).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        rec = None
-    ts = rec.get("ts") if isinstance(rec, dict) else None
-    if isinstance(rec, dict) and rec.get("role") == "worker" and rec.get("host") == host \
-            and isinstance(ts, (int, float)) and started - 2 <= ts <= time.time() + 2:
+    fresh = fresh_records(sessions, host, started, before)
+    if host == "agy":
+        sid = agy_conversation_id(p.stdout)
+        if not sid:
+            if len(fresh) > 1:
+                return "unverified", f"agy printed no conversation id and {len(fresh)} new agy records appeared in {sessions}"
+            if len(fresh) == 1 and fresh[0][1].get("role") == "worker":
+                return "ok", f"role record {fresh[0][0]} (the only new agy record; agy printed no conversation id) in {sessions}"
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", sid or "") + ".json"  # role_guard names the record after the session id
+    if sid and any(n == name and r.get("role") == "worker" for n, r in fresh):
         return "ok", f"role record {name} written in {sessions}"
-    hint = "the tagteam hooks did not run; trust them in an interactive codex session (install.py --repair-hooks)" \
-        if host == "codex" else "the tagteam hooks did not run"
+    hint = {"codex": "the tagteam hooks did not run; trust them in an interactive codex session (install.py --repair-hooks)",
+            "agy": "the tagteam hooks did not run, or the role was not recorded as a worker (check .agents/hooks.json)"
+            }.get(host, "the tagteam hooks did not run")
     return "FAILED", f"{host} succeeded but no valid role record of this run appeared in {sessions}: {hint}. Last output: {tail}"
 
 
@@ -977,31 +1469,32 @@ def check(target, source=None, host=None, live=False):
         print(f"  ERROR    {e}")
     print("static: " + ("FAILED" if errors else "ok"))
     failed = bool(errors)
+
+    def show(label, fails, why=None):
+        nonlocal failed
+        for f in fails:
+            print(f"  ERROR    {f}")
+        failed |= bool(fails)
+        print(f"{label}: " + (f"unverified ({why})" if why else "FAILED" if fails else "ok"))
+
+    agy_entry, agy_why = None, None
+    if shown == "agy":
+        agy_entry, agy_why = (None, "skipped: static checks failed") if errors else agy_runnable_hooks(target, source)
     # hook handler: fake payloads of the host's own format through the installed role_guard
     for name in CHECK_HOSTS:
         if name != shown:
             print(f"handler ({name}): unverified (run with --host {name})")
-            continue
-        if name == "agy":
-            print("handler (agy): unverified (adapter not installed)")
         elif name == "claude":
-            fails = smoke_test(target)
-            for f in fails:
-                print(f"  ERROR    {f}")
-            failed |= bool(fails)
-            print("handler (claude): " + ("FAILED" if fails else "ok"))
-            cmd_fails, why = hook_command_test(target)
-            for f in cmd_fails:
-                print(f"  ERROR    {f}")
-            failed |= bool(cmd_fails)
-            print("hook commands (claude): " + (f"unverified ({why})" if why else "FAILED" if cmd_fails else "ok"))
+            show("handler (claude)", smoke_test(target))
+            show("hook commands (claude)", *hook_command_test(target))
+        elif name == "agy":
+            show("handler (agy)", *handler_agy(target))
+            show("hook commands (agy)", *(hook_command_agy(target, agy_entry) if agy_entry else ([], agy_why)))
         else:
-            fails, why = handler_codex(target, source)
-            for f in fails:
-                print(f"  ERROR    {f}")
-            failed |= bool(fails)
-            print("handler (codex): " + (f"unverified ({why})" if why else "FAILED" if fails else "ok"))
-    if live:
+            show("handler (codex)", *handler_codex(target, source))
+    if live and shown == "agy" and not agy_entry:  # agy would run whatever the file says
+        print(f"live (agy): unverified ({agy_why})")
+    elif live:
         status, text = live_check(target, shown)
         failed |= status == "FAILED"
         print(f"live ({shown}): {status} ({text})")
@@ -1015,7 +1508,7 @@ def check(target, source=None, host=None, live=False):
 # Opt-in. The task runs the installed collector (no LLM); it never edits models.json.
 
 COLLECTOR_REL = ".claude/tagteam/models_collect.py"
-PROPOSAL_FILES = ("model-update.json", "model-update.applied", "model-update.log")  # the log: macOS job output
+PROPOSAL_FILES = ("model-update.json", "model-update.applied", "model-update.log")  # the log: the job's output (macOS launchd, Linux cron)
 MARK_FALLBACK = "missed runs will not be re-run"
 
 
@@ -1234,9 +1727,16 @@ class Scheduler:
         return self.run(["launchctl", "bootstrap", self._gui(), str(self.plist)])[0]
 
     def _add_linux(self):
-        # cron's PATH is as short as launchd's; % is special in crontab
-        line = "0 9 * * 1 %s # %s" % (("PATH=%s %s" % (shlex.quote(self.job_path()), shlex.join(self.argv))).replace("%", "\\%"),
-                                      self.name)
+        # cron's PATH is as short as launchd's; % is special in crontab, also in the log path
+        job = "PATH=%s %s" % (shlex.quote(self.job_path()), shlex.join(self.argv))
+        log = self.log_path()
+        if log:  # without the redirect cron mails the output to a mailbox nobody reads, or drops it
+            job += " >> %s 2>&1" % shlex.quote(str(log))
+        line = "0 9 * * 1 %s # %s" % (job.replace("%", "\\%"), self.name)
+        if self.dry:
+            print("  crontab  " + line)
+        elif log:
+            log.parent.mkdir(parents=True, exist_ok=True)  # the shell opens the log before the job could create its folder
         return self.run(["crontab", "-"], "\n".join(self._cron()[1] + [line]) + "\n")[0]
 
     def unschedule(self):
