@@ -35,7 +35,7 @@ It does not ship a service, a UI or a message relay (scope and known gaps: [docs
 - At least one supported orchestrator CLI; the others are optional, and a vendor whose CLI is missing is skipped by the
   router. Which CLI can do what: [manual section 1](docs/manual.md#1-install-and-update).
 - Windows is the verified platform. macOS was measured once and two defects found there were fixed (re-check pending);
-  Linux is not yet verified; see [docs/platform/](docs/platform/windows.md).
+  Linux was measured once, on a server without a desktop app; see [docs/platform/](docs/platform/windows.md).
 
 ## Quick start
 
@@ -54,7 +54,9 @@ scope, push mode).
 Some CLIs need a step of their own before they can be the orchestrator: trusting the project's hooks (a CLI may skip new
 or changed hooks silently until you do) and, in a sandbox, permission for git writes and `run.py` launches
 ([manual section 3.3](docs/manual.md#33-codex-as-the-orchestrator),
-[hook trust and moved projects](docs/manual.md#12-moving-a-project)).
+[hook trust and moved projects](docs/manual.md#12-moving-a-project)). `agy` can orchestrate only in its interactive mode, with
+its built-in orchestrator model ([manual section 3.4](docs/manual.md#34-agy-as-the-orchestrator),
+[its hooks](docs/manual.md#13-agy-hooks)).
 `python3 install.py <project dir> --check --host <cli>` checks files and hook handling (not trust); the optional `--live`
 also runs the CLI once and uses tokens.
 
@@ -69,6 +71,7 @@ A weekly check of the vendors' model lists is optional: `python3 install.py <pro
 | `harness/claude/` | `.claude/` | hook settings, worker agent definitions |
 | `harness/skills/` | `.claude/skills/` | the `cycle` and `model-update` procedures |
 | `harness/codex/` | `.codex/` | hook settings, worker agent definitions |
+| `harness/agy/` | `.agents/hooks.json` | hook wiring for `agy`: only the `tagteam` key is written, per machine and git-ignored |
 | `harness/tagteam/` | `.claude/tagteam/` | `route.py`, `run.py`, `role_guard.py`, `models_collect.py`, `models.json` |
 | `harness/tagteam/tests/`, `tests/` | (not installed) | unit tests |
 | `docs/` | (not installed) | manual, design, platform notes |

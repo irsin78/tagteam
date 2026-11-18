@@ -5,7 +5,8 @@ harness does about each. "Seen" means observed on a real install; items marked "
 PowerShell or `cmd` unless a Git Bash line says otherwise.
 
 Sections: Python (store alias, hook shell, console encoding) · Git Bash (argument conversion) · Codex (sandbox, `.git`,
-temporary folders, messaging, hook trust) · agy · Credentials and push · Scheduled model check · Worktrees · Line endings.
+temporary folders, messaging, hook trust) · agy (modes, allow rules, hooks, waiting) · Credentials and push · Scheduled model
+check · Worktrees · Line endings.
 
 ## Python
 
@@ -46,15 +47,38 @@ temporary folders, messaging, hook trust) · agy · Credentials and push · Sche
 
 ## agy (Google)
 
-Measured with `agy` 1.5.9 in headless `-p` runs. How `run.py` uses these facts (modes, `--run-commands`, `--allow-command`,
-git check): [manual section 7](../manual.md#7-the-launcher).
+Measured with `agy` in headless `-p` runs. [host: agy 1.5.10 Windows, measured 2026-11-18, the exact-match rule with 1.5.9 /
+re-test after an agy update] How `run.py` uses these facts (modes, `--run-commands`, `--allow-command`, git check, worktree hooks):
+[manual section 7](../manual.md#7-the-launcher). Hooks, recovery and the orchestrator role: [manual sections
+1.3 and 3.4](../manual.md#13-agy-hooks), [hosts.md](../../harness/skills/cycle/hosts.md#agy-notes).
 
-- **Commands are denied by default**, and `--mode plan` never runs commands even when allowed. `--settings '<json>'`
-  applies for that run only; `run.py` passes `command(*)` or one `command(<cmd>)` per `--allow-command`, with `--mode
-  accept-edits`.
+- **Modes.** The default mode (`toolPermission` `request-review`) ran commands such as `git status` and `echo` without any
+  allow rule, but those commands could not write a file (`PermissionError`), whatever rule or trusted folder was added.
+  `--mode accept-edits` lets a command write, but only with a matching allow rule; with no rule a headless run auto-denies
+  it (`a tool required the "command" permission that headless mode cannot prompt for`). `--mode plan` never runs commands.
+  The file-writing tool worked in the default mode (with a `write_file(*)` rule in the user's settings). `--mode auto` was
+  not available to the test account.
+- **`--settings '<json>'` applies for that run only and replaces the allow list**: it does not merge with your own, so your
+  `write_file(*)` rule was gone during the run. `run.py` passes `command(*)` or one `command(<cmd>)` per `--allow-command`,
+  with `--mode accept-edits`.
 - **Exact match on Windows.** In PowerShell and `cmd` an allow rule must equal the command exactly; wildcards such as
   `command(git *)` do not match there. Only `command(*)` allows everything. Give `--allow-command` the full command as
-  the worker will write it.
+  the worker will write it. (Measured with 1.5.9; not measured again with 1.5.10.) The same limit means that in an
+  interactive session an "always allow" rule is unlikely to cover the next `git commit` with other arguments
+  (inference; unconfirmed).
+- **Hooks run through `cmd /c`**, from the folder `.agents`, so `.agents/hooks.json` holds `python` and an absolute, quoted
+  guard path. A path with `%` is refused by the installer because `cmd` expands it even inside quotes. Hooks under another name,
+  including a user's global ones, run next to the `tagteam` ones (a global hook and a project hook were seen running together).
+  One guard call (Python start plus the git calls for the state folder) took 0.29 to 0.51 seconds against the 10 second hook
+  timeout (Windows 11, `cmd /c`); another machine, with a slower disk or antivirus, is unmeasured. A hook that exits 1 blocks a tool call, while a failing SessionStart or PreInvocation hook does not
+  stop the session.
+- **Ten second wait.** `run_command` waits about ten seconds and then moves the command to the background; setting
+  `WaitMsBeforeAsync` to 60 seconds changed nothing. A child agy started through `run.py` took about 30 seconds to start its
+  session. `run.py --wait` therefore returns within nine seconds, and `--status` checks that the launcher is alive through
+  the Windows API, since `os.kill(pid, 0)` is not a liveness check on Windows.
+- **Models depend on the account.** On the Windows test account `agy models` listed Gemini 3.8 Flash (low, medium, high) and
+  three models of other companies, and no Argon, Hydrogen or Orchestrator model, although another account had them. Check
+  `agy models` before choosing the Orchestrator model as the orchestrator.
 
 ## Credentials and push
 

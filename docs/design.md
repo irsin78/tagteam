@@ -48,7 +48,8 @@ tagteam addresses these with a few mechanisms and keeps the rest as plain text a
    effort) pair, and the router picks within a grade.
 6. **No language model in the update path.** Collecting model lists is a script; a skill applies the changes.
 7. **Fail open on internal errors, fail closed on rules.** A bug in the hook must not lock a session; a rule violation
-   is denied.
+   is denied. On agy a PreToolUse hook that does not answer blocks the tool; the guard therefore answers `ask` (the
+   user's permissions decide) on internal errors, and only a guard that cannot start fails closed.
 8. **Rules that compensate for a model are labelled and removable** (section 8).
 
 ## 3. Scope
@@ -71,16 +72,16 @@ computes.
 |---|---|---|
 | Rules | `AGENTS.md.template` | roles, cycle, verification, terms; `## Project policy` is project-owned |
 | Claude import | `CLAUDE.md.template` | `@AGENTS.md` |
-| Hook | `harness/tagteam/role_guard.py` | role record and denials (Claude settings and Codex hooks both call it, section 5.2) |
+| Hook | `harness/tagteam/role_guard.py` | role record and denials (Claude settings, Codex hooks and agy hooks all call it, section 5.2) |
+| agy hook wiring | `harness/agy/hooks.json` | the `tagteam` key of `.agents/hooks.json`, written by the installer with this machine's paths |
 | State | `harness/tagteam/state.py` | locates, creates and migrates the state folder; every script asks it |
 | Router | `harness/tagteam/route.py` | model, effort and launch method per role |
 | Launcher | `harness/tagteam/run.py` | one worker through another vendor's CLI, model check, exhaustion detection, git check |
 | Collector | `harness/tagteam/models_collect.py` | model lists, benchmark values, proposal file |
-| Data | `harness/tagteam/models.json` | vendors, roles, models, grades, defaults |
+| Data | `harness/tagteam/models.json` | vendors, roles, models, grades, defaults, and an `orchestrators` block for a model that can only orchestrate (agy's built-in one): the router compares it as a stated model and effort, and the launcher never starts it |
 | Skills | `harness/skills/` | `cycle` (its `hosts.md` holds the per-host worker handling), `model-update`; installed to `.claude/skills` and `.agents/skills` |
 | Worker definitions | `harness/claude/agents`, `harness/codex/agents` | fixed model and effort, limited tools |
 | Installer | `install.py` | install, update, check, repair Codex hooks, schedule (not installed) |
-
 ## 5. Enforcement
 
 Every row is an accident check. The right-hand column is what it does not stop.
@@ -88,12 +89,12 @@ Every row is an accident check. The right-hand column is what it does not stop.
 | Rule | Mechanism | What it does not stop |
 |---|---|---|
 | New session needs `model` and `effort` | PreToolUse on `mcp__ccd_session__start_session`: deny unless both are set; a call carrying only a `proposal_id` is allowed | any session opened through another tool |
-| Workers do not commit or push | PreToolUse on shell tools: deny when the command matches `git commit` or `git push` in plain forms, including after `git -C <path>` or other leading options | aliases, variables, scripts, other tools |
-| Workers do not delegate | PreToolUse: deny `start_session`, `Agent`, `spawn_agent` for a worker | a worker using another route to a CLI |
+| Workers do not commit or push | PreToolUse on shell tools (agy: `run_command`): deny when the command matches `git commit` or `git push` in plain forms, including after `git -C <path>` or other leading options | aliases, variables, scripts, other tools |
+| Workers do not delegate | PreToolUse: deny `start_session`, `Agent`, `spawn_agent` and agy's `invoke_subagent` for a worker | a worker using another route to a CLI |
 | Workers do not edit the control plane | PreToolUse on the edit tools (Claude) and on `apply_patch` (Codex): deny a path in `.claude/`, `.codex/`, `.agents/`, `AGENTS.md`, `CLAUDE.md` | writes through a shell, scripts |
 | Codex agents get a model and effort | PreToolUse on `spawn_agent`: a custom agent must omit them (its definition fixes them), any other type needs both | an agent opened by another tool |
 | Launcher workers do not launch workers | `run.py` refuses when `HARNESS_DELEGATE_RUN=1` | a session worker (the hook covers it, not the launcher) |
-| Worker is identified | any line of the first prompt starting with `HARNESS ROLE: DELEGATE`, or `HARNESS_DELEGATE_RUN=1`, or running as a subagent; recorded once per session | tasks sent later by message cannot add the marker |
+| Worker is identified | any line of the first prompt starting with `HARNESS ROLE: DELEGATE`, or `HARNESS_DELEGATE_RUN=1`, or running as a subagent (agy: a first model call with no user input); recorded once per session | tasks sent later by message cannot add the marker |
 | Read-only reading | the `reader` definition lists no edit tools and tells the worker to run only read-only commands | its Bash tool is limited by instruction, not by the hook |
 | Launcher commits and read-only writes | `run.py` compares local HEAD, branch, status and file hashes before and after a run (manual section 7) | pushes, ignored files, paths outside the repository, stashes, other refs; changes by other writers in the same checkout are seen too and can be blamed on the run |
 
@@ -102,8 +103,9 @@ Notes:
 - The hook runs for every session of the project, workers included, because the checkout is shared. The first prompt
   decides the role, and the launcher adds the marker itself; the marker may sit on any line because the desktop app
   prepends a background paragraph to a worker's first prompt.
-- Internal errors in the hook exit 0 with a warning on stderr (fail open). A hook that cannot start at all, because
-  no Python is found, is a different failure and fails closed where the host allows it (section 5.2).
+- Internal errors in the hook exit 0 with a warning on stderr (fail open; on agy the answer is `ask`). A hook that
+  cannot start at all, because no Python is found, is a different failure and fails closed where the host allows it
+  (section 5.2).
 - Claude Code settings reference the hook through `${CLAUDE_PROJECT_DIR}`. Codex hook commands run in the session's
   working directory, so the installer writes the guard's absolute path into `.codex/hooks.json` once and then keeps the
   file. Codex ties its trust to that path and to the hook definition, so the file is not rewritten on update (what to do
@@ -118,32 +120,49 @@ in a real run. **after**: noticed after the run. **no**: not stopped.
 
 | Action | Claude Code | Codex CLI | agy |
 |---|---|---|---|
-| Worker runs `git commit` (plain forms) | **stops** (real worker, Windows 2.1.327); macOS 2.1.326: the old hook let it through without Python, re-check of the fix pending | **stops** (real worker, 0.169.0 Windows, after repair and trust) | no hook installed; for a `run.py` worker a commit or branch move is **after** (`git_head_moved`) |
-| Worker runs `git push` (plain forms) | *test* | *test* | no hook installed; **no**: the git check does not see a push |
-| Worker opens a session or a subagent | *test* | **stops** (`spawn_agent`) | no hook installed |
-| Worker edits the control plane | *test* (edit tools); shell writes **no** | **stops** (`apply_patch` on `AGENTS.md`); shell writes **no** | no hook installed |
-| Orchestrator opens a session without model and effort | *test* (`start_session`); other tools **no** | *test* (`spawn_agent`) | no hook installed |
+| Worker runs `git commit` (plain forms) | **stops** (real worker, Windows 2.1.327); macOS 2.1.326: the old hook let it through without Python, re-check of the fix pending; Linux 2.1.327: **stops**, and with no Python on PATH every tool call was blocked (measured 2026-11-18) | **stops** (real worker, 0.169.0 Windows, after repair and trust) | **stops** (real `run.py` worker, agy 1.5.11 Windows: main checkout, worktree root and a subfolder of it; also an orchestrator's subagent, recorded as a worker by its empty first input); a `run.py` worker's commit or branch move is also **after** (`git_head_moved`) |
+| Worker runs `git push` (plain forms) | *test* | *test* | **stops** (real `run.py` worker, agy 1.5.11 Windows, once; no remote, so nothing was sent) |
+| Worker opens a session or a subagent | *test* | **stops** (`spawn_agent`) | **stops** for `invoke_subagent` (real `run.py` worker, agy 1.5.11 Windows); *test* for `define_subagent`, `run_workflow` and `swarm` (names from agy's change log, not seen) |
+| Worker edits the control plane | *test* (edit tools); shell writes **no** | **stops** (`apply_patch` on `AGENTS.md`); shell writes **no** | **no**: agy's edit tools (`write_file`, `edit_file`) are not matched, and a headless worker's edit runs on `ask` without an allow rule; shell writes **no** |
+| Orchestrator opens a session without model and effort | *test* (`start_session`); other tools **no** | *test* (`spawn_agent`) | not applicable: agy has no session tool, and `invoke_subagent` takes only a model tier, so harness roles use `run.py` (a rule, not a hook) |
 | `run.py` worker starts another `run.py` worker | `run.py` refuses (test), on every host; a session worker calling `run.py` is not stopped (translation needs it) | same | same |
 | `run.py` read-only run changes the work tree | **after** (git check, `wrote_files`), on every host; a concurrent change by another writer can be blamed on the run, so use a quiet checkout or a separate worktree; ignored files and other refs are not seen | same | same |
 
-Codex hooks protect only after the user has trusted them in `/hooks` (a changed entry is skipped silently). agy has no
-adapter yet; routing keeps it a one-shot launcher worker.
+Codex hooks protect only after the user has trusted them in `/hooks` (a changed entry is skipped silently). agy hooks are
+machine-local (`.agents/hooks.json`); `run.py` copies them into a worktree it runs a google worker in. A PreToolUse hook
+failure blocks the tool on agy. The agy column stays at *test* until a real refusal of a `run.py` worker is measured.
 
 ### 5.2 One guard, several hosts
 
-- **Adapter per host.** `role_guard.py --host claude|codex` turns the host's payload into one internal form, applies
+- **Adapter per host.** `role_guard.py --host claude|codex|agy` turns the host's payload into one internal form, applies
   one set of rules, and answers in the host's format: exit 2 with the reason on stderr for Claude Code, a JSON
   `permissionDecision: deny` with exit 0 for Codex. Codex names its tools without a separator
   (`collaborationspawn_agent`), tags a subagent's calls with `agent_id` (so a subagent is always a worker), and sends no
   SessionStart or UserPromptSubmit for it, so a subagent cannot overwrite the root session's role. A SubagentStart hook
   records the model a subagent really runs on in `agents.jsonl`.
+- **The agy adapter.** agy wants exactly one JSON object on stdout for every event, and blocks a PreToolUse hook that
+  prints nothing, so every path ends in `{"decision":"ask"}` (no opinion: the user's permission rules decide),
+  `{"decision":"deny","reason":...}` or, for the other events, `{}`; the exit code is always 0 and an internal error also
+  answers `ask`. The role is not decided at SessionStart (an interactive session has no user input yet, and a resumed
+  conversation has no SessionStart): the first model call (PreInvocation, or the first PreToolUse of a conversation
+  without a record) decides it. A launcher variable or a marker line makes a worker; an empty input makes a worker
+  too, because an agy subagent starts that way; anything else is the orchestrator. If that first decision was lost
+  or the record is unreadable, the role is `unresolved` and protected calls get a worker's rules. The matcher is
+  narrow, `run_command` and the delegation tools, so a broken guard blocks only shell commands and delegation;
+  file edits stay possible and the hooks can be repaired. Leaving the edit tools out is a choice of the current
+  implementation, not a limit of agy: their names (`write_file`, `edit_file`) are known and `ask` lets them run in a
+  headless `accept-edits` run without a rule, so a control-plane check could be added; there is none yet. The wiring is `.agents/hooks.json`, machine-local
+  because the guard path is absolute; the installer owns only its `tagteam` key. The guard also appends a line to
+  `agy-models.jsonl` whenever a conversation's model changes, since the execution half of the Orchestrator model may
+  be a weaker model than the planning half (section 10).
 - **Interpreter chosen at run time, closed if absent.** Claude Code runs the hook commands in `settings.json` with `sh`
   (Git Bash on Windows, measured). The shell tries `python3`, then `python`, by running each (so a Windows Store stub or a
   broken shim is skipped), and `exec`s the guard so its exit code is not masked. With no Python, PreToolUse exits 2 with a
   message (tool calls stay blocked until Python is installed); SessionStart and UserPromptSubmit warn and continue, so the
   user can still repair it. A bare `python` that is missing exits 127, which Claude Code reads as "no objection": measured
   on a stock macOS, and why the commands look like this. Codex hooks name `python3` (`python` on Windows) directly and do
-  not run without it; `--check` says so.
+  not run without it; `--check` says so. The agy commands name one interpreter, chosen when the machine-local file is
+  written (`python` on Windows, else `python3` when it exists), and `--check --host agy` looks for it on PATH.
 - **One state folder, outside `.git`**, because Codex sandboxes cannot write there. **One table for host handling**:
   `AGENTS.md` and `cycle` name only host-neutral steps; how each host does them is in `hosts.md` beside the skill.
 
@@ -194,6 +213,11 @@ give another grade.
 - A candidate is usable only if the plan allows the vendor, the model is not hidden, and the vendor CLI lists it. The
   `available` lists are written by the collector; a vendor with no list is assumed to offer everything, which keeps an
   install usable before its first collection.
+- agy's built-in Orchestrator model has no effort and no measured grade. The router compares it as a stated pair
+  (`compare_as` in `orchestrators`, an assumption the notice repeats), and refuses an effort given with it.
+- On `--host agy` a review is raised to at least grade A: the execution half of that model may be weaker than the
+  planning half, and nothing else watches its comparison of reports with diffs. A pinned reviewer below A is
+  replaced, and a task preference is judged against the raised grade.
 
 ### 7.3 Exhaustion
 
@@ -225,8 +249,10 @@ collector carry the notice.
 |---|---|---|
 | No `run.py` adapter for CLIs of other companies (for example xAI) | such models cannot be launched as workers; the collector can still compare their benchmarks through `aa_creator` | open |
 | Claude `/model` output differs by plan | availability was verified on one plan only | open |
-| macOS: measured on one machine before the interpreter and launchd fixes; Linux: nothing run | the fixes are verified on Windows only | open; [platform/macos.md](platform/macos.md) lists what to re-check, [platform/linux.md](platform/linux.md) is a checklist |
-| agy has no hook adapter | on an agy host, and for agy workers, nothing is stopped; the git check after a `run.py` run (commits and branch moves, not pushes) is the only net | open |
+| macOS: measured on one machine before the interpreter and launchd fixes; Linux: measured once, on a server without the desktop app (Ubuntu 26.04, aarch64) | the interpreter fix is verified on Windows and Linux, the launchd fix on neither | open; [platform/macos.md](platform/macos.md) lists what to re-check, [platform/linux.md](platform/linux.md) lists what was observed |
+| agy: interactive behaviour unmeasured (first model call input, approval prompts, completion notices, hook loading in an untrusted folder, `ask` on `invoke_subagent`) | the role of an interactive orchestrator may be recorded wrongly (recovery: manual section 1.3), and commands may ask for approval more often than a mission expects | open; [hosts.md](../harness/skills/cycle/hosts.md#agy-notes) note 8 lists them, to be measured at the first real use |
+| agy: control-plane edits are not checked (the edit tools `write_file` and `edit_file` are not in the hook's matcher; on `ask` a headless worker's edit runs without an allow rule) | a `run.py` worker on agy can edit `.claude/`, `.codex/`, `.agents/` and the instruction files without a refusal | open; the review of the diff is the net |
+| agy: the execution half of the Orchestrator model may be a weaker model than the planning half (one Flash-class observation) | it does the orchestrator's checks and commits; a weak comparison of a report with the diff can pass a bad change | mitigated, not closed: a rule against direct fixes, the diff comparison repeated in the review, review grade at least A, `agy-models.jsonl` |
 | Git detection of commits is textual | a worker can evade the hook with indirection | accepted; review the diff |
 | The hook does not know the vendor of a reviewer | independence depends on the orchestrator using the router | accepted |
 | Codex: commits and `run.py` launches need the user's approval (6 prompts in one small mission); whether a finishing subagent starts an orchestrator turn is unconfirmed | more interaction than on Claude Code; the orchestrator waits for its subagents in the same turn | accepted; [hosts.md](../harness/skills/cycle/hosts.md#codex-notes) |

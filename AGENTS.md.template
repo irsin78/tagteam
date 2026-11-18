@@ -27,6 +27,9 @@ knows what a session may inherit. Left empty, a session inherits the orchestrato
 model; sessions opened that way ran on the wrong model or did not run at all. A hook
 rejects `start_session` without `model` and `effort`, and a Codex `spawn_agent`
 without them unless the agent type is a custom definition (which fixes both).
+On agy the router returns `run` for every role, and a review is at least grade A; with
+the built-in Orchestrator model pass `--orchestrator-model gemini-pro-orchestrator-g1-pro`
+and no effort (it takes none).
 
 Before opening, tell the user in one sentence which model/effort does what and
 why, plus the router's notice line. Ask the user first when the router returns
@@ -41,7 +44,8 @@ orchestrator); `null` means it lacked the orchestrator's model and effort.
   marked by any of: a line starting `HARNESS ROLE: DELEGATE` anywhere in the
   session's first prompt (a task sent later by message cannot add it), the
   environment variable `HARNESS_DELEGATE_RUN=1`, or running as a subagent (Codex:
-  the hook sees its `agent_id`). The role is recorded once per session and never changes. A worker never promotes
+  the hook sees its `agent_id`; agy: its first model call carries no user input). The
+  role is recorded once per session and never changes. A worker never promotes
   itself; if unsure, keep worker limits.
 
 Worker limits:
@@ -63,7 +67,9 @@ small fix itself when delegating costs more than doing (brief, wait and check
 exceed the fix). Examples: a typo, wording, one config value, finishing a worker's
 result, a few lines needing no design decision. Changes that need design, span
 files or change behavior go to a worker. Direct fixes follow the same
-verification and commit rules.
+verification and commit rules. With agy's Orchestrator model the execution side makes no
+direct fixes: every implementation unit goes through `run.py`, and it edits only mission
+records (`hosts.md`, agy notes).
 
 ## 3. The cycle
 

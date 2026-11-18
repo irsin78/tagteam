@@ -18,6 +18,12 @@ How to open, follow up, watch and stop workers on each host: [hosts.md](hosts.md
   (hosts.md, Codex notes 9). A commit refused after verification leaves the unit verified but not
   committed. A refused worker or review launch leaves the unit incomplete: every change needs its
   cross-vendor review.
+- agy: use it as the orchestrator only interactively, with the Orchestrator model (pass `--orchestrator-model
+  gemini-pro-orchestrator-g1-pro`, no effort; if the user chose a single model such as the Argon model instead, pass
+  that model and its effort: `--orchestrator-model gemini-4-argon --orchestrator-effort <effort>`). Its commands may each ask the user for approval, so say in one line
+  roughly how many to expect (route, `run.py` launches, tests, commits); what agy does with them in an interactive
+  session is unconfirmed (hosts.md, agy notes 8). The execution side of that model may be a weaker model: follow
+  hosts.md agy notes 2.
 - Record the host in status.md.
 
 ## 1. Mission folder
@@ -71,6 +77,10 @@ a worker's report, measured 2026-11-17 / re-test after a host update]
   This applies to sessions and subagents only. A `run` worker is one-shot: for a later unit,
   launch it again with a fresh brief that carries the context it needs. If the pool runs short, tell the user in one line which worker is needed and why, and
   continue independent work.
+- A `run` worker may outlast the shell's wait. agy hands a command to the background after about ten seconds and
+  delivers its output as a completion notice when it ends; wait for that notice, or call `run.py --wait <id>`
+  (within nine seconds; exit 9 means still running) and repeat. Never end the turn without the result.
+  [host: agy 1.5.10, measured 2026-11-18 / re-test after an agy update]
 
 ## 4. Brief format
 
@@ -95,6 +105,8 @@ latest message, not in edits to earlier context.
   before any recovery. Never reset blindly or revert unrelated work.
 - The model a worker really ran on: `run.py` prints `ACTUAL_MODEL`; a Codex subagent's is in
   `<state folder>/agents.jsonl`. If it differs from the route, redo the unit through `run`.
+- A `run` worker's report can be fetched again: the id is in the first line, `RUN <id> started`; `run.py --status
+  <id>` prints the stored report and the launcher's exit code.
 - Small finishing touches the orchestrator may do itself (AGENTS.md section 2 exception);
   anything larger goes back to the same worker with the delta only.
 - Update status.md.
@@ -109,6 +121,9 @@ latest message, not in edits to earlier context.
   a review covers so a failure can be traced.
 - Give the reviewer: the acceptance question, the changed hunks, needed interfaces and
   the spec; not whole trees or logs.
+- On an agy host the comparison of section 5 may have been made by a weaker model: add to every review brief,
+  Tier 0 batches included, "compare the worker's CHANGED with `git diff`". The router raises the review to at
+  least grade A on `--host agy`.
 - Keep the next unit running while a batch is verified, when they share no files.
 - Send the findings back to the worker that wrote the change (it already has the context);
   the orchestrator then checks the new diff. A blocker left after the last review of the
@@ -145,7 +160,9 @@ reversible details yourself and continue. Waiting is not consent.
    workers the host lists (hosts.md). In a turn resumed with `codex exec resume`, `list_agents`
    showed no earlier subagents; use the recorded `task_name`s. [host: codex-cli 0.169.0 exec resume,
    measured 2026-11-17 / re-test after a Codex update] Interactive Codex: unconfirmed.
-3. For each running or returned unit, check the actual files before trusting the record.
+3. For each running or returned unit, check the actual files before trusting the record. A `run` worker that
+   was still running: `run.py --status <id>` (the id is in status.md or in the folder names under `<state
+   folder>/runs/`).
 4. Correct status.md, then continue with the next unit. Compact or replace the
    orchestrator session only when its context is stale or full, not at every phase.
 

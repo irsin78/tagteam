@@ -11,9 +11,9 @@ are in the project you installed into. Commands are written `python3`; on Window
 
 | Section | Answers |
 |---|---|
-| [1. Install and update](#1-install-and-update) | What is overwritten? What else does the installer do? 1.1 is it working? 1.2 Codex hook trust, repair after a move |
+| [1. Install and update](#1-install-and-update) | What is overwritten? What else does the installer do? 1.1 is it working? 1.2 Codex hook trust, repair after a move; 1.3 agy hooks and their recovery |
 | [2. Where things live](#2-where-things-live) | Which file holds what; which are committed; the state folder |
-| [3. Running a mission](#3-running-a-mission) | How a mission runs; when sessions open and what to do if the host refuses (3.1); worker definitions (3.2); Codex as orchestrator (3.3) |
+| [3. Running a mission](#3-running-a-mission) | How a mission runs; when sessions open and what to do if the host refuses (3.1); worker definitions (3.2); Codex as orchestrator (3.3); agy as orchestrator (3.4) |
 | [4. Verification and review](#4-verification-and-review) | Who reviews; how a review is made read-only |
 | [5. The router](#5-the-router) | How a model is chosen (5.1); grades; pin or hide a model (5.2); mark a vendor exhausted (5.3) |
 | [6. The role hook](#6-the-role-hook) | What the hook does; fix a wrong session role |
@@ -36,7 +36,7 @@ Supported CLIs (each optional except that you need one orchestrator):
 |---|---|---|---|
 | Claude Code (`claude`) | yes | native subagent or session, or launcher | the session pool needs the session tool of the Claude Code desktop app; without it, subagents and the launcher still work |
 | Codex CLI (`codex`) | yes (section 3.3) | native subagent, or launcher | |
-| Antigravity CLI (`agy`, Gemini models) | not yet ([design gaps](design.md#10-known-gaps)) | launcher only | |
+| Antigravity CLI (`agy`, Gemini models) | yes, interactive only, with the built-in Orchestrator model (section 3.4) | launcher only | headless `agy -p` is a worker, not an orchestrator |
 
 **Warning: install and update overwrite harness-owned files, in a plain run as well.** Customizations in the files marked
 "overwritten" below are lost, and the `hooks` and `subagentPromptCacheTtl` keys of an existing `.claude/settings.json` are
@@ -55,10 +55,12 @@ installs from another copy of the repository.
 | `harness/tagteam/*` (not `tests/`) | `.claude/tagteam/` | overwritten, `models.json` included; files with `.local.` in the name are not copied (the example file only seeds `models.local.json`) |
 | `harness/codex/hooks.json` | `.codex/hooks.json` | written once, then kept |
 | `harness/codex/agents` | `.codex/agents` | overwritten |
+| `harness/agy/hooks.json` | `.agents/hooks.json` | only the `tagteam` key is written, with this machine's interpreter and the absolute guard path; rewritten on every install and `--update` (section 1.3) |
 | `AGENTS.md.template` | `AGENTS.md` | the part above the `## Project policy` heading is replaced; that heading and everything below it is kept (marker rule below) |
 | `CLAUDE.md.template` | `CLAUDE.md` | created, or the line `@AGENTS.md` is appended if missing |
 
-Also kept as they are: `models.local.json`, `bench.local.json`, the machine-local `.codex/hooks.json`.
+Also kept as they are: `models.local.json`, `bench.local.json`, the machine-local `.codex/hooks.json`, and every key of
+`.agents/hooks.json` except `tagteam`.
 
 **The `AGENTS.md` marker rule.** The installer looks for the exact text `## Project policy`. Present: that line and
 everything below it is kept, everything above is replaced by the template. Absent: the whole old file is kept, unchanged,
@@ -71,7 +73,7 @@ Other things the installer does:
 |---|---|
 | `models.local.json` | If missing: in a terminal it asks the plan for each vendor (`none`, `free`, `pro`, `max`; Enter keeps `pro`; `none` removes that vendor from routing). With `--yes` or without a terminal it copies `models.local.json.example`. Check and edit the result (section 5.2). |
 | Benchmark and available models | If `TAGTEAM_AA_API_KEY` is set and `bench.local.json` does not exist, runs `models_collect.py --write-bench` once (15 second timeout); if a vendor with a plan other than `none` has no `available` list, runs `--write-available` once. A failure prints a warning; the install continues. |
-| `.gitignore` | Adds `.claude/tagteam/models.local.json`, `.claude/tagteam/bench.local.json` and `.tagteam/`. |
+| `.gitignore` | Adds `.claude/tagteam/models.local.json`, `.claude/tagteam/bench.local.json`, `.tagteam/` and `.agents/hooks.json`. |
 | State folder | Moves records of an old `<git common dir>/tagteam/` into `.tagteam/` once (section 2). |
 | Weekly check | In a terminal, a plain install (not `--update`) asks whether to register it (section 8.2). |
 
@@ -93,10 +95,25 @@ a failure ends with `check: FAILED` (exit code 1), otherwise `check: ok`.
   Python, or does not answer in time, is a failure: the guard would be off without a word.
   Codex: `spawn_agent` by a worker, without model and effort, or with them for a custom agent; a subagent `git commit`; a
   worker `apply_patch` on `AGENTS.md` (all denied); `git status` and a plain custom-agent spawn (allowed).
+  agy: fake agy payloads through the installed guard, each of which must answer one JSON object with exit 0: a worker's
+  `git commit` and `invoke_subagent` (`deny`), a worker's `git status` and the orchestrator's `invoke_subagent` (`ask`), a
+  broken payload (`ask`), SessionStart (an object), the first model call of an orchestrator (`{}`), and the first model
+  call without user input (`{}`, and a worker record is written). It uses a temporary state folder.
+- **hook commands**: for agy, the PreToolUse commands of `.agents/hooks.json` run exactly as written, the way agy runs them
+  (`cmd /c` on Windows, `sh -c` elsewhere), from the folder `.agents`, within each hook's own timeout. A worker's `git commit`
+  must be denied and `git status` must get `ask`; a bad quote, a wrong guard path, a missing interpreter or an answer that
+  comes too late is a failure.
 - **live** (`--live`, uses tokens): runs the real CLI once as a marked worker and requires a valid role record. On Codex
-  run it only after trusting the hooks (section 1.2): untrusted hooks write no record.
+  run it only after trusting the hooks (section 1.2): untrusted hooks write no record. On agy it starts `agy -p` with the
+  first google C-grade default model of `models.json`, mode `accept-edits`, an empty allow list and no host variables, and
+  looks for a role record written after the start. If agy prints a conversation id the record named by it must say
+  `worker` with host `agy`; if not, exactly one new agy record, a worker, counts as ok, and several new records leave the
+  result `unverified`. An account that cannot use that model also gives `unverified`, not a failure.
 
-`--check` cannot see whether Codex trusts the hooks (section 1.2). For agy only the static part exists.
+`--check` cannot see whether Codex trusts the hooks (section 1.2). For agy the static part reads `.agents/hooks.json`: the
+interpreter on PATH, the `tagteam` key equal to the template's (after the paths are filled in), the guard files present,
+and the file git-ignored (not ignored: a warning; tracked: an error). `--check --host agy` prints `live (agy): unverified`
+unless `--live` is given.
 
 ### 1.2 Moving a project
 
@@ -113,12 +130,51 @@ reports drift (an entry missing, or a wrong path):
 
 It touches only the tagteam entries, writes `hooks.json.bak` first and prints the diff. Then trust the hooks again.
 
+### 1.3 agy hooks
+
+agy reads `.agents/hooks.json`; tagteam owns the key `tagteam` in it and nothing else. The file is machine-local: the
+guard path in it is absolute and the interpreter is the one of the machine that wrote it (`python` on Windows, else
+`python3` when it exists, else `python`). It is git-ignored. agy has no hook trust to confirm, so install and `--update`
+rewrite the key every time; after moving the project, run `--update` again.
+
+    python3 install.py <project dir> --update
+    python3 install.py <project dir> --check --host agy [--live]
+
+The install report shows `.agents/hooks.json` as `created`, `updated` or `kept`. The installer **writes nothing** and prints
+`warning: agy hooks not installed: <reason>; --check --host agy fails until this is fixed` (the rest of the install goes on)
+when:
+
+- git tracks `.agents/hooks.json`, or git cannot say whether it does (missing, timed out, unreadable index): the file would
+  end up in a commit with machine paths in it;
+- `.agents` or the file is a link or resolves elsewhere, or the file has several hard links;
+- the file is not a JSON object (a file of yours that tagteam does not understand);
+- the guard path holds a character the hook shell would still expand inside double quotes (`%` or `"` on Windows; `$`,
+  a backtick, `"` or `\` elsewhere): move the project;
+- the file cannot be replaced (for example another program holds it open).
+
+The `tagteam` entry has three events: SessionStart and PreInvocation (10 second timeout each) and PreToolUse, whose matcher
+is `run_command|invoke_subagent|define_subagent|run_workflow|swarm` (10 seconds). Edit tools are not matched.
+
+**Recovery.** On agy a PreToolUse hook that fails to start or answer blocks the tool, so a broken guard (no Python, a wrong
+guard path, a moved project) blocks `run_command` and the delegation tools, and nothing else; agy's edit tools still work.
+From inside agy, or a terminal:
+
+1. `python3 install.py <project dir> --update` rewrites the key; `--check --host agy` then says what is still wrong.
+2. To switch the hooks off, delete the `"tagteam"` key from `.agents/hooks.json` (your other keys stay), or add
+   `"enabled": false` inside the key (`/hooks` then lists them as disabled; measured on agy 1.5.11).
+3. A role recorded wrongly. The guard decides the role at the first model call of a conversation and never changes it.
+   If it refuses the orchestrator's `git commit` and the reason ends with `role recorded as worker: the first model call had
+   no user input`, or the role is `unresolved` (the first decision was lost or the record is unreadable), delete the record
+   `<state folder>/sessions/<conversation id>.json` (the newest file there with `"host": "agy"`; for `unresolved` the reason
+   names the path) and **start a new conversation**: in the same conversation the next model call is no longer the first
+   one, so the guard would record `unresolved` again. Deleting it is your decision, not the agent's. Whether an interactive conversation's first model call carries your input is unconfirmed.
+
 ## 2. Where things live
 
 | Location | Contents | Committed |
 |---|---|---|
 | `AGENTS.md` | rules; `## Project policy` is yours | yes |
-| `.claude/settings.json`, `.codex/hooks.json` | hook wiring | settings yes; `hooks.json` is machine-local by design |
+| `.claude/settings.json`, `.codex/hooks.json`, `.agents/hooks.json` | hook wiring | settings yes; both `hooks.json` files are machine-local by design (absolute guard path; git-ignored) |
 | `.claude/agents`, `.codex/agents` | worker definitions with fixed model and effort | yes |
 | `.claude/skills`, `.agents/skills` (`cycle`, `model-update`) | orchestrator procedures, the same copy for each host | yes |
 | `.claude/tagteam/models.json` | vendors, roles, models, grades, defaults | yes |
@@ -131,13 +187,17 @@ inside a submodule uses the superproject's work tree, and outside git it is `<pr
 because Codex sandboxes cannot write there. `TAGTEAM_STATE_DIR` overrides the location. `--update` moves the contents of an
 old `<git common dir>/tagteam/` here once (nothing is deleted: the old folder is renamed `tagteam.moved`); `--check` warns
 while one remains. If the folder cannot be written, `run.py`, `route.py --mark-exhausted`/`--clear-exhausted` and the collector stop with a
-message that names it (plain routing only reads it); the hook only warns and allows the action, so a role record that cannot be written leaves the guard off for that session.
+message that names it (plain routing only reads it); on Claude Code and Codex the hook only warns and allows the action, so a
+role record that cannot be written leaves the guard off for that session. On agy, if the state folder is not writable the guard
+cannot keep the first role, so it denies git commit/push and delegation even for the orchestrator; fix the folder (or set
+`TAGTEAM_STATE_DIR`), or remove `<state>/sessions/<cid>.json` to decide the role again.
 
 | Entry | Written by | Meaning |
 |---|---|---|
-| `sessions/<id>.json` | hook | role of each session (`worker` or `orchestrator`), recorded once |
+| `sessions/<id>.json` | hook | role of each session (`worker`, `orchestrator`, or on agy `unresolved`: the first decision was lost, so protected calls get a worker's rules), recorded once |
 | `agents.jsonl` | hook (Codex `SubagentStart`) | the model each Codex subagent really runs on |
-| `model-update.log` | the scheduled job (macOS) | output of the weekly collector run |
+| `agy-models.jsonl` | hook (agy PreInvocation) | one line `{ts, cid, model}` each time an agy conversation's model changes: which half of the Orchestrator model did what |
+| `model-update.log` | the scheduled job (macOS, Linux) | output of the weekly collector run |
 | `exhausted.json` | `run.py`, `route.py` | vendors temporarily unusable, with `until` |
 | `runs/<id>/` | `run.py` | one launcher run (section 7) |
 | `model-update.json` | `models_collect.py` | pending proposal (section 8) |
@@ -204,6 +264,34 @@ Details per operation: [hosts.md](../harness/skills/cycle/hosts.md). What to do 
 5. On Windows, `windows.sandbox = "elevated"` breaks `codex exec` and temporary folders may be denied inside the sandbox
    (`--check` and the tests then need escalation): [platform/windows.md](platform/windows.md#codex).
 
+### 3.4 agy as the orchestrator
+
+Details per operation and the measured limits: [hosts.md](../harness/skills/cycle/hosts.md#agy-notes). What to do as the user:
+
+1. Install (or `--update`), then run `python3 install.py <project dir> --check --host agy`. Optionally `--live` (one model
+   call). Recovery if the hooks misbehave: section 1.3.
+2. Start `agy` **interactively** in the project and pick the model "Orchestrator (Argon)". A headless `agy -p` cannot
+   orchestrate: it waits only three minutes for a background command. The orchestrator passes `--host agy
+   --orchestrator-model gemini-pro-orchestrator-g1-pro` to the router and no `--orchestrator-effort` (the model has none;
+   giving one is a usage error, exit 2). The router compares it as `gemini-4-argon` at `high`, an assumption, and says so in
+   the notice. Your account must list the model (`agy models`); it did not on one test account.
+3. Every worker is a `run.py` run (the router returns `run` for every role on agy), started by the orchestrator's shell
+   command. Which worker vendor does what is the router's decision as on any host. Reviews are at least grade A.
+4. Expect approval prompts: the hook answers `ask` for shell commands that are neither refused nor covered by an allow rule, so
+   agy's own permission rules decide. Whether an interactive agy then asks you for every command, and whether "always
+   allow" also covers the same command with other arguments, is unconfirmed; on Windows an allow rule has to match the
+   command exactly ([platform/windows.md](platform/windows.md#agy-google)). The orchestrator tells you at the start of a
+   mission roughly how many to expect.
+5. The Orchestrator model hands its plan to an execution model that, in the one observation, was a Flash-class model. The
+   harness mitigates it with a rule (the execution side edits only mission records and launches every implementation unit
+   through `run.py`), a review that repeats the comparison of the worker's report with `git diff`, the review grade floor A,
+   and `<state folder>/agy-models.jsonl`, which shows the model of each conversation. If you need more, pick a single model
+   such as the Argon model instead of the Orchestrator model (an alternative, not the default; it has its own weekly limit).
+   The orchestrator then gives the router that real model and effort (`--orchestrator-model gemini-4-argon
+   --orchestrator-effort <effort>`) instead of the Orchestrator id.
+6. The orchestrator and its google workers draw on the same agy account limits. A google worker that uses the limit up also
+   stops the orchestrator; `exhausted.json` only sends later workers to another vendor.
+
 ## 4. Verification and review
 
 **Every change gets a review by another vendor; nothing skips it.** AGENTS.md section 4 sets how: Tier 0 units are
@@ -225,7 +313,8 @@ Run it before every new session or launcher run (AGENTS.md section 1).
         [--author-vendor VENDOR] [--grade S|A|B|C | --author-model ID --author-effort EFFORT]
         [--orchestrator-model ID] [--orchestrator-effort EFFORT] [--json]
 
-Always pass `--host`; a guess from the environment can be wrong. Without `--json` it prints one notice line, which the
+Always pass `--host`; a guess from the environment can be wrong (without it, `ANTIGRAVITY_CONVERSATION_ID` in the environment
+means `agy`, checked before `CLAUDECODE`, which an agy started from Claude inherits). Without `--json` it prints one notice line, which the
 orchestrator relays to you: `<role> -> <model> (<effort>, <vendor>, grade <g>) via session|subagent <name>|run.py, host=<h>.`
 `--task NAME` routes a preference you recorded in `models.local.json` (section 5.2) as its base role.
 
@@ -247,6 +336,16 @@ equal the chosen ones. `ask_user: true` means a design worker would outrank or c
 
 Exit codes: 0 chosen; 2 usage or configuration error; 3 no independent reviewer (`status` is `incomplete`); 4 no usable
 model.
+
+**agy host.** `--host agy` returns `launch.kind` `run` for every role. A review there is raised to at least grade A when the
+author's grade is lower (`agy_review_floor_A` in `reason`, and the notice says "review grade raised from C to A"), because the
+execution half of agy's Orchestrator model may be a weaker model; a pinned reviewer or task preference below A is replaced
+(`override_below_floor`). `--orchestrator-model gemini-pro-orchestrator-g1-pro` names a model of the `orchestrators` block of
+`models.json`: the router compares it as that entry's `compare_as` model and effort, appends `Orchestrator compared as
+gemini-4-argon high (assumed, not measured).` to the notice, and takes no `--orchestrator-effort` (exit 2). `run.py` refuses
+that id (`not registered`): it can orchestrate, not be launched. On Claude hosts a missing `--orchestrator-effort` falls back
+to `CLAUDE_EFFORT`; on other hosts it does not, since an agy started from Claude inherits that variable, and `ask_user` stays
+`null` when there is nothing to compare with.
 
 **Grades.** A grade (S, A, B, C) belongs to a model **at an effort**: a table `grades` per model in `models.json`. The
 floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are in
@@ -274,7 +373,7 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
 
 `reason` lists what happened: `default`, `substituted:<from>→<to>`, `plan_free_last:<vendor>`,
 `author_vendor_excluded:<vendor>`, `exhausted_skip:<vendor>`, `cli_missing:<vendor>`, `native_model_cap`, `effort_clamped`,
-`user_override`, `bench:local`, `bench:none`.
+`user_override`, `agy_review_floor_A`, `override_below_floor`, `bench:local`, `bench:none`.
 
 ### 5.2 Per-machine settings: `models.local.json`
 
@@ -291,7 +390,7 @@ the launch would go through `run.py` its vendor CLI must also be present; a nati
 check. Otherwise the router falls back to
 the normal choice and `reason` says why (`override_unusable`, `override_exhausted`, `override_same_vendor_as_author`,
 `cli_missing:<vendor>`). A `roles.<role>.effort` pin keeps limiting the candidates of that fallback. A pinned reviewer of
-another grade than the author's is allowed, with `override_grade_mismatch` in the notice.
+another grade than the author's is allowed, with `override_grade_mismatch` in the notice (on `--host agy` not below grade A).
 
 ### 5.3 Exhaustion
 
@@ -306,15 +405,22 @@ shows a usage-limit message, and clears the entry after a successful run.
 ## 6. The role hook
 
 The single hook is `.claude/tagteam/role_guard.py`, called as `role_guard.py <SessionStart|UserPromptSubmit|PreToolUse|
-SubagentStart> [--host claude|codex]` with the host's JSON payload on stdin. A Claude denial is exit code 2 with a one-line
-reason on stderr; a Codex denial is a JSON answer with exit 0 (Codex ignores exit 2). What it blocks, host by host, and
+SubagentStart|PreInvocation> [--host claude|codex|agy]` with the host's JSON payload on stdin. A Claude denial is exit code
+2 with a one-line reason on stderr; a Codex denial is a JSON answer with exit 0 (Codex ignores exit 2); an agy answer is always
+one JSON object with exit 0: `{"decision":"deny","reason":"tagteam: ..."}` for a refusal, `{"decision":"ask"}` when the
+guard has no objection (agy's permission rules then decide), `{}` for the other events. What it blocks, host by host, and
 what it cannot block: [design.md](design.md#5-enforcement).
 
 At session start it prints `TAGTEAM: role=<role> host=<host>`, and for an orchestrator one more line when a model-update
-proposal is waiting (section 8).
+proposal is waiting (section 8). On agy the role is not known at session start (`role=pending`): the first model call of the
+conversation decides it, and that first call is final. A line starting with `HARNESS ROLE: DELEGATE` makes a worker; so does an
+empty input (an agy subagent starts that way) and `HARNESS_DELEGATE_RUN=1`; anything else is the orchestrator. A leading
+slash command such as `/plan ` is ignored when looking for the marker, on every host. The role `unresolved` (agy only) means
+the first decision was lost or the record is unreadable; protected calls then get a worker's rules and the reason says so.
 
 If a session was recorded with the wrong role (for example an orchestrator whose first prompt quoted the marker line),
-delete `sessions/<id>.json` in the state folder and restart that session; otherwise the role is fixed.
+delete `sessions/<id>.json` in the state folder and restart that session; otherwise the role is fixed. On agy, delete the
+record and start a new conversation (section 1.3).
 
 ## 7. The launcher
 
@@ -323,8 +429,10 @@ Runs one worker through another vendor's CLI.
     python3 .claude/tagteam/run.py --vendor claude|openai|google --model ID --effort E
         --prompt-file PATH [--cwd DIR] [--timeout SECONDS] [--read-only] [--run-commands]
         [--allow-command "<exact command>" ...]
+    python3 .claude/tagteam/run.py --status ID
+    python3 .claude/tagteam/run.py --wait ID [--secs N]
 
-The router prints this command ready to fill in. Checks before the run (exit 2 on failure): the process is not itself a
+The router prints the first command ready to fill in; `--status` and `--wait` look a run up (below). Checks before the run (exit 2 on failure): the process is not itself a
 launcher worker (`HARNESS_DELEGATE_RUN=1`), the model is registered for the vendor, the effort is one of its `grades`, a
 Google model has a `label`, the CLI exists, the prompt file is readable. The prompt gets the marker line `HARNESS ROLE:
 DELEGATE` on top if its first line is not already that, and the child runs with `HARNESS_DELEGATE_RUN=1`. The default
@@ -341,8 +449,8 @@ security boundary** (mode table and git check below).
 | `openai` | `codex` | `exec -s read-only|workspace-write`, `-C <cwd>`; on Windows also `-c windows.sandbox=unelevated` |
 | `google` | `agy` | `-p`, `--mode plan` (read-only) or `accept-edits`, `--settings <json>`, `--log-file`; a very long prompt is passed as a file reference |
 
-**Commands in `agy` runs.** In headless mode `agy` denies every shell command unless it is allowed, and `--mode plan` never
-runs commands. A Google run always gets `--settings '{"permissions":{"allow":["command(*)"]}}'` (that run only). So
+**Commands in `agy` runs.** In headless `accept-edits` mode `agy` denies every shell command unless it is allowed (the default
+mode of 1.5.10 runs a command without a rule but cannot write), and `--mode plan` never runs commands. A Google run always gets `--settings '{"permissions":{"allow":["command(*)"]}}'` (that run only). So
 `--read-only` alone is mode `plan` (no tests, no `git diff`); `--read-only --run-commands` is `accept-edits` with the allow
 list (a reviewer that runs tests; read-only only by the git check); neither is an implementation run.
 `--run-commands` and `--allow-command "<exact command>"` are Google only (exit 2 for other vendors). `--allow-command` is
@@ -371,11 +479,40 @@ Results:
 in the Claude JSON, the `model:` line in the Codex stderr header, or the model label in the `agy` log. A model it cannot
 confirm counts as a mismatch. This exists because sessions opened without a model ran on the wrong one.
 
-**Output.** Records go to `runs/<id>/` in the state folder: `prompt.txt`, `stdout.txt`, `stderr.txt`, `cmd.json`, `last.txt`
-(the worker's final text), `result.json`, and `agy.log` for Google. The first line printed is `RUN <id> started
+**Environment of the child.** Besides `HARNESS_DELEGATE_RUN=1`, the child gets no variable that names another host:
+`CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` are removed unless the vendor is `claude`, and `ANTIGRAVITY_CONVERSATION_ID` unless
+it is `google`, so a tool run inside a worker does not take the host for another CLI.
+
+**Git worktrees and agy hooks.** When a `google` run starts in a linked git worktree of a checkout whose
+`.agents/hooks.json` has the `tagteam` key, the launcher writes that key into the worktree's `.agents/hooks.json` before the
+first git snapshot (other keys stay; the guard path is absolute, so the copy calls the main checkout's guard) and the report
+gets `HOOKS copied to <path>`. If git tracks that file there, or it is a link, or cannot be read or written, nothing is
+written and the report gets `WARNING: agy hooks not copied (...)`: the worker may then run without the guard. A run in the main
+checkout, or outside git, copies nothing and says nothing.
+
+**Output.** Records go to `runs/<id>/` in the state folder: `prompt.txt`, `started.json` (written before the CLI starts: the
+launcher's pid, the start time, vendor, model, effort and timeout), `stdout.txt`, `stderr.txt`, `cmd.json`, `last.txt` (the
+worker's final text), `result.json` (it holds `run_exit`, the launcher's own exit code), `report.txt` (the report below,
+written last, so a file that exists is complete), and `agy.log` for Google. The first line printed is `RUN <id> started
 run_dir=...`, so a running worker's logs can be found. The report is `RUN <id> vendor=... model=... effort=... status=...
-exit=... secs=...`, then `ACTUAL_MODEL: <model> (match)`, `EXHAUSTED:`, `ERROR:` or `WARNING:` lines where they apply, the
-`OUTPUT:` path of `last.txt`, and the first 4000 characters of the final text.
+exit=... secs=...`, then `ACTUAL_MODEL: <model> (match)`, `EXHAUSTED:`, `ERROR:` or `WARNING:` lines where they apply
+(`HOOKS copied to` or `WARNING: agy hooks not copied` among them), the `OUTPUT:` path of `last.txt`, and the first 4000
+characters of the final text.
+
+**Looking a run up.** The report goes to stdout only once, and a long command may leave the orchestrator's shell before it
+ends (agy hands a command to the background after about ten seconds), so the stored report can be fetched again. The id is
+the name after `RUN` in the first line, and the lookup works from any folder of the same repository, also in a later session:
+
+- `run.py --status ID` prints the stored report and exits with the launcher's original exit code. If there is no report and the
+  launcher process named in `started.json` is alive, it prints `RUN <id> running secs=<n> run_dir=<dir>` and exits **9**. If
+  there is no report and that process is gone, it prints `RUN <id> ended without a report` and exits 6.
+- `run.py --wait ID [--secs N]` does the same, but waits up to N seconds (default 8, at most 9) for the report, looking once
+  a second. The limit is below the ten seconds after which agy moves a command to the background, so a call returns inside
+  one wait; repeat it while it exits 9. [host: agy 1.5.10, measured 2026-11-18 / re-test after an agy update]
+- A bad or unknown id, or another option together with `--status`, exits 2. Whether the process is alive is asked of the
+  operating system (on Windows through the Windows API: `os.kill` is not a liveness check there). A pid that the system
+  reused for another program after the launcher died looks like a running worker until the run's timeout plus two minutes
+  have passed.
 
 | Exit | Status | Meaning |
 |---|---|---|
@@ -385,9 +522,10 @@ exit=... secs=...`, then `ACTUAL_MODEL: <model> (match)`, `EXHAUSTED:`, `ERROR:`
 | 3 | `exhausted` | vendor exhausted |
 | 4 | `model_mismatch` | model differs or cannot be confirmed |
 | 5 | `timeout` | timeout |
-| 6 | `no_output` | the CLI exited cleanly with an empty answer (the report names any tools the CLI denied in headless mode) |
+| 6 | `no_output` | the CLI exited cleanly with an empty answer (the report names any tools the CLI denied in headless mode); also `--status`/`--wait` on a run that ended without a report |
 | 7 | `git_head_moved` | git HEAD or branch moved during the run |
 | 8 | `wrote_files` | a read-only run changed the work tree |
+| 9 | (`running`) | `--status`/`--wait` only: the run has not reported yet |
 
 When several apply, 3 wins, then 7, 5, 4, 8, 1, 6.
 
@@ -432,7 +570,7 @@ days makes the start line warn that collection stopped; check the scheduled task
 
 Registers a weekly run (Monday 09:00) of `models_collect.py --project <project dir>` under the name `tagteam-models-<8 hex
 digits>` (Windows Task Scheduler), as a launchd agent `net.tagteam.<name>` (macOS) or a crontab line ending in `# <name>`
-(Linux). `--dry-run` prints what would be registered and starts nothing. `--unschedule` removes the task and deletes
+(Linux). `--dry-run` prints what would be registered and starts nothing (on Linux the crontab line, as `  crontab  <line>`). `--unschedule` removes the task and deletes
 `model-update.json`, `model-update.applied` and `model-update.log`. The scheduled run reads the user's environment, so set
 `TAGTEAM_AA_API_KEY` as a user-level variable if you want benchmark data (launchd does not pass it). Per-platform
 details: [platform/](platform/windows.md).
@@ -440,8 +578,9 @@ details: [platform/](platform/windows.md).
 On macOS and Linux a launchd or cron job gets only `/usr/bin:/bin:/usr/sbin:/sbin`, so the installer gives the job its own
 `PATH`: the folders of the CLIs, of the runtime a CLI script needs (for example `node`), of the Python that runs the
 collector, and those system folders. `--schedule` prints that PATH and runs each CLI's `--version` with it (a failure is a
-WARN; with `--dry-run` it only says what it would run). launchd also writes the job's output to `model-update.log` in the
-state folder.
+WARN; with `--dry-run` it only says what it would run). launchd and cron also write the job's output to `model-update.log`
+in the state folder (the crontab line ends in `>> <state folder>/model-update.log 2>&1`; the folder is made when the job is
+registered), so a failing run leaves a trace: without it cron mails the output, and a server without a mail system loses it.
 
 ## 9. When something goes wrong
 
@@ -449,7 +588,11 @@ state folder.
 |---|---|---|
 | `start_session needs an explicit model and effort` | session opened without both | take both from `route.py`; a stored proposal started by `proposal_id` alone is allowed |
 | `workers may not run git commit or git push` | worker tried to commit | the orchestrator commits; keep the worker's files and commit them yourself |
+| the same message on the **agy orchestrator**, ending `role recorded as worker: the first model call had no user input` or `role unresolved: ...` | the guard recorded the interactive conversation as a worker, or lost the first decision | section 1.3, item 3 (delete the conversation's record, start a new conversation); if it names the state folder, fix the folder first (section 2) |
 | `worker sessions may not open sessions` or `spawn subagents` | worker tried to delegate | do the split in the orchestrator |
+| agy: every `run_command` is blocked, with a message from the hook (or none) | the guard cannot start or answer (no Python, wrong guard path, moved project, timeout) | section 1.3: `install.py <project dir> --update`, `--check --host agy`; or delete the `"tagteam"` key |
+| `run.py --status`/`--wait` exits 9 | the run is still going | repeat `--wait`; read `runs/<id>/stderr.txt` if it never ends. `run.py` ends the worker itself when the `--timeout` given at launch has passed (default 1800 s); to stop it earlier, end the `run.py` process by hand and check that its CLI is gone |
+| `RUN <id> ended without a report` (exit 6) | the launcher died before it could report (killed, machine restarted) | read the files in `runs/<id>/`; check the work tree with `git status`; launch again with a fresh brief |
 | Router exit 3 or 4 | no vendor other than the author's can review at that grade (3), or no usable model (4) | start a review elsewhere or report it incomplete (3); check `plans`, `enabled`, `available`, `exhausted.json` (4) |
 | Notice says "Check orchestrator cap" | router was not told the orchestrator's model or effort | pass `--orchestrator-model` and `--orchestrator-effort` |
 | Launcher `model_mismatch` (4) | CLI used another model, or the model line was not found | read `runs/<id>/stderr.txt` and `cmd.json`; do not use the output as if it came from the requested model |
@@ -468,7 +611,8 @@ Claude Code. **`git checkout <commit> -- <path>` overwrites that path's working 
 
     git checkout <good commit> -- .claude/settings.json
 
-The same works for `.claude/tagteam/role_guard.py`; for `.codex/hooks.json` prefer `--repair-hooks`. If you cannot tell
+The same works for `.claude/tagteam/role_guard.py`; for `.codex/hooks.json` prefer `--repair-hooks`; for agy see section 1.3
+(`.agents/hooks.json` is git-ignored, so git cannot restore it). If you cannot tell
 which file is broken, `git checkout HEAD~1 -- .claude .codex AGENTS.md` restores them all (assuming the previous commit
 worked) and also reverts your own edits to `AGENTS.md` and the agent definitions. Then start a new session. The guard script
 itself fails open: an internal error prints a warning and allows the action.

@@ -1,43 +1,84 @@
 # Linux
 
-**Not yet verified.** Nothing in this harness has been run on Linux. This page is a checklist of what to confirm, derived
-from how the code behaves and from what [macOS](macos.md) showed. Once an item is confirmed, replace its "to verify" with
-the observed result.
+Measured once, on one machine: a server without the desktop app. Ubuntu 26.04.1 LTS (aarch64), Python 3.14.4, git 2.53.0,
+Claude Code 2.1.327, codex-cli 0.170.0, agy 1.5.10, 2026-11-18, in a fresh project (an empty git repository with one
+commit). The orchestrating session was Claude Code CLI; Claude workers ran on a small model with only the tools the check needed.
+"Observed" below means seen on that machine. What the run could not show is listed at the end as unconfirmed. Behaviour that
+belongs to one CLI version carries a `[host: ...]` tag, to be re-tested after an update. Compare [macOS](macos.md).
+
+## Python
+
+- Ubuntu 26.04 has `/usr/bin/python3` and a `/usr/bin/python` link to it (the `python-is-python3` state), so on the system PATH
+  `python` resolves too, which it does not on a stock macOS. The case of no Python at all was reproduced by cutting PATH down.
+- The login shell's PATH had `~/.local/bin`, where the three CLIs live. Under `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin` only
+  `python3` was found, and none of `claude`, `codex`, `agy`. No Python that exists only in the login shell was available to test.
 
 ## Install and hooks
 
-- [ ] To verify: `python3 install.py <project dir>` and then `--check` end with `check: ok`.
-- [ ] To verify: the Claude hook commands in `.claude/settings.json` run in `sh`, try `python3` and then `python`, and
-      work with only one of them present. Many distributions ship only `python3`; on a machine with neither, PreToolUse
-      must block and say so (`--check` reports `FAILED` under `hook commands`).
-- [ ] To verify: the Codex hook entries use `python3` (`command`) with the absolute guard path written by the installer.
-- [ ] To verify: a worker session is denied `git commit` and allowed `git status` through the real hook wiring.
-- [ ] To verify: a Python found only through your login shell's PATH (not `/usr/bin:/bin:/usr/sbin:/sbin`) is also found
-      when Claude Code starts from the desktop; `--check` warns about this case.
+- Observed: the test suites passed, `install.py <project dir>` and then `--check` ended with `check: ok` for `--host claude`,
+  `codex` and `agy`. That `agy` check was the static one from before the agy hook checks existed; the later parts (`handler`,
+  `hook commands`, `live`) were not run on Linux (unconfirmed).
+- Observed: the Claude hook commands in `.claude/settings.json` run in `sh` and choose the interpreter by running it.
+  With the normal PATH and with a PATH holding only `python3`, `git` and `sh`, a worker's `git commit` was refused (exit 2,
+  `workers may not run git commit or git push`). With **no Python** on PATH, PreToolUse exited 2 with `python3/python not
+  found on PATH; tool calls are blocked ...` and SessionStart exited 0 with `the role guard is off in this session`.
+  `--check` reports the missing interpreter as `FAILED` under `hook commands`. [host: Claude Code 2.1.327 Linux, measured
+  2026-11-18 / re-test after a Claude Code update]
+- Observed with a real Claude worker: `git status` ran, `git commit --allow-empty` was refused by the hook, and no commit was
+  made. With no Python on PATH every tool call, `git status` included, was blocked (fail closed), again with no commit. The
+  macOS defect where the old hook let the call through without Python did not occur. Claude Code prints the whole hook command
+  string in front of the refusal message, which only makes the worker's output longer. [host: Claude Code 2.1.327 Linux,
+  measured 2026-11-18 / re-test after a Claude Code update]
+- Observed, static only: `.codex/hooks.json` has the four events, each `python3 "<project>/.claude/tagteam/role_guard.py"
+  <Event> --host codex`, and `--check --host codex` is `ok`. `--live` for Codex needs the user's trust of the hooks, so it was
+  not part of the run (tried once without trust: `the tagteam hooks did not run; trust them in an interactive codex session`).
+- Observed: a Claude Code session exports `CLAUDECODE=1` and other `CLAUDE_*` variables to the CLIs it starts, so an agy or
+  Codex worker started from it can be taken for a Claude host. The router checks `ANTIGRAVITY_CONVERSATION_ID` first for that
+  reason, and `run.py` removes the foreign host variables from its children.
+- agy hook commands run through `sh -c` from the folder `.agents`; a failing PreToolUse hook blocks the tool. [host: agy 1.5.10
+  Linux, measured 2026-11-18 / re-test after an agy update] The rest of agy's behaviour is in
+  [hosts.md](../../harness/skills/cycle/hosts.md#agy-notes).
 
 ## Launcher
 
-- [ ] To verify: `run.py` for each installed vendor CLI reports `ACTUAL_MODEL ... (match)` with a short read-only prompt.
-- [ ] To verify: on timeout the whole process group is killed (`SIGKILL` to the group of a child started in a new
-      session): run with `--timeout 5` against a slow command and check that nothing survives.
-- [ ] To verify: Codex `-s read-only` works without the Windows-only `windows.sandbox` argument (also in a container).
+- Observed: `run.py` for the three vendors at once, read-only with a short prompt: the Claude model answered in 5 seconds,
+  the Codex model in 3, the Gemini model in 8 (`Gemini 3.8 Flash (Low) (match)`), each reporting `ACTUAL_MODEL ... (match)`.
+- Observed: on a timeout the whole process group is killed. A fake CLI that started a background `sleep` and then another one,
+  run with `--timeout 5`, reported `status=timeout exit=-1 secs=5`, and a second later no `sleep` process was left.
+- Observed: Codex runs with `-s read-only` and without the Windows-only `windows.sandbox` argument (it is absent from the
+  recorded command line).
 
 ## Scheduled model check
 
-- [ ] To verify: `python3 install.py <project dir> --schedule --dry-run` prints a crontab line
-      `0 9 * * 1 PATH=<job path> <command> # tagteam-models-<8 hex digits>` and the `--version` checks it would run.
-- [ ] To verify: after `--schedule`, `crontab -l` shows the line and keeps your other entries; `--unschedule` removes only
-      that line and deletes `model-update.json`, `model-update.applied` and `model-update.log`.
-- [ ] To verify: cron's minimal environment is covered by that `PATH=`: the CLIs (`claude`, `codex`, `agy`) start with it
-      (`--schedule` runs `--version` for each). On macOS the same problem was real (launchd). `TAGTEAM_AA_API_KEY` is not
-      passed; set it in the crontab if you want benchmark data.
-- [ ] To verify: cron does not catch up missed runs (a machine that is off on Monday 09:00 skips that week; the
-      session-start line warns after 14 days) and the job has no log file. On systems without cron, `--schedule` fails
-      with a clear message and changes nothing.
+- Observed: `--schedule --dry-run` printed the task name `tagteam-models-<8 hex digits>`, the job PATH (the CLI folder
+  `~/.local/bin` followed by `/usr/bin:/bin:/usr/sbin:/sbin`) and one `--version` check per CLI that it would run. It showed
+  the crontab line only as `[dry-run] crontab -`; the installer has since been changed to print the line itself, as
+  `  crontab  <line>` (covered by unit tests, as macOS shows its plist).
+- Observed: after `--schedule`, `crontab -l` showed the existing line plus
+  `0 9 * * 1 PATH=<job path> /usr/bin/python3 <project>/.claude/tagteam/models_collect.py --project <project> # tagteam-models-<8 hex>`.
+  Run through `env -i HOME=... SHELL=/bin/sh sh -c`, which is cron's minimal environment, that command ended `exit=0 claude=ok
+  google=ok openai=ok bench=skipped changes=3` in 5 seconds and wrote `model-update.json`: the `PATH=` in the line is what lets
+  cron find the CLIs. `--unschedule` removed only that line, deleted `model-update.json`, and the crontab matched the backup.
+- Observed: without `crontab` on PATH, `--schedule` printed `error: cannot read the crontab (crontab -l: ... No such file or
+  directory: 'crontab'); nothing was changed` and exited 1.
+- The measurement also showed that the crontab line sent its output nowhere: cron mails it, and on a server without a mail
+  system a failing run (for example `claude=missing`) disappeared, so only a stale `model-update.json` showed that something
+  was wrong. The installer has since been changed to end the line with `>> <state folder>/model-update.log 2>&1` and to create
+  the folder when it registers the job (covered by unit tests; a run through real cron after the change is unconfirmed).
+  `TAGTEAM_AA_API_KEY` is not passed to the job; put it in the crontab if you want benchmark data.
+- Unconfirmed: cron does not repeat a missed run (a machine that is off on Monday 09:00 skips that week; the session-start
+  line warns after 14 days).
 
 ## State folder
 
-- [ ] To verify: the state folder is `<main work tree>/.tagteam/`, shared by worktrees and git-ignored, and a project inside
-      a submodule uses the superproject's.
-- [ ] To verify: Claude Code on Linux exposes the session tool under a name matched by the hook
-      (`mcp__ccd_session__start_session` is the desktop app's name); if not, the "model and effort" rule has no hook behind it.
+- Observed: after `git worktree add`, `route.py` and `run.py` run in the worktree wrote their records under the main checkout's
+  `.tagteam/runs/`, and the worktree had no `.tagteam/`. `.tagteam/` was ignored through the project's `.gitignore`.
+- Unconfirmed: a project inside a submodule uses the superproject's state folder.
+
+## Not covered
+
+- The session tool of the Claude Code desktop app (`mcp__ccd_session__start_session`), and whether Claude Code on Linux exposes
+  it under a name the hook matches: the server has no desktop app. Without it the "model and effort" rule has no hook behind it.
+- A Python that only the login shell's PATH provides: none existed on the machine, so the `--check` warning for it was not
+  exercised.
+- Distributions other than Ubuntu 26.04 and CPUs other than aarch64.
