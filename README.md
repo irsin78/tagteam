@@ -51,6 +51,17 @@ procedure. Fill
 in the `## Project policy` section at the bottom of the installed `AGENTS.md` (verification commands, conventions, protected
 scope, push mode).
 
+To use Codex as the orchestrator after installation, run `codex` from your project's main checkout.
+In interactive Codex, use `/hooks` to trust the project's tagteam hooks before giving the session a mission because Codex
+silently skips new or changed hook definitions until you trust them
+([hook trust and moved projects](docs/manual.md#12-moving-a-project)).
+From this repository's directory, run `python install.py <project dir> --check --host codex` for static and Codex hook
+handler checks, which do not verify hook trust.
+Adding the optional `--live` uses tokens to run the CLI once and verify that it succeeds and writes a valid worker role
+record for that run.
+On Windows, a sandboxed Codex orchestrator needs escalated permissions for git writes and worker launches through `run.py`
+([Codex host notes](harness/skills/cycle/hosts.md#codex-notes)).
+
 A weekly check of the vendors' model lists is optional: `python install.py <project dir> --schedule`.
 
 ## What is in this repository
