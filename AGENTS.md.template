@@ -11,7 +11,7 @@ The user's instructions override skill guidance; on a conflict, follow the user 
 Every call that opens a session or a worker (`start_session`, a launcher run, a
 subagent without a fixed definition) passes `model` and `effort` explicitly. Take
 both, and how to open the worker, from
-`python .claude/tagteam/route.py --role <role> --host <host> --json` (roles: design,
+`python3 .claude/tagteam/route.py --role <role> --host <host> --json` (`python` on Windows; roles: design,
 implement, review, read, translate; *host*: `claude-desktop`, `claude`, `codex` or
 `agy`). Always pass `--host`: guessing it from the environment can be wrong. The
 result's `launch.kind` is `session`, `subagent` (a worker definition, or on Codex the

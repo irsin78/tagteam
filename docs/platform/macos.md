@@ -1,55 +1,39 @@
 # macOS
 
-**Not yet verified.** Nothing in this harness has been run on macOS. This page is a
-checklist of what to confirm, derived from how the code behaves. Report or fix what
-fails; once an item is confirmed, replace its "to verify" with the observed result.
+**Measured once, on one machine, before two fixes.** macOS 27.2.1 (arm64), Python 3.14.7 from Homebrew, Claude Code
+2.1.326, codex-cli 0.169.0, agy 1.5.10, 2026-11-18, installed into a scratch git folder from the harness as it was before
+the interpreter and launchd fixes. Those fixes are verified on Windows only: re-check them with the list below.
 
-## Install
+## Measured
 
-- [ ] To verify: `python3 install.py <project dir>` completes and prints created files.
-      (The installer itself is plain Python; the examples elsewhere write `python`.)
-- [ ] To verify: `python3 install.py <project dir> --check` ends with `check: ok`.
-      The check runs the hook with `sys.executable`, so it does not prove that the
-      hook commands below resolve.
+| Item | Result |
+|---|---|
+| `python3 install.py <dir>` | works (18 files) |
+| `--check` | printed `check: ok`, but did not prove the hook commands resolve; it now runs them (below) |
+| Claude hook interpreter | **broken on a stock Mac**: macOS has `/usr/bin/python3` and no `python`; the old hook commands called `python`, exited 127, and Claude Code reads that as "no objection". With a `python` on PATH (here from `~/.zprofile`) a worker's `git commit` was denied; with PATH cut to `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin` it **succeeded without a message** |
+| Router `launch.command` | named `python`, same problem; it now uses the Python that runs the router |
+| Codex hook entries | `python3` with an absolute guard path, as designed; a real Codex run was not made |
+| `run.py` per vendor | `ACTUAL_MODEL ... (match)` for `claude`, `openai` and `google`; Codex needs no `windows.sandbox` argument here |
+| Timeout | the process group is killed (`--timeout 5` against a child that sleeps: nothing left after 1 s) |
+| `--schedule --dry-run`, `--schedule`, `--unschedule` | plist with Monday 09:00 `StartCalendarInterval` written to `~/Library/LaunchAgents`, loaded as `net.tagteam.<name>`, and booted out and removed again |
+| launchd environment | **the collector found no CLI**: the job's PATH is `/usr/bin:/bin:/usr/sbin:/sbin` (`claude=missing google=missing openai=missing`, exit 3), `TAGTEAM_AA_API_KEY` is not passed, and the plist had no output file, so the failure left no trace. The job now gets its own PATH and `model-update.log` |
+| State folder, worktrees | measured at the old `<repo>/.git/tagteam/` (shared by worktrees); the folder is now `<repo>/.tagteam/` and not re-measured |
 
-## Hooks
+Also seen once: a read-only `run.py` Claude worker in a worktree timed out after 120 s with no output; two reruns took 6 and
+16 s. A similar silent timeout appeared on Windows inside the Codex sandbox; not understood.
 
-- [ ] To verify: the Claude hook commands in `.claude/settings.json` call `python`.
-      If only `python3` exists on the PATH Claude Code uses, the hooks fail to start.
-      Either provide a `python` on PATH or change the command to `python3`.
-- [ ] To verify: the Codex hook entries use `python3` on non-Windows systems
-      (`command`), with the absolute guard path written by the installer.
-- [ ] To verify: a worker session is denied `git commit`, and `git status` is allowed
-      (the same cases `--check` runs, but through the real hook wiring).
+## To re-check after the fixes
 
-## Launcher
+- [ ] The reduced-PATH worker above: `HARNESS_DELEGATE_RUN=1 claude -p ...` with PATH `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`
+      is now denied `git commit` (message `tagteam: workers may not run git commit or git push`).
+- [ ] With your normal PATH `git status` is allowed and `git commit` denied, as before.
+- [ ] `python3 install.py <dir> --check` on a PATH with no `python3` or `python` ends `FAILED` in `hook commands`.
+- [ ] After `--schedule`, `launchctl kickstart -k gui/$(id -u)/net.tagteam.<name>` leaves `model-update.log` with
+      `claude=ok google=ok openai=ok`, and `--schedule` printed each CLI's `--version ... ok` with the job PATH.
+- [ ] `--unschedule` boots the agent out and removes the plist, `model-update.json`, `model-update.applied` and the log.
 
-- [ ] To verify: `run.py` for each vendor CLI you use reports `ACTUAL_MODEL ... (match)`
-      with a short read-only prompt.
-- [ ] To verify: on timeout the process group is killed (`run.py` starts the child in a
-      new session and sends `SIGKILL` to the group). Check that no child process
-      survives a run with `--timeout 5` against a slow command.
-- [ ] To verify: Codex needs no `windows.sandbox` argument here; `run.py` adds it only
-      on Windows. Confirm that `-s read-only` works without it.
+## Not measured
 
-## Scheduled model check
-
-- [ ] To verify: `python3 install.py <project dir> --schedule --dry-run` prints a
-      property list with a Monday 09:00 `StartCalendarInterval` and the collector
-      command.
-- [ ] To verify: after `--schedule`, the agent is loaded (`launchctl list` shows a
-      label starting `net.tagteam.`) and the plist is under `~/Library/LaunchAgents`.
-- [ ] To verify: a launchd job does not inherit your shell environment. Check whether
-      `TAGTEAM_AA_API_KEY` and the CLIs (`claude`, `codex`, `agy`) are visible to it;
-      a `launchctl setenv` entry or an absolute CLI path may be needed.
-- [ ] To verify: the machine wakes for the job, or the missed run is simply skipped
-      (the plist has no catch-up setting).
-- [ ] To verify: `--unschedule` boots the agent out, removes the plist and deletes
-      `model-update.json` and `model-update.applied`.
-
-## Claude Code and the state folder
-
-- [ ] To verify: the state folder is created under the git common directory
-      (`<repo>/.git/tagteam/`) and shared by worktrees.
-- [ ] To verify: the desktop app's session tool is named `mcp__ccd_session__start_session`
-      there as well, so the hook matcher applies.
+- A launchd job woken from sleep, or a missed Monday 09:00 (the plist has no catch-up).
+- The desktop app's session tool name (`mcp__ccd_session__start_session`, the hook matcher): the run used the CLI. A real
+  Codex session with trusted hooks. (`TAGTEAM_AA_API_KEY` is not passed to launchd on purpose: a plist is a plain file.)

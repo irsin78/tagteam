@@ -34,16 +34,16 @@ It does not ship a service, a UI or a message relay (scope and known gaps: [docs
 - Python 3.9 or newer (standard library only) and git.
 - At least one supported orchestrator CLI; the others are optional, and a vendor whose CLI is missing is skipped by the
   router. Which CLI can do what: [manual section 1](docs/manual.md#1-install-and-update).
-- Windows is the verified platform. macOS and Linux are not yet verified; see
-  [docs/platform/](docs/platform/windows.md).
+- Windows is the verified platform. macOS was measured once and two defects found there were fixed (re-check pending);
+  Linux is not yet verified; see [docs/platform/](docs/platform/windows.md).
 
 ## Quick start
 
-Clone this repository, then install into your project:
+Clone this repository, then install into your project (commands are written `python3`; on Windows use `python`):
 
-    python install.py <project dir>
-    python install.py <project dir> --check
-    python install.py <project dir> --update
+    python3 install.py <project dir>
+    python3 install.py <project dir> --check
+    python3 install.py <project dir> --update
 
 `--check` looks for the CLIs on PATH and feeds fake payloads to the installed hook; `--update` refreshes an existing
 install. Then open the project in your orchestrator CLI and give it a mission; it follows `AGENTS.md` and the `cycle`
@@ -51,18 +51,14 @@ procedure. Fill
 in the `## Project policy` section at the bottom of the installed `AGENTS.md` (verification commands, conventions, protected
 scope, push mode).
 
-To use Codex as the orchestrator after installation, run `codex` from your project's main checkout.
-In interactive Codex, use `/hooks` to trust the project's tagteam hooks before giving the session a mission because Codex
-silently skips new or changed hook definitions until you trust them
+To use Codex as the orchestrator, run `codex` from your project's main checkout and trust the project's tagteam hooks with
+`/hooks` before giving it a mission: Codex silently skips new or changed hooks until you do
 ([hook trust and moved projects](docs/manual.md#12-moving-a-project)).
-From this repository's directory, run `python install.py <project dir> --check --host codex` for static and Codex hook
-handler checks, which do not verify hook trust.
-Adding the optional `--live` uses tokens to run the CLI once and verify that it succeeds and writes a valid worker role
-record for that run.
-On Windows, a sandboxed Codex orchestrator needs escalated permissions for git writes and worker launches through `run.py`
-([Codex host notes](harness/skills/cycle/hosts.md#codex-notes)).
+`python3 install.py <project dir> --check --host codex` checks files and hook handling (not trust); the optional `--live`
+also runs the CLI once and uses tokens. On Windows a sandboxed Codex orchestrator needs escalated permissions for git writes
+and `run.py` launches ([manual section 3.3](docs/manual.md#33-codex-as-the-orchestrator)).
 
-A weekly check of the vendors' model lists is optional: `python install.py <project dir> --schedule`.
+A weekly check of the vendors' model lists is optional: `python3 install.py <project dir> --schedule`.
 
 ## What is in this repository
 
