@@ -51,12 +51,12 @@ procedure. Fill
 in the `## Project policy` section at the bottom of the installed `AGENTS.md` (verification commands, conventions, protected
 scope, push mode).
 
-To use Codex as the orchestrator, run `codex` from your project's main checkout and trust the project's tagteam hooks with
-`/hooks` before giving it a mission: Codex silently skips new or changed hooks until you do
-([hook trust and moved projects](docs/manual.md#12-moving-a-project)).
-`python3 install.py <project dir> --check --host codex` checks files and hook handling (not trust); the optional `--live`
-also runs the CLI once and uses tokens. On Windows a sandboxed Codex orchestrator needs escalated permissions for git writes
-and `run.py` launches ([manual section 3.3](docs/manual.md#33-codex-as-the-orchestrator)).
+Some CLIs need a step of their own before they can be the orchestrator: trusting the project's hooks (a CLI may skip new
+or changed hooks silently until you do) and, in a sandbox, permission for git writes and `run.py` launches
+([manual section 3.3](docs/manual.md#33-codex-as-the-orchestrator),
+[hook trust and moved projects](docs/manual.md#12-moving-a-project)).
+`python3 install.py <project dir> --check --host <cli>` checks files and hook handling (not trust); the optional `--live`
+also runs the CLI once and uses tokens.
 
 A weekly check of the vendors' model lists is optional: `python3 install.py <project dir> --schedule`.
 
