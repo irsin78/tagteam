@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-17",
+  "updated": "2026-11-18",
   "aa_new_model_days": 120,
   "_order": "Models are listed most capable first within a vendor: an earlier model is stronger than a later one of the same vendor (route.py uses this for the orchestrator cap and as the last tie-break). Grades are per (model, effort) and follow grading.floors applied to Artificial Analysis index values. Without bench.local.json the route takes the first usable entry of defaults[vendor][grade], else the first model in this order at its lowest effort of that grade.",
   "grading": {"floors": {"S": 54, "A": 48, "B": 30}, "caps": {"S": 10, "A": 4, "B": 2, "C": 0.2}},
@@ -30,8 +30,8 @@
       "C": ["claude-haiku-5-5:high"]
     },
     "openai": {
-      "S": ["gpt-6-astra:max", "gpt-6-astra:high"],
-      "A": ["gpt-6.1-sol:xhigh", "gpt-6.1-sol:high"],
+      "S": ["gpt-6.2-sol:high", "gpt-6.2-astra:medium", "gpt-6-astra:high"],
+      "A": ["gpt-6.2-sol:medium", "gpt-6.1-sol:xhigh", "gpt-6.1-sol:high"],
       "B": ["gpt-6.1-sol:medium", "gpt-6.1-terra:high"],
       "C": ["gpt-6.1-terra:low", "gpt-6-luna:medium"]
     },
@@ -71,6 +71,12 @@
     },
     "claude-haiku-5-5": {
       "vendor": "claude", "grades": {"low": "C", "medium": "C", "high": "C", "xhigh": "B", "max": "B"}
+    },
+    "gpt-6.2-astra": {
+      "vendor": "openai", "grades": {"low": "B", "medium": "S", "high": "S", "xhigh": "S", "max": "S"}
+    },
+    "gpt-6.2-sol": {
+      "vendor": "openai", "grades": {"low": "B", "medium": "A", "high": "S", "xhigh": "S", "max": "S"}
     },
     "gpt-6-astra": {
       "vendor": "openai", "grades": {"low": "B", "medium": "A", "high": "S", "xhigh": "S", "max": "S"}

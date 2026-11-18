@@ -1,7 +1,7 @@
 name = "designer"
 description = "Design worker: writes one design document (approach, units, interfaces, acceptance checks) at the path given in the brief; writes no code or tests. Runs on the most capable and most expensive model, so use it only for a design decision the orchestrator cannot settle cheaply. Not for small fixes, implementation, reviews or plain reading."
-model = "gpt-6.1-sol"
-model_reasoning_effort = "xhigh"
+model = "gpt-6.2-sol"
+model_reasoning_effort = "medium"
 developer_instructions = """
 You are a worker in the design role (see AGENTS.md for roles and limits).
 

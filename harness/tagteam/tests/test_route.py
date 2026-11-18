@@ -110,7 +110,7 @@ class RouteTest(RouteBase):
         self.assertEqual(r["grade"], "A")
         self.assertEqual(r["launch"], {"kind": "session", "model": "claude-fable-5-2", "effort": "low"})
         self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high", "session")
-        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gpt-6.1-sol", "xhigh", "run")
+        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gpt-6.2-sol", "medium", "run")
         self.assertIn("--read-only", r["launch"]["command"])
         self.assertNotIn("escalate", r["launch"])
         self.assertIn("author_vendor_excluded:claude", r["reason"])
@@ -130,7 +130,7 @@ class RouteTest(RouteBase):
     def test_defaults_host_codex(self):
         r = self.assertPick(self.route("implement", host="codex"), "gpt-6.1-sol", "medium", "subagent")
         self.assertEqual(r["launch"], {"kind": "subagent", "host": "codex", "agent": "implementer", "fork_turns": "none"})
-        r = self.assertPick(self.route("design", host="codex"), "gpt-6.1-sol", "xhigh", "subagent")
+        r = self.assertPick(self.route("design", host="codex"), "gpt-6.2-sol", "medium", "subagent")
         self.assertEqual(r["launch"]["agent"], "designer")
         r = self.assertPick(self.route("review", "--author-vendor", "openai", host="codex"),
                             "claude-fable-5-2", "low", "run")
@@ -154,7 +154,7 @@ class RouteTest(RouteBase):
     # 4
     def test_override_same_vendor_as_author(self):
         self.local({"roles": {"review": {"model": "claude-opus-5-5"}}})
-        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gpt-6.1-sol", "xhigh")
+        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gpt-6.2-sol", "medium")
         self.assertIn("override_same_vendor_as_author", r["reason"])
 
     def test_review_override_grade_mismatch_is_flagged(self):
@@ -243,7 +243,7 @@ class RouteTest(RouteBase):
         self.assertTrue(any(c.startswith("substituted:openai") for c in r["reason"]))
         self.assertIn("openai exhausted until", r["notice"])
         self.exhausted(openai={"since": PAST, "until": PAST, "evidence": "x", "source": "manual"})
-        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gpt-6.1-sol", "xhigh")
+        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gpt-6.2-sol", "medium")
         self.assertEqual(r["reason"][0], "default")
 
     # 9
@@ -273,7 +273,7 @@ class RouteTest(RouteBase):
 
     # 10b
     def test_grade_letters(self):
-        r = self.assertPick(self.route("design", "--grade", "S", host="codex"), "gpt-6-astra", "max", "subagent")
+        r = self.assertPick(self.route("design", "--grade", "S", host="codex"), "gpt-6.2-sol", "high", "subagent")
         self.assertEqual(r["grade"], "S")
         self.assertPick(self.route("design", "--grade", "S"), "claude-fable-5-2", "high")
         r = self.assertPick(self.route("review", "--author-vendor", "claude", "--grade", "C"), "gpt-6.1-terra", "low")
@@ -323,10 +323,10 @@ class RouteTest(RouteBase):
     def test_cap_to_run_checks_cli(self):
         env = {"TAGTEAM_CLI_OPENAI": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}
         cap = ("--orchestrator-model", "claude-haiku-5-5")
-        r = self.assertPick(self.route("design", *cap, env=env), "gpt-6.1-sol", "xhigh", "run")
+        r = self.assertPick(self.route("design", *cap, env=env), "gpt-6.2-sol", "medium", "run")
         self.assertIn("cli_missing:claude", r["reason"])
         self.local({"roles": {"design": {"model": "claude-opus-5-5"}}})
-        r = self.assertPick(self.route("design", *cap, env=env), "gpt-6.1-sol", "xhigh", "run")
+        r = self.assertPick(self.route("design", *cap, env=env), "gpt-6.2-sol", "medium", "run")
         self.assertIn("cli_missing:claude", r["reason"])
         self.assertNotIn("user_override", r["reason"])
 
@@ -396,7 +396,7 @@ class RouteTest(RouteBase):
         self.local({"models": {"claude-sonnet-5-5": {"enabled": False}}})
         self.assertPick(self.route("implement"), "claude-haiku-5-5", "max")
         self.local({"models": {m: {"enabled": False} for m in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")}})
-        self.assertPick(self.route("implement"), "gpt-6-astra", "low")  # openai models.json order
+        self.assertPick(self.route("implement"), "gpt-6.2-astra", "low")  # openai models.json order
 
     def test_bench_uses_only_the_actual_effort(self):
         # sonnet at low is C: a score there must not make it a B candidate
@@ -505,7 +505,7 @@ class LaunchTest(RouteBase):
         os.remove(os.path.join(self.root, ".claude/agents/implementer.md"))
         self.assertPick(self.route("implement", host="claude"), "claude-sonnet-5-5", "high", "run")
         # other vendors, and roles without a definition: run, no escalate
-        r = self.assertPick(self.route("review", "--author-vendor", "claude", host="claude"), "gpt-6.1-sol", "xhigh", "run")
+        r = self.assertPick(self.route("review", "--author-vendor", "claude", host="claude"), "gpt-6.2-sol", "medium", "run")
         self.assertNotIn("escalate", r["launch"])
         self.assertEqual(kinds(self.route("translate", host="claude")[1]), ("run", None, None))
 
@@ -520,13 +520,13 @@ class LaunchTest(RouteBase):
         os.remove(os.path.join(self.root, ".codex/agents/designer.toml"))
         r = self.route("design", host="codex")[1]
         self.assertEqual((r["launch"]["agent"], r["launch"]["model"], r["launch"]["reasoning_effort"]),
-                         ("default", "gpt-6.1-sol", "xhigh"))
+                         ("default", "gpt-6.2-sol", "medium"))
         self.exhausted(google={"since": PAST, "until": FUTURE, "evidence": "x", "source": "manual"})
         self.local({"plans": {"google": "none"}})
         r = self.route("translate", host="codex")[1]  # no translate definition
         self.assertEqual((r["model"], r["launch"]["agent"]), ("gpt-6.1-sol", "default"))
         # a review is a read-only run, even with the host's own vendor (author claude -> openai reviewer)
-        r = self.assertPick(self.route("review", "--author-vendor", "claude", host="codex"), "gpt-6.1-sol", "xhigh", "run")
+        r = self.assertPick(self.route("review", "--author-vendor", "claude", host="codex"), "gpt-6.2-sol", "medium", "run")
         self.assertTrue(r["launch"]["escalate"])
         # every run on a Codex host asks for escalation, whatever the vendor
         self.local({"plans": {"openai": "none"}})
@@ -710,7 +710,7 @@ class DefinitionTest(unittest.TestCase):
                     model, effort = route.read_definition(root, family, name)
                     self.assertIn(model, models["models"], (family, name))  # a model id, not an alias
                     self.assertIn(effort, models["models"][model]["grades"], (family, name))
-            self.assertEqual(route.read_definition(root, "codex", "designer"), ("gpt-6.1-sol", "xhigh"))
+            self.assertEqual(route.read_definition(root, "codex", "designer"), ("gpt-6.2-sol", "medium"))
 
 
 class TaskTest(RouteBase):
@@ -751,7 +751,7 @@ class TaskTest(RouteBase):
         r = self.assertPick(self.task("sharp"), "claude-fable-5-2", "low")
         self.assertEqual((r["grade"], r["task_applied"]), ("A", True))
         self.tasks(sharp={"vendor": "openai", "grade": "S"})
-        self.assertPick(self.task("sharp"), "gpt-6-astra", "max")
+        self.assertPick(self.task("sharp"), "gpt-6.2-sol", "high")
 
     def test_grade_only_task_ignores_the_role_effort_pin(self):
         self.local({"roles": {"implement": {"effort": "max"}},
