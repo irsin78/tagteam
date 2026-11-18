@@ -1,0 +1,148 @@
+{
+  "_note": "agy 1.5.10 hook payloads. _source says whether the shape was measured or rebuilt from the written record of an experiment. Placeholders: <workspace>, <home>, <cid> are replaced by the tests.",
+  "session_start": {
+    "_source": "measured (headless agy 1.5.10; personal paths replaced by placeholders)",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "SessionStart",
+      "lastUserInput": "Reply with exactly: OK",
+      "modelName": "gemini-3.8-flash-low",
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_invocation": {
+    "_source": "measured (common fields as session_start plus invocationNum and initialNumSteps)",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreInvocation",
+      "initialNumSteps": 1,
+      "invocationNum": 0,
+      "lastUserInput": "Reply with exactly: OK",
+      "modelName": "gemini-3.8-flash-low",
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_tool_run_command": {
+    "_source": "measured (run_command with CommandLine, WaitMsBeforeAsync, toolSummary)",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreToolUse",
+      "lastUserInput": "Reply with exactly: OK",
+      "modelName": "gemini-3.8-flash-low",
+      "toolCall": {
+        "args": {"CommandLine": "git status", "WaitMsBeforeAsync": 5000, "toolSummary": "Run git status"},
+        "id": "call_2249260691078426246",
+        "name": "run_command"
+      },
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_invocation_subagent": {
+    "_source": "reconstructed from experiments.md G5: a subagent runs under a new conversation id and lastUserInput is an empty string",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreInvocation",
+      "initialNumSteps": 1,
+      "invocationNum": 0,
+      "lastUserInput": "",
+      "modelName": "gemini-3.8-flash-low",
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_tool_subagent_commit": {
+    "_source": "reconstructed from experiments.md G5: a subagent's run_command goes through the workspace hook with an empty lastUserInput",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreToolUse",
+      "lastUserInput": "",
+      "modelName": "gemini-3.8-flash-low",
+      "toolCall": {
+        "args": {"CommandLine": "git commit -m x", "WaitMsBeforeAsync": 5000, "toolSummary": "Run git commit"},
+        "id": "call_1",
+        "name": "run_command"
+      },
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_tool_invoke_subagent": {
+    "_source": "reconstructed from experiments.md G5: invoke_subagent with the argument keys Model, Prompt, Role, TypeName",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreToolUse",
+      "lastUserInput": "Reply with exactly: OK",
+      "modelName": "gemini-3.8-flash-low",
+      "toolCall": {
+        "args": {"Model": "flash", "Prompt": "touch g5_sub", "Role": "worker", "TypeName": "default"},
+        "id": "call_2",
+        "name": "invoke_subagent"
+      },
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_tool_exit_plan_mode": {
+    "_source": "reconstructed from experiments.md G8: exit_plan_mode with one argument, plan; the planning model hands over to the execution model",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreToolUse",
+      "lastUserInput": "create g8_ran",
+      "modelName": "gemini-pro-orchestrator-g1-pro",
+      "toolCall": {
+        "args": {"plan": "1. touch g8_ran"},
+        "id": "call_3",
+        "name": "exit_plan_mode"
+      },
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_invocation_executor": {
+    "_source": "reconstructed from experiments.md G8: after exit_plan_mode the same conversation continues on the execution model, with the original lastUserInput and no SessionStart",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreInvocation",
+      "initialNumSteps": 6,
+      "invocationNum": 1,
+      "lastUserInput": "create g8_ran",
+      "modelName": "gemini-flash-worker-agy",
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_invocation_plan_prefix": {
+    "_source": "reconstructed from experiments.md G9: a read-only run.py worker (--mode plan) gets a /plan prefix in front of the prompt",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreInvocation",
+      "initialNumSteps": 1,
+      "invocationNum": 0,
+      "lastUserInput": "/plan HARNESS ROLE: DELEGATE\nReply with exactly: OK",
+      "modelName": "gemini-3.8-flash-low",
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  }
+}

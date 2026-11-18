@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""tagteam role guard: the single role hook (Claude Code and Codex).
+"""tagteam role guard: the single role hook (Claude Code, Codex, agy).
 
-Usage: role_guard.py <SessionStart|UserPromptSubmit|PreToolUse|SubagentStart> [--host claude|codex]
-Reads the hook JSON payload on stdin. A deny is written in the host's format:
-  claude: exit 2 with a one-line reason on stderr;
-  codex:  exit 0 with {"hookSpecificOutput": {..., "permissionDecision": "deny"}} on stdout
-          (Codex CLI 0.169.0 ignores exit 2 from PreToolUse hooks), the reason also on stderr.
-Any internal error fails open (exit 0 with a warning on stderr, nothing on stdout).
-State lives in <main work tree>/.tagteam/ (see state.py); TAGTEAM_STATE_DIR overrides it (tests).
+Usage: role_guard.py <SessionStart|UserPromptSubmit|PreToolUse|SubagentStart|PreInvocation> [--host claude|codex|agy]
+The hook JSON payload is read from stdin. Rules and the output format of each host: the template's docs/design.md.
+State: <main work tree>/.tagteam/ (see state.py); TAGTEAM_STATE_DIR overrides it (tests).
+Codex CLI 0.169.0 ignores exit 2 from PreToolUse hooks, so a Codex deny is JSON on stdout.
+[host: agy 1.5.10 blocks a PreToolUse hook that prints nothing; every agy path prints one JSON object, exit 0, measured 2026-11-18 / re-test after an agy update]
 """
 import datetime
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +28,10 @@ SHELL_TOOLS = {"Bash", "PowerShell", "shell", "exec_command", "shell_command", "
 # the other two spellings are kept for other Codex versions.
 SPAWN_TOOLS = {"collaborationspawn_agent", "spawn_agent", "collaboration.spawn_agent"}
 DELEGATE_TOOLS = {"Agent", START_SESSION} | SPAWN_TOOLS
+# agy tool names count only on host agy; of the delegation tools only invoke_subagent is measured
+# (the other names come from agy's changelog).
+AGY_SHELL_TOOLS = {"run_command"}
+AGY_DELEGATE_TOOLS = {"invoke_subagent", "define_subagent", "run_workflow", "swarm"}
 EDIT_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
 PATCH_TOOLS = {"apply_patch"}
 PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): *(.+?)\s*$", re.M)
@@ -40,7 +43,7 @@ AGENT_NAME = re.compile(r"""^\s*name\s*=\s*["']([^"']+)["']""", re.M)
 # variables, scripts, or other tools. It only catches the plain command forms.
 _ARG = r"""(?:"[^"]*"|'[^']*'|\S+)"""
 GIT_WRITE = re.compile(
-    r"\b(?i:git(?:\.exe)?)(?=\s)(?:\s+(?:-[Cc]\s+" + _ARG + r"|--[\w-]+(?:=" + _ARG + r")?|-\w+))*\s+(commit|push)\b"
+    r"\b(?i:git(?:\.exe)?)[\"']?(?=\s)(?:\s+(?:-[Cc]\s+" + _ARG + r"|--[\w-]+(?:=" + _ARG + r")?|-\w+))*\s+(commit|push)\b"
 )
 
 
@@ -70,27 +73,124 @@ def session_file(payload):
     return os.path.join(state.state_dir(payload.get("cwd")), "sessions", sid + ".json")
 
 
-def read_role(path):
+UNRESOLVED = "unresolved"  # a role that is not known: protected calls get a worker's rules
+
+
+def load_record(path):
+    """(record, status): "none" when there is no file, "ok" for a record with a known role, "unresolved" for
+    a record that says the first role decision was lost, "bad" when the file exists but cannot be read, is
+    empty, corrupt or names no known role."""
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f).get("role")
-    except (OSError, ValueError, AttributeError):
-        return None
+            rec = json.load(f)
+    except (FileNotFoundError, NotADirectoryError):  # no such file, or the folder above it is not a folder
+        return {}, "none"
+    except (OSError, ValueError):
+        return {}, "bad"
+    role = rec.get("role") if isinstance(rec, dict) else None
+    if role in ("worker", "orchestrator"):
+        return rec, "ok"
+    return (rec, "unresolved") if role == UNRESOLVED else ({}, "bad")
+
+
+def unresolved_why(status, path):
+    """Why a record leaves the role unresolved, and how to get out of it."""
+    if status == "unresolved":
+        return ("the first role decision of this conversation was lost; check the state folder, then remove %s "
+                "to decide again" % path)
+    return "the role record %s is empty, unreadable or corrupt; check the state folder or remove that file" % path
+
+
+def create_record(path, role, host, **extra):
+    """Publish a session's role record without ever replacing an existing one: True when this call created
+    it, False when a record is there already or another process is publishing one (the caller then reads
+    the winner). Only a complete record ever appears under the final name: the content goes to a temporary
+    file first and is linked in (os.link fails when the name exists). Without hard links a lock folder
+    serialises the writers and the temporary file is renamed in. StateError when the folder is unwritable."""
+    rec = dict({"role": role, "host": host, "ts": int(time.time())}, **extra)
+    folder = state.ensure_writable(os.path.dirname(path))
+    fd, tmp = tempfile.mkstemp(prefix=".role-", dir=folder)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+        try:
+            os.link(tmp, path)
+            return True
+        except FileExistsError:
+            return False
+        except OSError:  # this file system has no hard links
+            return _publish_locked(tmp, path)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+LOCK_STALE_SECONDS = 30
+
+
+def _publish_locked(tmp, path):
+    lock = path + ".lock"
+    for attempt in (0, 1):
+        try:
+            os.mkdir(lock)
+            break
+        except FileExistsError:
+            try:
+                stale = time.time() - os.path.getmtime(lock) > LOCK_STALE_SECONDS
+            except OSError:
+                stale = False
+            if attempt or not stale:
+                return False  # someone is publishing right now; its record decides
+            try:
+                os.rmdir(lock)  # left behind by a process that died
+            except OSError:
+                return False
+    try:
+        if os.path.exists(path):
+            return False
+        os.replace(tmp, path)  # complete content, and nothing is replaced: we hold the lock
+        return True
+    finally:
+        try:
+            os.rmdir(lock)
+        except OSError:
+            pass
+
+
+COMMAND_PREFIX = re.compile(r"^/[\w-]+[ \t]+")
+
+
+def strip_command_prefix(line):
+    """Drop a leading slash command ("/plan "): some hosts put it in front of the prompt."""
+    return COMMAND_PREFIX.sub("", line, count=1)
+
+
+def has_marker(prompt):
+    """True when one line of the prompt starts with the worker marker (after a slash-command prefix)."""
+    return any(strip_command_prefix(line.strip()).startswith(MARKER) for line in prompt.splitlines())
 
 
 def role_of(payload):
-    """"worker", "orchestrator", or None while the first prompt has not decided it yet.
+    """"worker", "orchestrator", "unresolved" (a record that cannot be trusted), or None while the first prompt
+    has not decided it yet.
 
     Worker = launcher env var, a subagent (agent_id: Codex sends the root session_id with it),
     or a recorded worker session."""
     if os.environ.get("HARNESS_DELEGATE_RUN") == "1" or payload.get("agent_id"):
         return "worker"
     path = session_file(payload)
-    return read_role(path) if path else None
+    if not path:
+        return None
+    rec, status = load_record(path)
+    if status == "ok":
+        return rec["role"]
+    return UNRESOLVED if status in ("bad", "unresolved") else None
 
 
 def is_worker(payload):
-    return role_of(payload) == "worker"
+    return role_of(payload) in ("worker", UNRESOLVED)
 
 
 def shell_command(tool_input):
@@ -100,25 +200,32 @@ def shell_command(tool_input):
     return str(cmd or "")
 
 
-def on_session_start(payload, host):
+def session_start_lines(payload, host):
+    """The lines a new session sees: its role, then notices for the orchestrator."""
     role = role_of(payload)
     if role is None:  # a new session: its first prompt sets the role
-        print("TAGTEAM: role=pending host=%s (set by the first prompt: worker if it carries %s)" % (host, MARKER))
+        how = ("the first model call: worker if it carries %s or has no user input" % MARKER if host == "agy"
+               else "the first prompt: worker if it carries %s" % MARKER)
+        lines = ["TAGTEAM: role=pending host=%s (set by %s)" % (host, how)]
     else:
-        print("TAGTEAM: role=%s host=%s" % (role, host))
+        lines = ["TAGTEAM: role=%s host=%s" % (role, host)]
     if role != "worker":  # notices for the orchestrator; a pending session may become one
         try:
             note = model_update_notice(payload)
         except Exception:  # fail open: a notice bug must not block a session
             note = None
         if note:
-            print(note)
+            lines.append(note)
         try:
-            lines = task_notice()
+            lines.extend(task_notice())
         except Exception:  # fail open
-            lines = []
-        for line in lines:
-            print(line)
+            pass
+    return lines
+
+
+def on_session_start(payload, host):
+    for line in session_start_lines(payload, host):
+        print(line)
 
 
 def model_update_notice(payload):
@@ -176,39 +283,49 @@ def on_prompt(payload, host):
     path = session_file(payload)
     if not path or os.path.exists(path):
         return  # record once on the first prompt; never change it afterwards
-    prompt = payload.get("prompt") or ""
-    marked = any(line.strip().startswith(MARKER) for line in prompt.splitlines())
-    state.ensure_writable(os.path.dirname(path))  # StateError: fail open with a message that says how to fix it
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"role": "worker" if marked else "orchestrator", "host": host,
-                   "ts": int(time.time())}, f)
+    create_record(path, "worker" if has_marker(payload.get("prompt") or "") else "orchestrator", host)
 
 
-def on_pre_tool(payload, host):
+def on_pre_tool(payload, host, worker=None, why=None):
+    """Apply the rules; `worker` overrides the recorded role (agy decides it itself). `why` says that the
+    role is unresolved and is added to the reasons of the worker rules."""
     tool = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") or {}
     if not isinstance(tool_input, dict):
         tool_input = {}
-    worker = is_worker(payload)
+    shell_tools = SHELL_TOOLS | AGY_SHELL_TOOLS if host == "agy" else SHELL_TOOLS
+    delegate_tools = DELEGATE_TOOLS | AGY_DELEGATE_TOOLS if host == "agy" else DELEGATE_TOOLS
+    if worker is None:
+        role = role_of(payload)
+        worker = role in ("worker", UNRESOLVED)
+        if role == UNRESOLVED:
+            try:
+                path = session_file(payload)
+                why = unresolved_why(load_record(path)[1], path)
+            except Exception:
+                why = "the role record cannot be read"
+
+    def block(reason):
+        deny(reason + (" (role unresolved: %s)" % why if why else ""))
 
     # [role] A worker session must not open further sessions. The orchestrator must pick
     # model and effort explicitly (fork cannot take a model, so only fresh sessions pass),
     # unless it starts a stored proposal by proposal_id alone (no model/effort/prompt).
     if tool == START_SESSION:
         if worker:
-            deny("worker sessions may not open sessions")
+            block("worker sessions may not open sessions")
         shaping = any(tool_input.get(k) for k in ("model", "effort", "prompt"))
         proposal_only = bool(tool_input.get("proposal_id")) and not shaping
         if not proposal_only and not (tool_input.get("model") and tool_input.get("effort")):
             deny("start_session needs an explicit model and effort")
 
     # [role] Workers may not commit or push; the orchestrator integrates.
-    if tool in SHELL_TOOLS and worker and GIT_WRITE.search(shell_command(tool_input)):
-        deny("workers may not run git commit or git push")
+    if tool in shell_tools and worker and GIT_WRITE.search(shell_command(tool_input)):
+        block("workers may not run git commit or git push")
 
     # [role] Workers may not delegate again (subagents lose the Agent tool by definition).
-    if tool in DELEGATE_TOOLS and worker:
-        deny("worker sessions may not spawn subagents")
+    if tool in delegate_tools and worker:
+        block("worker sessions may not spawn subagents")
 
     # [role] Codex spawn: a custom agent runs on its definition's model and effort and silently
     # ignores spawn arguments; any other agent_type takes them and needs both.
@@ -226,7 +343,7 @@ def on_pre_tool(payload, host):
     if worker:
         hit = control_plane_path(edit_paths(tool, tool_input), payload)
         if hit:
-            deny("workers may not edit the control plane (%s)" % hit)
+            block("workers may not edit the control plane (%s)" % hit)
 
 
 def custom_agents(payload):
@@ -295,7 +412,224 @@ HANDLERS = {"SessionStart": on_session_start, "UserPromptSubmit": on_prompt, "Pr
             "SubagentStart": on_subagent_start}
 
 
-def main(argv):
+# ---- agy ---------------------------------------------------------------------------------
+# agy sends its own payload shape and wants one JSON object on stdout for every event (exit 0).
+# The payload is converted to the internal shape so the rules above stay in one place.
+
+AGY_EMPTY_INPUT = "empty-input"  # record basis: the first model call carried no user input
+AGY_MODEL_LOG = "agy-models.jsonl"
+
+
+_quiet = None
+
+
+def quiet_stderr():
+    """stderr cannot be used (closed pipe): swap in the null device, so that neither this process nor the
+    interpreter's flush at exit fails on it (that would end the process with exit code 120)."""
+    global _quiet
+    try:
+        _quiet = open(os.devnull, "w")
+        sys.stderr = _quiet
+    except Exception:
+        pass
+
+
+def note(line):
+    """A diagnostic line on stderr, best effort: a closed or broken stderr must not change the decision."""
+    try:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+    except Exception:
+        quiet_stderr()
+
+
+def settle_stderr():
+    try:
+        sys.stderr.flush()
+    except Exception:
+        quiet_stderr()
+
+
+def warn(message):
+    note("tagteam: role_guard warning (allowed): %s" % message)
+
+
+def agy_internal(p):
+    """agy payload -> the shape the rules read (session_id, cwd, prompt, tool_name, tool_input, model, invocation)."""
+    call = p.get("toolCall") if isinstance(p.get("toolCall"), dict) else {}
+    args = call.get("args") if isinstance(call.get("args"), dict) else {}
+    tool_input = dict(args)
+    if "CommandLine" in args:
+        tool_input["command"] = args["CommandLine"]
+    spaces = p.get("workspacePaths")
+    cwd = p.get("cwd") or (spaces[0] if isinstance(spaces, list) and spaces else None)
+    prompt = p.get("lastUserInput")
+    number = p.get("invocationNum")
+    return {"session_id": p.get("conversationId"), "cwd": cwd if isinstance(cwd, str) else None,
+            "prompt": prompt if isinstance(prompt, str) else "", "tool_name": call.get("name") or "",
+            "tool_input": tool_input, "model": p.get("modelName"),
+            "invocation": number if isinstance(number, int) and not isinstance(number, bool) else None}
+
+
+def agy_role(payload, first_call_lost=False):
+    """(role, basis, unsure): the role of this conversation, recorded when none is recorded yet.
+
+    A recorded role is final. Otherwise the first model call or tool call decides: no user input at all is a
+    worker (an agy subagent starts with an empty input), else a marker line makes a worker. The record is
+    published atomically; a hook that loses the race takes the winner's role. The launcher variable makes a
+    worker whatever the record says (the record is still written, as on the other hosts).
+
+    `first_call_lost` says that this is not the conversation's first model call although nothing is
+    recorded: the first decision (maybe a worker) was lost, so an ordinary input must not become an
+    orchestrator now. The record then says "unresolved"; a worker input is still recorded as a worker.
+
+    `unsure` is None when the role rests on a record this call read or wrote. Otherwise it says why the role
+    is unresolved (no conversation id, unusable state folder, empty or corrupt record, lost first decision,
+    record not writable): the caller gives protected calls a worker's rules."""
+    launched = os.environ.get("HARNESS_DELEGATE_RUN") == "1"
+    path, status, unsure, rec = None, "none", None, {}
+    try:
+        path = session_file(payload)
+        if path:
+            rec, status = load_record(path)
+        else:
+            unsure = "the hook payload has no conversation id"
+    except Exception as exc:  # e.g. an unusable state folder
+        warn("%s: %s" % (type(exc).__name__, exc))
+        path, unsure = None, "the state folder cannot be used (%s); check it" % exc
+    if status == "ok":
+        return ("worker", None, None) if launched else (rec["role"], rec.get("basis"), None)
+    if status in ("bad", "unresolved"):  # never overwritten: it may hold the first role
+        unsure = unresolved_why(status, path)
+    prompt = payload.get("prompt") or ""
+    if launched:  # the launcher variable comes first, so that is what gets recorded
+        role, extra = "worker", {}
+    elif not prompt.strip():
+        role, extra = "worker", {"basis": AGY_EMPTY_INPUT}
+    elif has_marker(prompt):
+        role, extra = "worker", {}
+    elif first_call_lost and status == "none":
+        role, extra = UNRESOLVED, {}
+        unsure = unresolved_why("unresolved", path) if path else unsure
+    else:
+        role, extra = "orchestrator", {}
+    if status == "none" and path:
+        try:
+            created = create_record(path, role, "agy", **extra)
+        except (state.StateError, OSError) as exc:
+            warn("%s" % exc)
+            unsure = "the role record could not be written (%s: %s); check the state folder" % (type(exc).__name__, exc)
+        else:
+            if not created:  # another hook recorded first: its role stands
+                rec, status = load_record(path)
+                if status == "ok":
+                    return ("worker", None, None) if launched else (rec["role"], rec.get("basis"), None)
+                unsure = unresolved_why("bad" if status == "none" else status, path)
+    return role, extra.get("basis"), (None if launched else unsure)
+
+
+def agy_log_model(payload):
+    """Append {ts, cid, model} to agy-models.jsonl when this conversation's model differs from its last record."""
+    cid, model = payload.get("session_id"), payload.get("model")
+    if not (isinstance(cid, str) and cid and isinstance(model, str) and model):
+        return
+    folder = state.state_dir(payload.get("cwd"))
+    path = os.path.join(folder, AGY_MODEL_LOG)
+    last = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("cid") == cid:
+                    last = rec.get("model")
+    except OSError:
+        pass
+    if last == model:
+        return
+    state.ensure_writable(folder)
+    line = json.dumps({"ts": int(time.time()), "cid": cid, "model": model}) + "\n"
+    with open(path, "ab+") as f:  # a write cut short earlier leaves no newline: end that line first
+        f.seek(0, os.SEEK_END)
+        if f.tell():
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                line = "\n" + line
+        f.write(line.encode("utf-8"))
+
+
+def agy_session_start(payload):
+    lines = session_start_lines(payload, "agy")  # the role is decided by the first model call, not here
+    if not lines:
+        return {}
+    return {"injectSteps": [{"systemMessage": {"systemMessage": "\n".join(lines)}}]}
+
+
+def agy_pre_invocation(payload):
+    number = payload.get("invocation")
+    agy_role(payload, first_call_lost=(number is not None and number != 0))
+    try:
+        agy_log_model(payload)
+    except Exception as exc:  # the log is for people; it must not break the role record
+        warn("%s: %s" % (type(exc).__name__, exc))
+    return {}
+
+
+def agy_pre_tool(payload):
+    role, basis, unsure = agy_role(payload)
+    try:
+        # unsure of the role: protected calls get a worker's rules, everything else is left to the user's rules
+        on_pre_tool(payload, "agy", worker=(role == "worker" or unsure is not None),
+                    why=" ".join(unsure.split()) if unsure else None)
+    except Denied as d:
+        reason = "tagteam: " + str(d)
+        if basis == AGY_EMPTY_INPUT and not unsure:
+            reason += " (role recorded as worker: the first model call had no user input)"
+        note(reason)
+        return {"decision": "deny", "reason": reason}
+    return {"decision": "ask"}  # no opinion: the user's permission rules decide
+
+
+AGY_HANDLERS = {"SessionStart": agy_session_start, "PreInvocation": agy_pre_invocation, "PreToolUse": agy_pre_tool}
+_agy_printed = False
+
+
+def agy_fallback(event):
+    return {"decision": "ask"} if event == "PreToolUse" else {}
+
+
+def agy_print(out):
+    global _agy_printed
+    sys.stdout.write(json.dumps(out) + "\n")
+    _agy_printed = True
+    sys.stdout.flush()
+
+
+def main_agy(event):
+    """Every path prints one JSON object and returns 0: agy blocks a PreToolUse hook that prints nothing."""
+    try:
+        raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")  # not the console code page
+        payload = json.loads(raw) if raw.strip() else {}
+        if not isinstance(payload, dict):
+            raise ValueError("hook payload is not an object")
+        handler = AGY_HANDLERS.get(event)
+        if handler is None:
+            note("tagteam: unknown event %r (ignored)" % event)
+            out = {}
+        else:
+            out = handler(agy_internal(payload))
+    except Exception as exc:  # ask hands the call to the user's permission rules; silence would block it
+        warn("%s: %s" % (type(exc).__name__, exc))
+        out = agy_fallback(event)
+    agy_print(out)
+    settle_stderr()
+    return 0
+
+
+def parse_argv(argv):
+    """(host, event, rest) from the command line. Never raises: main() needs both before anything can fail."""
     host = "claude"
     rest = list(argv[1:])
     if "--host" in rest:
@@ -303,7 +637,13 @@ def main(argv):
         if i + 1 < len(rest):
             host = rest[i + 1]
         del rest[i:i + 2]
-    event = rest[0] if rest else ""
+    return host, (rest[0] if rest else ""), rest
+
+
+def main(argv):
+    host, event, _ = parse_argv(argv)
+    if host == "agy":
+        return main_agy(event)
     if event not in HANDLERS:
         sys.stderr.write("tagteam: unknown event %r (ignored)\n" % event)
         return 0
@@ -319,8 +659,16 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    _host, _event, _ = parse_argv(sys.argv)  # before anything that can fail
     try:
         sys.exit(main(sys.argv))
     except Exception as exc:  # fail open: a hook bug must not block all work
-        sys.stderr.write("tagteam: role_guard warning (allowed): %s: %s\n" % (type(exc).__name__, exc))
+        warn("%s: %s" % (type(exc).__name__, exc))
+        if _host == "agy" and not _agy_printed:
+            try:
+                agy_print(agy_fallback(_event))
+            except Exception:
+                pass
+        if _host == "agy":
+            settle_stderr()
         sys.exit(0)
