@@ -1154,7 +1154,7 @@ def static_checks(target, source, host):
         bad, shaky = agy_static_problems(target, source)
         errors += bad
         warnings += shaky
-        notes.append("agy: a guard that cannot start blocks run_command and the delegation tools (PreToolUse); "
+        notes.append("agy: a guard that cannot start blocks run_command, the delegation tools and the edit tools (PreToolUse); "
                      "to switch it off, delete the \"tagteam\" key of .agents/hooks.json")
     # the state folder
     state = installed_state_dir(target)
@@ -1277,7 +1277,7 @@ def agy_static_problems(target, source):
             for name in dict.fromkeys(m.group(2) or m.group(1) for m in (re.match(r'\s*("([^"]+)"|\S+)', c) for c in commands) if m):
                 if not shutil.which(name):
                     errors.append(f"{name} is not on PATH: the agy hooks call it (a PreToolUse hook that cannot start blocks "
-                                  "run_command and the delegation tools)")
+                                  "run_command, the delegation tools and the edit tools)")
             for c in commands:
                 errors += [f"guard {p} is missing; run install.py {target} --update" for p in missing_guard_paths(target, {"command": c})]
     if not blocker and git_says(target, "check-ignore", "-q", AGY_HOOKS_REL)[0] == 1:
@@ -1407,6 +1407,13 @@ def handler_agy(target):
         case("orchestrator first model call", "PreInvocation", agy_payload("PreInvocation", "smoke-o", proj, "hello"), {})
         case("orchestrator invoke_subagent", "PreToolUse",
              agy_payload("PreToolUse", "smoke-o", proj, "hello", tool="invoke_subagent", Prompt="p"), "ask")
+        for name, tool, want, is_worker, path, extra in (
+                ("worker write_file in .claude", "write_file", "deny", True, os.path.join(proj, ".claude", "x"), dict(Content="x")),
+                ("worker edit_file on AGENTS.md", "edit_file", "deny", True, os.path.join(proj, "AGENTS.md"), dict(Target="a", Replacement="b")),
+                ("worker write_file in src", "write_file", "ask", True, os.path.join(proj, "src", "a.py"), dict(Content="x")),
+                ("orchestrator write_file in .claude", "write_file", "ask", False, os.path.join(proj, ".claude", "x"), dict(Content="x"))):
+            case(name, "PreToolUse", agy_payload("PreToolUse", "smoke-w" if is_worker else "smoke-o", proj,
+                                                 marked if is_worker else "hello", tool=tool, Path=path, **extra), want, worker=is_worker)
         case("broken payload", "PreToolUse", None, "ask", raw="this is not json")
         case("SessionStart", "SessionStart", agy_payload("SessionStart", "smoke-s", proj), "object")
         case("PreInvocation without user input", "PreInvocation", agy_payload("PreInvocation", "smoke-e", proj, ""), {})
@@ -1422,33 +1429,42 @@ def handler_agy(target):
 def hook_command_agy(target, entry):
     """(failures, unverified reason): the PreToolUse commands of the validated "tagteam" entry (agy_runnable_hooks) run as
     written, the way agy runs them (cmd /c on Windows, sh -c elsewhere, in .agents), within each hook's own timeout: a
-    worker's git commit must be denied."""
-    chosen = [h for h in agy_commands(entry, "PreToolUse") if matcher_hits(h[0], "run_command")]
-    if not chosen:
+    worker's git commit and a worker's write_file into .claude must be denied. A hook is run for a tool only when its
+    matcher selects the tool: agy would not call it otherwise."""
+    commands = agy_commands(entry, "PreToolUse")
+    shell_hooks = [h for h in commands if matcher_hits(h[0], "run_command")]
+    if not shell_hooks:
         return [f"agy hook command 'PreToolUse': no tagteam hook of {AGY_HOOKS_REL} selects run_command, so agy would not call "
                 "the guard for shell commands"], None
+    edit_hooks = [h for h in commands if matcher_hits(h[0], "write_file") and matcher_hits(h[0], "edit_file")]
+    fails = []
+    if not edit_hooks:
+        fails.append(f"agy hook command 'PreToolUse': no tagteam hook of {AGY_HOOKS_REL} selects write_file/edit_file, so agy "
+                     "would not check edits")
     shell = None if is_windows() else (shutil.which("sh") or "/bin/sh")
     cwd = target / ".agents"
-    fails = []
+    marked = "HARNESS ROLE: DELEGATE\nwork"
+    cases = [(h, name, "run_command", want, dict(CommandLine=line)) for h in shell_hooks
+             for name, line, want in (("worker git commit", "git commit -m x", "deny"), ("worker git status", "git status", "ask"))]
+    cases += [(h, "worker write_file in .claude", "write_file", "deny", dict(Path=str(target / ".claude" / "x"), Content="x"))
+              for h in edit_hooks]
     with tempfile.TemporaryDirectory() as tmp:
         env = {k: v for k, v in os.environ.items() if k != "HARNESS_DELEGATE_RUN"}
         env.update(TAGTEAM_STATE_DIR=os.path.join(tmp, "state"), PYTHONDONTWRITEBYTECODE="1", HARNESS_DELEGATE_RUN="1")
-        for _, timeout, command in chosen:
+        for (_, timeout, command), name, tool, want, args in cases:
             # one string on Windows: a list would be quoted for CreateProcess and mangle the quotes cmd /c must see
             argv = "cmd /c " + command if is_windows() else [shell, "-c", command]
-            for name, line, want in (("worker git commit", "git commit -m x", "deny"), ("worker git status", "git status", "ask")):
-                payload = json.dumps(agy_payload("PreToolUse", "hook-smoke", str(target), "HARNESS ROLE: DELEGATE\nwork",
-                                                 tool="run_command", CommandLine=line))
-                try:
-                    code, obj, text = agy_run_hook(argv, payload, env, timeout, str(cwd) if cwd.is_dir() else str(target))
-                except subprocess.TimeoutExpired:
-                    fails.append(f"agy hook command '{name}': no answer within the hook's timeout of {timeout}s (agy would block the call)")
-                    continue
-                except Exception as exc:  # noqa: BLE001
-                    fails.append(f"agy hook command '{name}': {type(exc).__name__}: {exc}")
-                    continue
-                if code != 0 or agy_verdict(obj) != want:
-                    fails.append(f"agy hook command '{name}': expected {want} as one JSON object with exit 0, got {text}")
+            payload = json.dumps(agy_payload("PreToolUse", "hook-smoke", str(target), marked, tool=tool, **args))
+            try:
+                code, obj, text = agy_run_hook(argv, payload, env, timeout, str(cwd) if cwd.is_dir() else str(target))
+            except subprocess.TimeoutExpired:
+                fails.append(f"agy hook command '{name}': no answer within the hook's timeout of {timeout}s (agy would block the call)")
+                continue
+            except Exception as exc:  # noqa: BLE001
+                fails.append(f"agy hook command '{name}': {type(exc).__name__}: {exc}")
+                continue
+            if code != 0 or agy_verdict(obj) != want:
+                fails.append(f"agy hook command '{name}': expected {want} as one JSON object with exit 0, got {text}")
     return fails, None
 
 

@@ -182,11 +182,13 @@ when:
 - the file cannot be replaced (for example another program holds it open).
 
 The `tagteam` entry has three events: SessionStart and PreInvocation (10 second timeout each) and PreToolUse, whose matcher
-is `run_command|invoke_subagent|define_subagent|run_workflow|swarm` (10 seconds). Edit tools are not matched.
+is `run_command|invoke_subagent|define_subagent|run_workflow|swarm|write_file|edit_file` (10 seconds): the edit tools are
+matched, so a worker's `write_file` or `edit_file` on `.claude/`, `.codex/`, `.agents/`, `AGENTS.md` or `CLAUDE.md` is
+denied, and every other edit stays with your permission rules.
 
 **Recovery.** On agy a PreToolUse hook that fails to start or answer blocks the tool, so a broken guard (no Python, a wrong
-guard path, a moved project) blocks `run_command` and the delegation tools, and nothing else; agy's edit tools still work.
-From inside agy, or a terminal:
+guard path, a moved project) blocks `run_command`, the delegation tools **and the edit tools**: agy cannot fix it from the
+inside, and the orchestrator cannot write its mission records either. From a terminal or another editor:
 
 1. `python3 install.py <project dir> --update` rewrites the key; `--check --host agy` then says what is still wrong.
 2. To switch the hooks off, delete the `"tagteam"` key from `.agents/hooks.json` (your other keys stay), or add

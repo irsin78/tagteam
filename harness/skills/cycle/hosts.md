@@ -158,9 +158,16 @@ policy, not a measured agy limit. agy's own subagents are not harness roles (not
    command with `cmd /c` on Windows and `sh -c` on Linux, in the folder `.agents`. A PreToolUse hook that fails
    (exit code 1 or 2, invalid JSON, timeout) or prints nothing blocks the tool; a failing SessionStart or PreInvocation
    hook does not stop the session. So the guard answers `ask` (the user's permission rules decide) on an internal
-   error, the hook is matched only to `run_command` and the delegation tools, and a guard that cannot start (no
-   Python, a wrong guard path) blocks exactly those tools. Recovery: manual section 1.3. [host: agy 1.5.10 Windows and
-   Linux, measured 2026-11-18 / re-test after an agy update]
+   error, the hook is matched to `run_command`, the delegation tools and the edit tools (`write_file` and `edit_file`,
+   argument `Path`), and a guard that cannot start (no Python, a wrong guard path) blocks exactly those tools, edits
+   included: agy cannot repair its own hooks, so recover from a terminal or another editor (manual section 1.3). A
+   worker's edit of the control plane is denied; every other edit, and the orchestrator's, is `ask`. [host: agy 1.5.10
+   Windows and Linux, measured 2026-11-18 / re-test after an agy update] [host: agy 1.5.11 Windows headless, edit tool
+   names and `Path` measured 2026-11-19; agy 1.5.12 Windows interactive, `ask` on both edit tools added no prompt and
+   did not block the edit with allow rules for both tools, 2026-11-19 / re-test after an agy update] [host: agy 1.5.12
+   Linux headless, real `run.py` workers refused on `.claude/`, `AGENTS.md` and `.agents/hooks.json` in the main tree,
+   a linked worktree and a worktree subfolder while their ordinary edits ran; a missing guard blocked edits and
+   `install.py --update` restored the file, measured 2026-11-19 / re-test after an agy update]
 5. agy's own subagents (`invoke_subagent`) take a model tier and no effort, so they cannot meet AGENTS.md section 1
    and are not used for harness roles. A subagent that the orchestrator starts opens a new conversation whose first
    model call has no user input; the guard records that as a worker, so it can neither commit nor delegate. The
@@ -191,5 +198,6 @@ policy, not a measured agy limit. agy's own subagents are not harness roles (not
    - whether an interactive agy in an untrusted folder loads `.agents/hooks.json` (headless runs do) and whether it asks
      for trust first;
    - whether `ask` on the orchestrator's `invoke_subagent` opens a prompt;
-   - whether the edit tools (`write_file`, `edit_file`) ask for approval when only `write_file(*)` is allowed: the
-     baseline per tool is open (the hook matcher does not include them).
+   - what the edit tools (`write_file`, `edit_file`) do when no allow rule covers them (for example `toolPermission`
+     `request-review` with an empty allow list): measured only with allow rules for both tools (note 4), so whether the
+     hook's `ask` adds a prompt or blocks the edit for such a user is unconfirmed.

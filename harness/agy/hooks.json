@@ -8,7 +8,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "run_command|invoke_subagent|define_subagent|run_workflow|swarm",
+        "matcher": "run_command|invoke_subagent|define_subagent|run_workflow|swarm|write_file|edit_file",
         "hooks": [
           {"type": "command", "command": "python3 .claude/tagteam/role_guard.py PreToolUse --host agy", "timeout": 10}
         ]

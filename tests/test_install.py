@@ -566,6 +566,12 @@ class InstallTests(unittest.TestCase):
         for event, command in zip(("PreToolUse", "SessionStart", "PreInvocation"), commands):
             self.assertEqual(command, f"{install.agy_interpreter()} {guard} {event} --host agy")
         self.assertIn("run_command", entry["PreToolUse"][0]["matcher"])
+        self.assertEqual(len(entry["PreToolUse"]), 1)  # one group
+        for tool in ("run_command", "invoke_subagent", "define_subagent", "run_workflow", "swarm", "write_file", "edit_file"):
+            self.assertTrue(install.matcher_hits(entry["PreToolUse"][0]["matcher"], tool), tool)
+        for tool in ("read_file", "send_message", "write_file2"):
+            self.assertFalse(install.matcher_hits(entry["PreToolUse"][0]["matcher"], tool), tool)
+        self.assertEqual(entry["PreToolUse"][0]["hooks"][0]["timeout"], 10)
         self.assertIn(".agents/hooks.json", (self.dst / ".gitignore").read_text(encoding="utf-8").splitlines())
 
     def test_agy_interpreter_by_platform(self):
@@ -832,6 +838,7 @@ class InstallTests(unittest.TestCase):
                      "handler (claude): unverified", "handler (codex): unverified", "live (agy): unverified (not requested"):
             self.assertIn(line, out)
         self.assertNotIn("no hook adapter", out)
+        self.assertIn("blocks run_command, the delegation tools and the edit tools (PreToolUse)", out)
         self.assertFalse((state / "sessions").exists(), "the handler cases must not write records into the real state folder")
         self.assertEqual(self.tree(self.dst), before)
 
@@ -843,8 +850,10 @@ class InstallTests(unittest.TestCase):
         self.assertIn("handler (agy): FAILED", out)
         self.assertIn("hook commands (agy): FAILED", out)
         for case in ("worker git commit", "orchestrator invoke_subagent", "broken payload", "SessionStart",
-                     "PreInvocation without user input"):
+                     "PreInvocation without user input", "worker write_file in .claude", "worker edit_file on AGENTS.md",
+                     "worker write_file in src", "orchestrator write_file in .claude"):
             self.assertIn(f"agy '{case}'", out)
+        self.assertIn("agy hook command 'worker write_file in .claude'", out)
 
     def test_check_agy_needs_the_hooks_file(self):
         self.use_real_guard()
@@ -880,6 +889,7 @@ class InstallTests(unittest.TestCase):
             code, out, _ = self.agy_check()
         self.assertEqual(code, 1)
         self.assertIn(f"{install.agy_interpreter()} is not on PATH", out)
+        self.assertIn("blocks run_command, the delegation tools and the edit tools", out)
         self.run_install("--update")
         (self.dst / ".claude/tagteam/role_guard.py").unlink()
         code, out, _ = self.agy_check()
@@ -894,6 +904,23 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("hook commands (agy): FAILED", out)  # the worker's git commit is not denied
         self.assertIn("agy hook command 'worker git commit'", out)
+        self.assertIn("agy hook command 'worker write_file in .claude'", out)  # nor is a worker's edit of the control plane
+
+    def test_check_agy_handler_catches_a_guard_that_does_not_look_at_edit_tools(self):
+        self.use_real_guard()
+        self.run_install()
+        guard = self.dst / ".claude/tagteam/role_guard.py"
+        real = guard.read_text(encoding="utf-8")
+        blind = real.replace('AGY_EDIT_TOOLS = {"write_file": "Path", "edit_file": "Path"}', "AGY_EDIT_TOOLS = {}")
+        self.assertNotEqual(blind, real)
+        guard.write_text(blind, encoding="utf-8")
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 1, out)
+        for case in ("worker write_file in .claude", "worker edit_file on AGENTS.md"):
+            self.assertIn(f"agy '{case}'", out)
+        self.assertIn("agy hook command 'worker write_file in .claude'", out)
+        self.assertNotIn("agy 'worker git commit'", out)  # the shell cases still pass
+        self.assertNotIn("agy 'worker write_file in src'", out)  # and so does an ordinary edit (ask)
 
     def test_check_agy_never_runs_a_hook_command_that_the_static_check_rejected(self):
         self.use_real_guard()
@@ -930,6 +957,42 @@ class InstallTests(unittest.TestCase):
         fails, why = install.hook_command_agy(self.dst, entry)
         self.assertIsNone(why)
         self.assertIn("selects run_command", fails[0])
+
+    def test_hook_command_agy_fails_when_no_hook_selects_the_edit_tools(self):
+        self.use_real_guard()
+        self.run_install()
+        entry = self.agy_doc()["tagteam"]
+        for matcher in ("run_command|invoke_subagent|define_subagent|run_workflow|swarm",  # the matcher before edits were checked
+                        "run_command|write_file"):  # one of the two edit tools is not enough
+            entry["PreToolUse"][0]["matcher"] = matcher
+            fails, why = install.hook_command_agy(self.dst, entry)
+            self.assertIsNone(why)
+            self.assertEqual(len(fails), 1, (matcher, fails))
+            self.assertIn("selects write_file/edit_file, so agy would not check edits", fails[0])
+        entry["PreToolUse"][0]["matcher"] = "run_command|write_file|edit_file"
+        self.assertEqual(install.hook_command_agy(self.dst, entry), ([], None))
+
+    def test_update_moves_an_install_with_the_old_agy_matcher_to_the_edit_checking_one(self):
+        self.use_real_guard()
+        self.run_install()
+        doc = self.agy_doc()
+        old = "run_command|invoke_subagent|define_subagent|run_workflow|swarm"
+        self.assertEqual(doc["tagteam"]["PreToolUse"][0]["matcher"], old + "|write_file|edit_file")
+        doc["tagteam"]["PreToolUse"][0]["matcher"] = old
+        doc["herdr"] = {"SessionStart": [{"type": "command", "command": "herdr"}]}  # someone else's key stays
+        self.write_agy(doc)
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 1)
+        self.assertIn('"tagteam" differs from the template', out)
+        self.assertIn("--update", out)
+        code, out = self.run_install("--update")
+        self.assertRegex(out, r"updated\s+\.agents/hooks\.json")
+        after = self.agy_doc()
+        self.assertTrue(install.matcher_hits(after["tagteam"]["PreToolUse"][0]["matcher"], "edit_file"))
+        self.assertEqual(after["herdr"], doc["herdr"])
+        code, out, _ = self.agy_check()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("differs from the template", out)
 
     def test_check_agy_reports_malformed_hook_data_as_static_failures(self):
         self.use_real_guard()
