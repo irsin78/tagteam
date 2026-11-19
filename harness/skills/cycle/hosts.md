@@ -46,9 +46,10 @@ The first line `run.py` prints is `RUN <id> started run_dir=...`; the run's logs
    folder>`. [host: codex-cli 0.169.0 Windows workspace-write sandbox, measured 2026-11-17 / re-test after a
    Codex update]
 2. On Windows, `windows.sandbox = "elevated"` made every command of `codex exec` fail with
-   `CreateProcessWithLogonW failed: 1385`; `unelevated` worked, and `run.py` passes it itself. Interactive Codex with
-   `elevated`: unconfirmed. `install.py --check --host codex` warns about it; the setting is the user's. [host: codex-cli 0.169.0 Windows,
-   measured 2026-11-17 / re-test after a Codex update]
+   `CreateProcessWithLogonW failed: 1385` in codex-cli 0.169.0; in 0.170.0 the same commands ran on one PC (two runs,
+   `codex exec` only). Interactive Codex with `elevated`: unconfirmed. tagteam keeps `unelevated` as its default and
+   `run.py` passes it itself. `install.py --check --host codex` warns about `elevated`; the setting is the user's. [host:
+   codex-cli 0.169.0 and 0.170.0 Windows, codex exec, measured 2026-11-18 / re-test after a Codex update]
 3. A custom agent (`.codex/agents/*.toml`) runs on its definition's model and effort; `model` and
    `reasoning_effort` passed to `spawn_agent` are silently ignored for it, and honoured for `default`.
    The real model is recorded per subagent in `<state folder>/agents.jsonl`; compare it with the route.
@@ -76,12 +77,25 @@ The first line `run.py` prints is `RUN <id> started run_dir=...`; the run's logs
    check, review launch, test run, three commits), none refused. With `codex exec --approve-for-me` an automatic
    reviewer approved them; that is not the user's approval. If the commit of a verified unit is refused, report
    the unit as verified but not committed. If a worker or review launch through `run.py` is refused, the unit
-   is incomplete: every change needs its cross-vendor review. [host: codex-cli 0.169.0 Windows interactive, measured
-   2026-11-18 (exec 2026-11-17) / re-test after a Codex update]
+   is incomplete: every change needs its cross-vendor review. If the user's Codex rules (`rules/*.rules`) allow `git add`
+   or `git commit`, those commands run without a prompt and outside the sandbox; the protection that is left is the
+   tagteam hooks and `run.py`'s `git_head_moved` check (`install.py --check --host codex` warns when a rule allows
+   `git commit` or `git push`). [host: codex-cli 0.169.0 Windows interactive, measured 2026-11-18 (exec 2026-11-17);
+   the rules case codex-cli 0.170.0 Windows, measured 2026-11-18 / re-test after a Codex update]
 10. Codex trusts each hook entry by its definition; a changed or new entry is skipped silently until it is
     trusted again in interactive Codex. After `install.py --update` or `--repair-hooks`, open Codex in the
-    project and trust the hooks. Changing a hook script needs no new trust. [host: codex-cli 0.169.0, measured
-    2026-11-17 / re-test after a Codex update]
+    project and trust the hooks. Changing a hook script needs no new trust. Trusting the project (`codex exec
+    --trust`, or the question in interactive Codex) and trusting the hooks (`/hooks`) are two separate steps.
+    In a project Codex does not trust, the project's `.codex/hooks.json` is skipped with the start line `warning:
+    Untrusted project-local configuration is disabled.`, and no role record is written;
+    `--dangerously-bypass-hook-trust` skips only the hook trust and does not stand in for the project trust. `run.py`
+    reports this as `hooks_not_run` (exit 11) and `install.py --check --host codex` warns when the project is not in
+    `config.toml`'s trusted projects. Whether the two flags exist in 0.169.0 is unknown. [host: codex-cli 0.169.0,
+    measured 2026-11-17; project trust and the two flags codex-cli 0.170.0 Windows, measured 2026-11-18 / re-test after
+    a Codex update]
+11. On macOS, `/usr/bin/git` inside the Seatbelt sandbox prints `xcrun: couldn't create cache file ...` on stderr but
+    exits 0 and its result is right: do not read it as a failure. Whether a Homebrew git avoids it is unconfirmed. [host:
+    codex-cli 0.170.0 macOS `codex exec`, measured 2026-11-19 / re-test after a Codex update]
 
 ## agy notes
 
@@ -92,13 +106,23 @@ policy, not a measured agy limit. agy's own subagents are not harness roles (not
 1. A headless `agy -p` parent waits at most three minutes for a background command, so it cannot collect a worker
    that runs for minutes; agy as the orchestrator is therefore interactive only. [host: agy 1.5.10 headless,
    Windows and Linux, measured 2026-11-18 / re-test after an agy update]
-2. The Orchestrator model plans on an Argon-class model and hands the plan to an execution model inside the same
-   conversation. For the harness that whole conversation is one orchestrator, so the execution side does the
+2. The built-in Orchestrator model plans (the agy TUI labels the planner "Neon" or "Argon"; the label is a UI text, not a
+   measurement) and hands the plan to an execution model inside the same conversation. `agy models` (1.5.12) lists two
+   ids, `gemini-pro-orchestrator-neon` "Orchestrator (Neon)" and `gemini-pro-orchestrator-g1-pro` "Orchestrator
+   (Argon)"; the interactive `/model` list offered only Neon, and a session on it really ran on `neon`
+   (`agy-models.jsonl`). Pass the id of your own conversation: the most recent `agy-models.jsonl` line with your `cid`
+   (the `ANTIGRAVITY_CONVERSATION_ID` of your shell) whose `model` is one of the `orchestrators` ids of `models.json`; the
+   log alternates with the execution model, so the plain last line can name that one. [host: agy 1.5.12 Linux, measured
+   2026-11-19 / re-test after an agy update]
+   For the harness that whole conversation is one orchestrator, so the execution side does the
    orchestrator's work: routing, `run.py` launches, comparing a report with the diff, commits. In the one run
    observed the execution side was `gemini-flash-worker-agy`, a Flash-class model; whether a long or complex
-   mission does the same is unconfirmed. The model takes no effort (`--effort` is refused as not adjustable), so
-   pass no `--orchestrator-effort`. [host: agy 1.5.10, one simple instruction, measured 2026-11-18 / re-test after
-   an agy update] The harness therefore adds:
+   mission does the same is unconfirmed. In an interactive mission on 1.5.12 the plan phase ran on `neon` and the
+   execution phase on `gemini-flash-worker-agy`, alternating every turn. The model takes no effort: `/effort` reports it as not adjustable for the
+   older id (`--effort` is refused) and for `neon` (`agy -p "/effort" --model gemini-pro-orchestrator-neon`; a `--effort`
+   rejection was not probed for `neon`), so pass no `--orchestrator-effort`. [host: agy 1.5.10 Windows, one
+   simple instruction, measured 2026-11-18; agy 1.5.12 Linux, one mission, measured 2026-11-19 / re-test after an agy
+   update] The harness therefore adds:
    - Rule: the plan launches every implementation unit through `run.py`; the execution side edits only mission
      records (status.md) and makes no small fix itself.
    - The review brief asks the reviewer to compare the worker's `CHANGED` with `git diff`, and the router raises
@@ -127,21 +151,30 @@ policy, not a measured agy limit. agy's own subagents are not harness roles (not
    model call has no user input; the guard records that as a worker, so it can neither commit nor delegate. The
    orchestrator's own `invoke_subagent` gets `ask`. A subagent inherits `HARNESS_DELEGATE_RUN=1` from its parent's
    environment. The other delegation tool names (`define_subagent`, `run_workflow`, `swarm`) come from agy's change
-   log and were not seen. [host: agy 1.5.10-1.5.11 headless, measured 2026-11-18 / re-test after an agy update]
+   log and were not seen. In an interactive session the subagent was recorded as a worker as described, and its
+   `run_command` waited for an approval for 60 seconds and then timed out, which ended the subagent with `REFUSED`:
+   a user who is busy elsewhere makes the subagent fail. [host: agy 1.5.10-1.5.11 headless, measured 2026-11-18;
+   interactive agy 1.5.12 Linux, measured 2026-11-19 / re-test after an agy update]
 6. A headless agy in `accept-edits` mode denies a shell command that no allow rule covers, whatever a hook answers, so
    `run.py` gives a google worker `--settings` with its own allow list (it replaces the user's list for that run). In
    the default mode a command runs without a rule but cannot write, and `--mode plan` runs no commands; Windows needs
    an exact allow rule (windows.md). [host: agy 1.5.10, measured 2026-11-18 / re-test after an agy update]
 7. Git Bash rewrites an argument that starts with `/` (for example `agy -p /permissions`); prefix the command with
    `MSYS_NO_PATHCONV=1` (windows.md).
-8. Unconfirmed in interactive agy; record what happens in status.md the first time it matters:
-   - whether the first model call of a conversation carries the user's input (if not, the guard records the
-     orchestrator as a worker and refuses its commits; manual section 1.3 has the recovery);
-   - whether `ask` opens an approval prompt for each command, and whether "always allow" also covers the next
-     command with other arguments (tell the user at the mission start roughly how many approvals to expect);
-   - whether the completion notice of a background command arrives in the same turn, opens a new turn, or comes
-     after the turn has ended (until known, use `run.py --wait <id>` or `--status <id>` and do not end the turn
-     without a result);
-   - whether an interactive agy in an untrusted folder loads `.agents/hooks.json` (headless runs do);
-   - whether `ask` on the orchestrator's `invoke_subagent` opens a prompt, and which model takes the later turns of a
-     long mission (`agy-models.jsonl` shows it).
+8. Interactive agy, observed once on Linux (agy 1.5.12, one small mission; Windows interactive is not measured):
+   - the first model call of the orchestrator's conversation carried the user's input, so the guard recorded the
+     orchestrator as an orchestrator (role `orchestrator`, no `basis`);
+   - a long `run.py` worker went to the background after about ten seconds, and `run.py --wait <id>` and the completion
+     notice both came back in the same turn without user input;
+   - the planner and the execution model alternate each turn (`agy-models.jsonl`);
+   - `ask` opened approval prompts, several per mission, and "always allow" did not stop them (the user's
+     recollection; the count was not recorded). An agy orchestrator therefore needs the user present for the whole
+     mission to approve commands (an inference from that).
+   [host: agy 1.5.12 Linux interactive, measured 2026-11-19 / re-test after an agy update]
+   Still unconfirmed; record what happens in status.md the first time it matters:
+   - whether "always allow" also covers the same command with other arguments;
+   - whether an interactive agy in an untrusted folder loads `.agents/hooks.json` (headless runs do) and whether it asks
+     for trust first;
+   - whether `ask` on the orchestrator's `invoke_subagent` opens a prompt;
+   - whether the edit tools (`write_file`, `edit_file`) ask for approval when only `write_file(*)` is allowed: the
+     baseline per tool is open (the hook matcher does not include them).

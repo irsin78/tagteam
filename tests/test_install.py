@@ -2228,6 +2228,25 @@ class InstallTests(unittest.TestCase):
         self.assertRegex(out, r"updated\s+\.claude/agents/a\.md")
         self.assertEqual((self.dst / ".claude/agents/a.md").read_text(encoding="utf-8"), "agent v2")
 
+    def test_every_ignored_machine_local_file_is_one_the_launcher_checks_as_a_control_file(self):
+        import ast
+        run_py = INSTALL.parent / "harness/tagteam/run.py"
+        tree = ast.parse(run_py.read_text(encoding="utf-8"))
+        lists = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id in (
+                    "CONTROL_HOOK_FILES", "CONTROL_SETTING_FILES"):
+                lists[node.targets[0].id] = set(ast.literal_eval(node.value))
+        self.assertEqual(set(lists), {"CONTROL_HOOK_FILES", "CONTROL_SETTING_FILES"})
+        not_control = {}  # entry -> why it is ignored but not a control file (none now: add the reason when one appears)
+        checked = lists["CONTROL_HOOK_FILES"] | lists["CONTROL_SETTING_FILES"]
+        for entry in install.LOCAL_IGNORES:
+            self.assertTrue(entry in checked or entry in not_control,
+                            f"{entry} is git-ignored by the installer but run.py does not compare it before and after a run")
+        for entry, why in not_control.items():
+            self.assertIn(entry, install.LOCAL_IGNORES)
+            self.assertTrue(why)
+
     def test_r3_a_failure_judged_from_the_output_does_not_claim_a_wrong_exit_code(self):
         self.use_real_hooks()
         self.run_install()
@@ -2295,8 +2314,9 @@ class RunBoundedTests(unittest.TestCase):
         code = ("import sys; sys.stdout.buffer.write('caf\\u00e9 \\u4f5c'.encode('utf-8') + bytes([0xff, 0xfe])); "
                 "sys.stderr.buffer.write(bytes([0x80]))")
         p = install.run_bounded([sys.executable, "-c", code], "", dict(os.environ), 30, None)
-        self.assertTrue(p.stdout.startswith("café 作"), p.stdout)
-        self.assertIsInstance(p.stderr, str)
+        # the whole strings: each undecodable byte is one U+FFFD (errors="ignore" would drop them, a locale code page would crash)
+        self.assertEqual(p.stdout, "café 作��")
+        self.assertEqual(p.stderr, "�")
 
 
 class HookCommandTests(unittest.TestCase):

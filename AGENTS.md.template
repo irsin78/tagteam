@@ -28,8 +28,12 @@ model; sessions opened that way ran on the wrong model or did not run at all. A 
 rejects `start_session` without `model` and `effort`, and a Codex `spawn_agent`
 without them unless the agent type is a custom definition (which fixes both).
 On agy the router returns `run` for every role, and a review is at least grade A; with
-the built-in Orchestrator model pass `--orchestrator-model gemini-pro-orchestrator-g1-pro`
-and no effort (it takes none).
+the built-in Orchestrator model pass its id as `--orchestrator-model` (for example
+`gemini-pro-orchestrator-neon`) and no effort (it takes none). It has more than one id
+(`gemini-pro-orchestrator-neon`, `gemini-pro-orchestrator-g1-pro`): use the one your own conversation runs on. In
+`.tagteam/agy-models.jsonl` take the most recent line with your conversation id (`cid`; the
+`ANTIGRAVITY_CONVERSATION_ID` of your shell) whose `model` is one of the `orchestrators` ids of `models.json` (the log also
+holds the execution model); without one, ask `agy models` or the user.
 
 Before opening, tell the user in one sentence which model/effort does what and
 why, plus the router's notice line. Ask the user first when the router returns

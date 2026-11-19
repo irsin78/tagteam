@@ -60,6 +60,10 @@
     }
   },
   "orchestrators": {
+    "gemini-pro-orchestrator-neon": {
+      "vendor": "google", "label": "Orchestrator (Neon)", "compare_as": "gemini-4-argon:high",
+      "note": "agy built-in model, the one an interactive session offers (agy 1.5.12): plans, hands execution to an internal model, takes no --effort. compare_as is an assumption from the planner label in the agy TUI, not a measurement. Never a worker model: run.py rejects it."
+    },
     "gemini-pro-orchestrator-g1-pro": {
       "vendor": "google", "label": "Orchestrator (Argon)", "compare_as": "gemini-4-argon:high",
       "note": "agy built-in model: plans with Argon, hands execution to an internal model, takes no --effort. compare_as is an assumption from the change log and the /model list name, not a measurement. Never a worker model: run.py rejects it."

@@ -31,8 +31,9 @@ check · Worktrees · Line endings.
 ## Codex
 
 - **`windows.sandbox`.** With `elevated`, every command of `codex exec` failed with `CreateProcessWithLogonW failed:
-  1385` (0.169.0); `unelevated` works. `install.py --check --host codex` warns about `elevated` in your Codex config (your
-  setting, tagteam does not change it); interactive Codex with `elevated` is unconfirmed. `run.py` passes
+  1385` in codex-cli 0.169.0; in 0.170.0 the same commands ran on one PC (two runs, `codex exec` only); `unelevated` works
+  in both. `install.py --check --host codex` warns about `elevated` in your Codex config (your setting, tagteam does not
+  change it; its own default is `unelevated`); interactive Codex with `elevated` is unconfirmed. `run.py` passes
   `-c windows.sandbox=unelevated` itself (`codex.windows_sandbox` in `models.local.json`; `null` passes nothing); add it
   yourself when you call `codex` by hand.
 - **`.git` is read-only in `workspace-write`.** `git add`, `git commit`, branches and worktrees fail with `.git/index.lock:
@@ -111,3 +112,10 @@ The Claude Code desktop app also asks you to trust the repository once before it
 
 The repository sets `eol=lf` in `.gitattributes` for all files; a Git setting that rewrites to CRLF can break shell scripts
 on other platforms.
+
+This repository's `.gitattributes` forces LF. A project you install into has no such file unless you add one: with
+`core.autocrlf=true` its clone is checked out with CRLF while the installer writes LF. The installer does not rewrite a file
+that differs from its new content only in line endings (it reports `kept`), so `--update` leaves nothing for git to show.
+Files that an earlier version already rewrote show up as ` M` with no change in content; stage just those with
+`git add -u -- <paths>` and they disappear (a bare `git add -u` also stages your other edits to tracked files). `git add`
+may print `LF will be replaced by CRLF` for installed files; that is the same setting and harmless.

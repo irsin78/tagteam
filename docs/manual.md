@@ -53,7 +53,7 @@ installs from another copy of the repository.
 | `harness/claude/agents` | `.claude/agents` | overwritten |
 | `harness/skills` | `.claude/skills` and `.agents/skills` | overwritten (Codex reads `.agents/skills`) |
 | `harness/tagteam/*` (not `tests/`) | `.claude/tagteam/` | overwritten, `models.json` included; files with `.local.` in the name are not copied (the example file only seeds `models.local.json`) |
-| `harness/codex/hooks.json` | `.codex/hooks.json` | written once, then kept |
+| `harness/codex/hooks.json` | `.codex/hooks.json` | written once, then kept; the installer adds an ignore rule for it; a file git tracks is never written, untracked or backed up (section 1.2) |
 | `harness/codex/agents` | `.codex/agents` | overwritten |
 | `harness/agy/hooks.json` | `.agents/hooks.json` | only the `tagteam` key is written, with this machine's interpreter and the absolute guard path; rewritten on every install and `--update` (section 1.3) |
 | `AGENTS.md.template` | `AGENTS.md` | the part above the `## Project policy` heading is replaced; that heading and everything below it is kept (marker rule below) |
@@ -73,7 +73,8 @@ Other things the installer does:
 |---|---|
 | `models.local.json` | If missing: in a terminal it asks the plan for each vendor (`none`, `free`, `pro`, `max`; Enter keeps `pro`; `none` removes that vendor from routing). With `--yes` or without a terminal it copies `models.local.json.example`. Check and edit the result (section 5.2). |
 | Benchmark and available models | If `TAGTEAM_AA_API_KEY` is set and `bench.local.json` does not exist, runs `models_collect.py --write-bench` once (15 second timeout); if a vendor with a plan other than `none` has no `available` list, runs `--write-available` once. A failure prints a warning; the install continues. |
-| `.gitignore` | Adds `.claude/tagteam/models.local.json`, `.claude/tagteam/bench.local.json`, `.tagteam/` and `.agents/hooks.json`. |
+| `.gitignore` | Adds `.claude/tagteam/models.local.json`, `.claude/tagteam/bench.local.json`, `.codex/hooks.json`, `.agents/hooks.json` and `.tagteam/`. |
+| Line endings | A file whose content differs from the new one only in `\r\n` versus `\n` (a clone with `core.autocrlf=true`) is reported `kept` and not rewritten, so `--update` makes no change that git shows. Only valid UTF-8 text without a NUL byte is compared this way; any other file is compared exactly. |
 | State folder | Moves records of an old `<git common dir>/tagteam/` into `.tagteam/` once (section 2). |
 | Weekly check | In a terminal, a plain install (not `--update`) asks whether to register it (section 8.2). |
 
@@ -87,7 +88,7 @@ a failure ends with `check: FAILED` (exit code 1), otherwise `check: ok`.
 - **static**: the tools on PATH (a missing CLI is a warning), the interpreter the host's hooks call (`python3` or `python`
   for Claude; `python3`, on Windows `python`, for Codex; a missing one is an error, one found only through your shell
   PATH a warning), the installed files, the state folder (path, `.gitignore`, an old folder left over), and for Codex the
-  drift of `.codex/hooks.json`.
+  drift of `.codex/hooks.json` and three warnings about your own Codex setup (section 1.2). Your Codex files are only read.
 - **handler**: fake payloads in the host's own format through the installed `role_guard.py`.
   Claude: `start_session` without model (denied), a worker `git commit` (denied), a worker `git status` (allowed); it also
   runs **hook commands**: each tagteam command of `.claude/settings.json`, exactly as written, in the shell Claude Code uses
@@ -119,8 +120,35 @@ unless `--live` is given.
 
 Codex ties its trust of a hook to the hook definition and the guard path, and **skips a new or changed entry without any
 message**. After `install.py` (first run), `--update` or `--repair-hooks`, open `codex` in the project and trust the hooks
-with `/hooks`; until then the role guard is off there. `.codex/hooks.json` is machine-local: it holds the absolute path
-of the guard and the installer never rewrites an existing file.
+with `/hooks`; until then the role guard is off there. Two steps, in this order: trust the **project** (the question
+codex asks in a new folder, or `codex exec --trust`), then trust the **hooks**; without the first, Codex does not load the
+project's `.codex/hooks.json` at all. `.codex/hooks.json` is machine-local: it holds the absolute path of the guard, the
+installer adds an ignore rule for it, and the installer never rewrites an existing file.
+
+**On a new machine or a fresh clone:** `python3 install.py <project dir> --update --yes`, then `--check --host <host>` for
+each host you use (Codex also needs the two trust steps above: the project, then the hooks).
+
+**What `--check --host codex` warns about.** These are warnings, not errors; the proof that the hooks run is still
+`--check --live`. Your files under `$CODEX_HOME` (default `~/.codex`) are read, never written; a file that is missing,
+larger than 1 MB, not a regular file or not valid is reported `unverified`, quietly.
+
+- `your Codex rules allow "git commit" (<file>): ...` (also `"git push"`): a `prefix_rule` in `rules/*.rules` that allows
+  those commands (decision `allow` or none, a pattern that starts with `git` and names the word or stops at `git`). Codex
+  runs such a command outside its sandbox, so a worker's commit is stopped only by the tagteam hooks: keep the project and
+  its hooks trusted. The rules are read as Starlark through Python's parser; a file that does not parse is `unverified`.
+- `this project is not in Codex's trusted projects (<config>): ...`: `config.toml` has no `[projects.'<path>']` table with
+  `trust_level = "trusted"` for exactly this path (Windows ignores case). Whether Codex also trusts a project below a
+  trusted parent folder is unverified, so the installer counts only the exact path and merely mentions a trusted parent.
+  Codex skips the project's hooks when the project is not trusted. This needs Python 3.11 or newer (`tomllib`); on an older Python, such as the
+  3.9 that macOS ships, the answer is `unverified`.
+- `.codex/hooks.json is tracked by git; ...`: the file holds this machine's absolute guard path, so it should not be in
+  a commit. Untrack it yourself with `git rm --cached .codex/hooks.json` and commit; tagteam never changes your repository.
+  While git tracks it, install and `--update` do not write it (a tracked file that was deleted is not recreated; the
+  installer says so, and `--check` then reports the missing file as an error, as for any missing file). The same holds when
+  git cannot say whether it tracks the file (missing, timed out, unreadable index). `--repair-hooks` with nothing to repair
+  says so and exits 0; when it would write, it asks git first and, for a tracked file or an unanswered question, writes
+  nothing, makes no backup and exits 1 (the preview still works). The check that an ignore rule really applies (a later
+  rule can undo it) exists for `.agents/hooks.json` only; for `.codex/hooks.json` the installer adds the rule.
 
 After moving or copying a project, or in a worktree that received a copy of the file, or when `--check --host codex`
 reports drift (an entry missing, or a wrong path):
@@ -128,7 +156,8 @@ reports drift (an entry missing, or a wrong path):
     python3 install.py <project dir> --repair-hooks          # preview
     python3 install.py <project dir> --repair-hooks --yes    # apply
 
-It touches only the tagteam entries, writes `hooks.json.bak` first and prints the diff. Then trust the hooks again.
+It touches only the tagteam entries, writes `hooks.json.bak` first when it overwrites an existing file, and prints the
+diff. Then trust the hooks again.
 
 ### 1.3 agy hooks
 
@@ -270,16 +299,24 @@ Details per operation and the measured limits: [hosts.md](../harness/skills/cycl
 
 1. Install (or `--update`), then run `python3 install.py <project dir> --check --host agy`. Optionally `--live` (one model
    call). Recovery if the hooks misbehave: section 1.3.
-2. Start `agy` **interactively** in the project and pick the model "Orchestrator (Argon)". A headless `agy -p` cannot
-   orchestrate: it waits only three minutes for a background command. The orchestrator passes `--host agy
-   --orchestrator-model gemini-pro-orchestrator-g1-pro` to the router and no `--orchestrator-effort` (the model has none;
-   giving one is a usage error, exit 2). The router compares it as `gemini-4-argon` at `high`, an assumption, and says so in
-   the notice. Your account must list the model (`agy models`); it did not on one test account.
+2. Start `agy` **interactively** in the project and pick the built-in "Orchestrator" model. A headless `agy -p` cannot
+   orchestrate: it waits only three minutes for a background command. The built-in Orchestrator has more than one id
+   (agy 1.5.12 lists `gemini-pro-orchestrator-neon` "Orchestrator (Neon)" and `gemini-pro-orchestrator-g1-pro`
+   "Orchestrator (Argon)"; the interactive model list showed only one entry). The orchestrator passes `--host agy
+   --orchestrator-model <the id of its own conversation>` to the router, for example `gemini-pro-orchestrator-neon`.
+   It takes it from `<state folder>/agy-models.jsonl`: the most recent line with its conversation id (`cid`, the
+   `ANTIGRAVITY_CONVERSATION_ID` of its shell) whose `model` is one of the `orchestrators` ids of `models.json`. The log also
+   records the execution model (`gemini-flash-worker-agy` alternated with `neon`), so the last line may name that one;
+   `agy models` lists both Orchestrator ids but not which one is selected. It passes no `--orchestrator-effort` (the model has none; giving one is a usage error,
+   exit 2). The router compares either id as `gemini-4-argon` at `high`, an assumption, and says so in the notice. Your
+   account must list the model (`agy models`); it did not on one test account.
 3. Every worker is a `run.py` run (the router returns `run` for every role on agy), started by the orchestrator's shell
    command. Which worker vendor does what is the router's decision as on any host. Reviews are at least grade A.
 4. Expect approval prompts: the hook answers `ask` for shell commands that are neither refused nor covered by an allow rule, so
-   agy's own permission rules decide. Whether an interactive agy then asks you for every command, and whether "always
-   allow" also covers the same command with other arguments, is unconfirmed; on Windows an allow rule has to match the
+   agy's own permission rules decide. In the one interactive mission observed (Linux, agy 1.5.12) it asked several times and
+   "always allow" did not stop the questions, so **stay present for the whole mission**; a subagent's command that waits
+   for your approval for 60 seconds fails. Whether "always allow" also covers the same command with other arguments is
+   unconfirmed; on Windows an allow rule has to match the
    command exactly ([platform/windows.md](platform/windows.md#agy-google)). The orchestrator tells you at the start of a
    mission roughly how many to expect.
 5. The Orchestrator model hands its plan to an execution model that, in the one observation, was a Flash-class model. The
@@ -340,8 +377,8 @@ model.
 **agy host.** `--host agy` returns `launch.kind` `run` for every role. A review there is raised to at least grade A when the
 author's grade is lower (`agy_review_floor_A` in `reason`, and the notice says "review grade raised from C to A"), because the
 execution half of agy's Orchestrator model may be a weaker model; a pinned reviewer or task preference below A is replaced
-(`override_below_floor`). `--orchestrator-model gemini-pro-orchestrator-g1-pro` names a model of the `orchestrators` block of
-`models.json`: the router compares it as that entry's `compare_as` model and effort, appends `Orchestrator compared as
+(`override_below_floor`). `--orchestrator-model gemini-pro-orchestrator-neon` (or `-g1-pro`) names a model of the
+`orchestrators` block of `models.json`: the router compares it as that entry's `compare_as` model and effort, appends `Orchestrator compared as
 gemini-4-argon high (assumed, not measured).` to the notice, and takes no `--orchestrator-effort` (exit 2). `run.py` refuses
 that id (`not registered`): it can orchestrate, not be launched. On Claude hosts a missing `--orchestrator-effort` falls back
 to `CLAUDE_EFFORT`; on other hosts it does not, since an agy started from Claude inherits that variable, and `ask_user` stays
@@ -475,6 +512,44 @@ Results:
   and `result.json` gets `"git_check": "unavailable"`; the run is not failed for it. Outside a work tree, or without
   `git`, the check is skipped silently. The run folder and the state folder are left out.
 
+**Control-plane check (every vendor).** The `git` check cannot see files git ignores, and the machine-local hook files are
+exactly those. So the launcher also compares, before and after the run, the content hash of every control-plane path that
+`git status` lists (`.claude/`, `.codex/`, `.agents/`, `AGENTS.md`, `CLAUDE.md`, the lists of the role guard; Python caches
+and `.claude/worktrees/` are left out) and of these machine-local files: the hook files `.agents/hooks.json` and
+`.codex/hooks.json`, and the setting files `.claude/settings.local.json`, `.claude/tagteam/models.local.json` and
+`.claude/tagteam/bench.local.json`. It also notes whether a top-level control folder became a link. The snapshot is taken
+after the agy hooks are copied into a worktree (above), so that copy is not a finding. Only a difference between the two
+snapshots counts; an edit made before the run does not. Without git, or outside a work tree, the `git` check is skipped but
+the named machine-local files and the link markers are still compared (the paths `git status` would list are not).
+
+- A run without `--read-only` that changed a control-plane path or a hook file in its own checkout: status
+  `control_plane_changed` (exit 10, subject to the order below) and an `ERROR: the control plane changed during the run
+  (...)` line. The cause may be the worker or any other process in
+  this checkout, **the orchestrator included**: do not edit the control plane yourself while a worker runs.
+- A setting file that changed, or a hook file changed in a `--read-only` run, only gives a `WARNING:` line. Setting files
+  change when the host writes an "always allow" approval, or when someone runs the collector with `--write-available` or
+  `--write-bench` (the installer does it too); the scheduled weekly run writes a proposal under the state folder and none
+  of these files. A read-only run that changed another
+  control-plane path gets `ERROR` if the git check also saw a write (`wrote_files`, exit 8), else a `WARNING`; it never
+  gets exit 10.
+- In a linked worktree the main checkout is compared as well, and a change there only warns (it may be someone else's).
+- A file over 16 MiB is compared by size and modification time; the `WARNING` saying so appears when that marker is the
+  same before and after (a changed marker is a change). A file of the run's own checkout that cannot be read is named in
+  `WARNING: the control-plane check is incomplete`; the main checkout of a worktree gets no such warning.
+- Limits: a change made and undone inside the run is not seen, and so are changes to files that git ignores and the lists
+  above do not name. Like the git check, this is an accident check, not a security boundary. `result.json` keeps the list
+  under `control_plane`.
+
+**Codex hooks check.** After a clean exit of an `openai` run the launcher looks in the state folder for a new Codex role
+record written since the start. None means the hooks did not run, or ran and could not write the record (an unwritable
+state folder); the usual cause is that Codex skips project hooks until the project is trusted (the report quotes Codex's
+own `Untrusted project-local configuration is disabled` line when it is there), but a missing record does not prove it. A
+new record that cannot be read is treated like an unreadable sessions folder (`hook check unavailable`, below), not as
+"hooks did not run". In the main checkout a missing record is status `hooks_not_run` (exit 11) with an `ERROR:` line that says to run `codex` once in the project,
+trust it, then trust the hooks with `/hooks`; the worker ran without the role guard, so review its changes. In a linked
+worktree it is a `WARNING` only (whether Codex runs the hooks of a worktree is unconfirmed). If the sessions folder cannot
+be read the report says `WARNING: hook check unavailable`. The check is made only when the CLI exited cleanly.
+
 **Model check.** After a clean exit the launcher compares the model that answered with the one requested, from `modelUsage`
 in the Claude JSON, the `model:` line in the Codex stderr header, or the model label in the `agy` log. A model it cannot
 confirm counts as a mismatch. This exists because sessions opened without a model ran on the wrong one.
@@ -526,8 +601,10 @@ the name after `RUN` in the first line, and the lookup works from any folder of 
 | 7 | `git_head_moved` | git HEAD or branch moved during the run |
 | 8 | `wrote_files` | a read-only run changed the work tree |
 | 9 | (`running`) | `--status`/`--wait` only: the run has not reported yet |
+| 10 | `control_plane_changed` | a write run changed the control plane (below) |
+| 11 | `hooks_not_run` | a Codex worker's hooks wrote no role record (below) |
 
-When several apply, 3 wins, then 7, 5, 4, 8, 1, 6.
+When several apply, 3 wins, then 7, 10, 11, 5, 4, 8, 1, 6.
 
 ## 8. Keeping the model list current
 
@@ -597,6 +674,8 @@ registered), so a failing run leaves a trace: without it cron mails the output, 
 | Notice says "Check orchestrator cap" | router was not told the orchestrator's model or effort | pass `--orchestrator-model` and `--orchestrator-effort` |
 | Launcher `model_mismatch` (4) | CLI used another model, or the model line was not found | read `runs/<id>/stderr.txt` and `cmd.json`; do not use the output as if it came from the requested model |
 | Launcher `exhausted` (3), `git_head_moved` (7), `wrote_files` (8) | usage limit; a worker committed; a read-only run wrote | wait for `until` or let the router use another vendor; read the `ERROR:` line and review the diff (section 7) |
+| Launcher `control_plane_changed` (10) | a write run changed `.claude/`, `.codex/`, `.agents/`, `AGENTS.md`, `CLAUDE.md` or a hook file (the worker, or another process in the checkout) | read the `ERROR:` line; check `git status` and `git diff` of those paths, restore what is wrong (section 9.1), and do not edit them while a worker runs |
+| Launcher `hooks_not_run` (11) | a Codex worker's hooks wrote no role record: usually the project or its hooks are not trusted; or the hooks ran and could not write it (state folder) | run `codex` once in the project, trust it, then the hooks (`/hooks`, section 1.2); `install.py <project dir> --check --host codex --live`; review what the worker changed |
 | Automatic turn cannot open a session | measured platform limit | open it on your next turn, or reuse a pool session by message |
 | `tagteam: python3/python not found on PATH; tool calls are blocked ...` | no working Python for the Claude hooks | install Python 3.9+ (`python3`, on Windows `python`); a Windows Store stub does not count |
 | `--check` reports `FAILED` | hook missing or changed, or no interpreter | read the line; `install.py <project dir> --update` (Codex: `--repair-hooks`, section 1.2), then `--check` again |

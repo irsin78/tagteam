@@ -11,19 +11,25 @@ How to open, follow up, watch and stop workers on each host: [hosts.md](hosts.md
 ## 0. Host check (mission start)
 
 - Name the host (`claude-desktop`, `claude`, `codex` or `agy`) and pass it to the router as `--host`.
-- Run `install.py <project> --check --host <host>` where the template source is. Parts it could not check
-  are reported as unverified; say so to the user instead of assuming they work.
+- Run `install.py <project> --check --host <host>` (the installer knows `claude`, `codex` and `agy`: on `claude-desktop`
+  pass `--host claude` to it, and `claude-desktop` to the router) from the tagteam checkout (an installed project has no
+  `install.py`; use the checkout's path if you know it). If you do not know where the checkout is, skip the check,
+  say so to the user and record it in status.md. Parts it could not check are reported as unverified; say so to
+  the user instead of assuming they work.
 - Codex: tell the user in one line that commits, branches, worktrees and `run.py` workers (other vendors,
   reviews) each ask for approval of an escalated command, and roughly how many the mission needs
   (hosts.md, Codex notes 9). A commit refused after verification leaves the unit verified but not
   committed. A refused worker or review launch leaves the unit incomplete: every change needs its
   cross-vendor review.
-- agy: use it as the orchestrator only interactively, with the Orchestrator model (pass `--orchestrator-model
-  gemini-pro-orchestrator-g1-pro`, no effort; if the user chose a single model such as the Argon model instead, pass
-  that model and its effort: `--orchestrator-model gemini-4-argon --orchestrator-effort <effort>`). Its commands may each ask the user for approval, so say in one line
-  roughly how many to expect (route, `run.py` launches, tests, commits); what agy does with them in an interactive
-  session is unconfirmed (hosts.md, agy notes 8). The execution side of that model may be a weaker model: follow
-  hosts.md agy notes 2.
+- agy: use it as the orchestrator only interactively, with the Orchestrator model. It has more than one id
+  (`gemini-pro-orchestrator-neon`, `gemini-pro-orchestrator-g1-pro`): pass the id of your own conversation, and no
+  effort. In `.tagteam/agy-models.jsonl` take the most recent line with your conversation id (`cid`; the
+  `ANTIGRAVITY_CONVERSATION_ID` of your shell) whose `model` is one of the `orchestrators` ids of `models.json`; the log
+  also holds the execution model, so the last line may name that one. Without such a line, ask `agy models` or the user. If the user chose a single model such as the Argon model instead, pass that model and its effort:
+  `--orchestrator-model gemini-4-argon --orchestrator-effort <effort>`. Its commands may each ask the user for
+  approval, so the user has to be present for the whole mission; say in one line roughly how many to expect
+  (route, `run.py` launches, tests, commits; hosts.md, agy notes 8). The execution side of that model may be a weaker
+  model: follow hosts.md agy notes 2.
 - Record the host in status.md.
 
 ## 1. Mission folder

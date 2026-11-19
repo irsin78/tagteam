@@ -450,7 +450,8 @@ class RouteTest(RouteBase):
             mid, _, effort = o["compare_as"].rpartition(":")
             self.assertIn(effort, data["models"][mid]["grades"], oid)
             self.assertEqual(data["models"][mid]["vendor"], o["vendor"], oid)
-        self.assertEqual(data["orchestrators"]["gemini-pro-orchestrator-g1-pro"]["compare_as"], "gemini-4-argon:high")
+        for oid in ("gemini-pro-orchestrator-g1-pro", "gemini-pro-orchestrator-neon"):
+            self.assertEqual(data["orchestrators"][oid]["compare_as"], "gemini-4-argon:high", oid)
         self.assertIn("gemini-4-carbon", data["models"])
         self.assertIn("gemini-4-hydrogen", data["models"])
         self.assertEqual(list(data["models"]).index("claude-fable-5-2"), 0)
@@ -602,6 +603,7 @@ class LaunchTest(RouteBase):
 class AgyHostTest(RouteBase):
     """agy as the orchestrator host (design m5 5.1, 5.2 and the review grade floor)."""
     ORCH = "gemini-pro-orchestrator-g1-pro"
+    NEON = "gemini-pro-orchestrator-neon"
 
     def review(self, *extra, host="agy", env=None):
         return self.go("--role", "review", "--json", "--host", host, *extra, env=env)
@@ -771,17 +773,40 @@ class AgyHostTest(RouteBase):
         r = self.go("--role", "design", "--json", "--host", "agy")[1]
         self.assertIsNone(r["ask_user"])
 
-    def test_run_py_rejects_the_orchestrator_id_as_a_worker_model(self):
-        # the id lives in "orchestrators", not "models": a worker launch with it must fail before any CLI starts
+    def test_neon_is_an_orchestrator_like_the_other_built_in_one(self):
+        # agy 1.5.12 lists two built-in Orchestrator models; an interactive session offers Neon. Same handling as g1-pro.
+        for effort in (None, "high"):
+            extra = ("--orchestrator-effort", effort) if effort else ()
+            code, out = self.go("--role", "design", "--json", "--host", "agy", "--orchestrator-model", self.NEON, *extra)
+            if effort:
+                self.assertEqual((code, out), (2, ""))  # takes no effort, like g1-pro
+            else:
+                self.assertEqual(code, 0)
+                self.assertIn("compared as gemini-4-argon high", out["notice"])  # compare_as is used
+                self.assertEqual(out["ask_user"], self.go("--role", "design", "--json", "--host", "agy",
+                                                         "--orchestrator-model", self.ORCH)[1]["ask_user"])
+        self.models_edit(lambda d: d["orchestrators"][self.NEON].update(compare_as="gemini-4-hydrogen:xhigh"))
+        r = self.go("--role", "design", "--json", "--host", "agy", "--orchestrator-model", self.NEON)[1]
+        self.assertIn("compared as gemini-4-hydrogen xhigh", r["notice"])  # edited per id: the two entries are independent
+        r = self.go("--role", "design", "--json", "--host", "agy", "--orchestrator-model", self.ORCH)[1]
+        self.assertIn("compared as gemini-4-argon high", r["notice"])
+
+    def worker_launch(self, model):
         prompt = os.path.join(self.tmp, "prompt.txt")
         with open(prompt, "w", encoding="utf-8") as f:
             f.write("x")
         env = dict(os.environ, TAGTEAM_CONFIG_DIR=self.cfg, TAGTEAM_STATE_DIR=self.state)
         env.pop("HARNESS_DELEGATE_RUN", None)
-        proc = subprocess.run([sys.executable, os.path.join(TAGTEAM, "run.py"), "--vendor", "google", "--model", self.ORCH,
+        return subprocess.run([sys.executable, os.path.join(TAGTEAM, "run.py"), "--vendor", "google", "--model", model,
                                "--effort", "high", "--prompt-file", prompt], capture_output=True, text=True, env=env, timeout=60)
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("not registered", proc.stdout + proc.stderr)
+
+    def test_run_py_rejects_the_orchestrator_ids_as_a_worker_model(self):
+        # the ids live in "orchestrators", not "models": a worker launch with one must fail before any CLI starts
+        for model in (self.ORCH, self.NEON):
+            with self.subTest(model):
+                proc = self.worker_launch(model)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("not registered", proc.stdout + proc.stderr)
 
 
 class AskUserTest(RouteBase):
