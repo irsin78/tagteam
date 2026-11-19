@@ -13,7 +13,6 @@ import ntpath
 import os
 import re
 import sys
-import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -113,7 +112,7 @@ def create_record(path, role, host, **extra):
     serialises the writers and the temporary file is renamed in. StateError when the folder is unwritable."""
     rec = dict({"role": role, "host": host, "ts": int(time.time())}, **extra)
     folder = state.ensure_writable(os.path.dirname(path))
-    fd, tmp = tempfile.mkstemp(prefix=".role-", dir=folder)
+    fd, tmp = state.create_exclusive(folder, ".role-")  # not mkstemp: on affected Windows Pythons it retries a refusal up to TMP_MAX times, which looks like a hang
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(rec, f)

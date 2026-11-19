@@ -28,7 +28,9 @@ How to open, follow up, watch and stop workers on each host: [hosts.md](hosts.md
   also holds the execution model, so the last line may name that one. Without such a line, ask `agy models` or the user. If the user chose a single model such as the Argon model instead, pass that model and its effort:
   `--orchestrator-model gemini-4-argon --orchestrator-effort <effort>`. Its commands may each ask the user for
   approval, so the user has to be present for the whole mission; say in one line roughly how many to expect
-  (route, `run.py` launches, tests, commits; hosts.md, agy notes 8). The execution side of that model may be a weaker
+  (route, `run.py` launches, tests, commits; hosts.md, agy notes 8). On Windows interactive the user recalled approval
+  prompts on the commands started with `BypassSandbox: true` (`run.py` launches and commits); whether every such call
+  asks, how many a mission needs and the reach of "always allow" are unconfirmed. The execution side of that model may be a weaker
   model: follow hosts.md agy notes 2.
 - Record the host in status.md.
 
@@ -129,6 +131,11 @@ latest message, not in edits to earlier context.
 - On an agy host the comparison of section 5 may have been made by a weaker model: add to every review brief,
   Tier 0 batches included, "compare the worker's CHANGED with `git diff`". The router raises the review to at
   least grade A on `--host agy`.
+- A review run that ends `hooks_not_run` means no role record appeared, so the role guard may not have run. Use its
+  findings only if the run completed, `result.json` has `"git_check": "ok"` (not `partial`, `unavailable` or
+  `skipped`), and the report shows no `wrote_files`, `git_head_moved` or control-plane diagnostic; then record the
+  unit as reviewed without the guard in status.md. Otherwise ask the user to trust the project and its hooks in
+  Codex and rerun the review before marking the unit reviewed.
 - Keep the next unit running while a batch is verified, when they share no files.
 - Send the findings back to the worker that wrote the change (it already has the context);
   the orchestrator then checks the new diff. A blocker left after the last review of the

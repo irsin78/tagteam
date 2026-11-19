@@ -5,11 +5,12 @@ superproject's work tree; a Codex sandbox cannot write inside .git, so it is not
 more); <install root>/.tagteam/ outside git; TAGTEAM_STATE_DIR overrides everything (tests, manual use).
 Standard library only. Every tool that needs the folder calls this module and nothing else.
 """
+import errno
 import filecmp
 import os
+import secrets
 import shutil
 import subprocess
-import tempfile
 
 NAME = ".tagteam"
 OLD_NAME = "tagteam"
@@ -112,11 +113,30 @@ def state_dir(cwd=None):
     return _cache[cwd]
 
 
+CREATE_TRIES = 3  # a taken name is retried this often; any other refusal is final at once
+
+
+def create_exclusive(folder, prefix):
+    """(fd, path) of a new file in folder, created exclusively under a short name of its own (prefix and 8 random hex
+    digits, as long as mkstemp's: a folder path near the Windows MAX_PATH limit must still fit). A name that is taken
+    (FileExistsError) is retried with another one, at most CREATE_TRIES times and then raised; every other OSError, a
+    refusal included, is raised at once. tempfile.mkstemp is not used here: on affected Windows Pythons it retries a
+    PermissionError up to TMP_MAX times (2147483647 on 3.12) while os.access says the folder is writable, which looks like
+    a hang in a sandbox that denies writes os.access does not see."""
+    for _ in range(CREATE_TRIES):
+        path = os.path.join(folder, prefix + secrets.token_hex(4))
+        try:
+            return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600), path
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "no free file name in %d tries" % CREATE_TRIES)
+
+
 def ensure_writable(path):
     """Create the folder and prove it can be written. Returns path; raises StateError."""
     try:
         os.makedirs(path, exist_ok=True)
-        fd, probe = tempfile.mkstemp(prefix=".write-test-", dir=path)  # exclusive, unique name
+        fd, probe = create_exclusive(path, ".write-test-")
         try:
             os.write(fd, b"ok")
         finally:

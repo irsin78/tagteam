@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -224,15 +225,64 @@ class EnsureWritableTest(StateTestBase):
         self.assertIn("TAGTEAM_STATE_DIR", msg)
         self.assertIn("Codex: run this command with escalated permissions", msg)
 
-    def test_probe_creation_failure_is_reported(self):
+    def test_probe_creation_failure_is_reported_at_once(self):
         # a stand-in for a read-only folder that also works on Windows (a read-only directory attribute
-        # does not stop file creation there)
+        # does not stop file creation there), and for a sandbox that denies writes os.access does not see: one
+        # attempt, no retry (tempfile.mkstemp retried a PermissionError for as long as os.access said "writable")
         folder = os.path.join(self.tmp, "no-probe")
-        with mock.patch.object(state.tempfile, "mkstemp", side_effect=PermissionError(13, "Permission denied")):
+        with mock.patch.object(state.os, "open", side_effect=PermissionError(13, "Permission denied")) as opened:
             with self.assertRaises(state.StateError) as cm:
                 state.ensure_writable(folder)
+        self.assertEqual(opened.call_count, 1)
         self.assertIn(folder, str(cm.exception))
         self.assertIn("Permission denied", str(cm.exception))
+        self.assertIn("Codex: run this command with escalated permissions", str(cm.exception))
+        with mock.patch.object(state.os, "open", side_effect=OSError(5, "Input/output error")) as opened:
+            with self.assertRaises(state.StateError):
+                state.ensure_writable(folder)
+        self.assertEqual(opened.call_count, 1)  # any other OSError is final too
+
+    def test_probe_never_uses_mkstemp(self):
+        import tempfile
+        with mock.patch.object(tempfile, "mkstemp", side_effect=AssertionError("mkstemp called")):
+            state.ensure_writable(os.path.join(self.tmp, "plain"))
+
+    def test_a_taken_probe_name_is_retried_within_the_bound(self):
+        folder = os.path.join(self.tmp, "taken")
+        real_open, names = os.open, []
+
+        def open_taking_two(path, flags, mode=0o777):
+            names.append((path, flags))
+            if len(names) <= state.CREATE_TRIES - 1:
+                raise FileExistsError(17, "File exists")
+            return real_open(path, flags, mode)
+        with mock.patch.object(state.os, "open", side_effect=open_taking_two):
+            self.assertEqual(state.ensure_writable(folder), folder)
+        self.assertEqual(len(names), state.CREATE_TRIES)
+        self.assertEqual(len({p for p, _ in names}), state.CREATE_TRIES)  # a new name every time
+        self.assertTrue(all(f & os.O_EXCL and f & os.O_CREAT for _, f in names))  # exclusive creation, never an overwrite
+        self.assertEqual(os.listdir(folder), [])
+
+    def test_names_that_stay_taken_fail_after_the_bound(self):
+        folder = os.path.join(self.tmp, "all-taken")
+        with mock.patch.object(state.os, "open", side_effect=FileExistsError(17, "File exists")) as opened:
+            with self.assertRaises(state.StateError) as cm:
+                state.ensure_writable(folder)
+        self.assertEqual(opened.call_count, state.CREATE_TRIES)
+        self.assertIn("is not writable", str(cm.exception))
+
+    def test_create_exclusive_names_are_unique_and_exclusive(self):
+        folder = os.path.join(self.tmp, "ce")
+        os.makedirs(folder)
+        made = []
+        for _ in range(5):
+            fd, path = state.create_exclusive(folder, ".x-")
+            os.close(fd)
+            made.append(path)
+        self.assertEqual(len(set(made)), 5)
+        # short names: the prefix and 8 hex digits, like mkstemp's (a long folder path must still fit under MAX_PATH)
+        self.assertTrue(all(re.fullmatch(r"\.x-[0-9a-f]{8}", os.path.basename(p)) for p in made))
+        self.assertEqual(sorted(os.listdir(folder)), sorted(os.path.basename(p) for p in made))
 
     def test_probe_is_unique_and_only_it_is_removed(self):
         folder = os.path.join(self.tmp, "keep")

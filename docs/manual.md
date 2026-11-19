@@ -192,7 +192,9 @@ inside, and the orchestrator cannot write its mission records either. From a ter
 
 1. `python3 install.py <project dir> --update` rewrites the key; `--check --host agy` then says what is still wrong.
 2. To switch the hooks off, delete the `"tagteam"` key from `.agents/hooks.json` (your other keys stay), or add
-   `"enabled": false` inside the key (`/hooks` then lists them as disabled; agy 1.5.11).
+   `"enabled": false` inside the key (`/hooks` then lists them as disabled; agy 1.5.11). The opening screen of the
+   interactive `/hooks` view shows a count per event type, not hook names, and SessionStart is not listed as a type
+   although it runs (agy 1.5.12 Windows; the detail screens were not looked at).
 3. A role recorded wrongly. The guard decides the role at the first model call of a conversation and never changes it.
    If it refuses the orchestrator's `git commit` and the reason ends with `role recorded as worker: the first model call had
    no user input`, or the role is `unresolved` (the first decision was lost or the record is unreadable), delete the record
@@ -317,9 +319,13 @@ Details per operation and the limits: [hosts.md](../harness/skills/cycle/hosts.m
    command. Which worker vendor does what is the router's decision as on any host. Reviews are at least grade A.
 4. Expect approval prompts: the hook answers `ask` for shell commands that are neither refused nor covered by an allow rule, so
    agy's own permission rules decide. In interactive agy on Linux it asks several times per mission and
-   "always allow" does not stop the questions (Windows interactive: unconfirmed) [host: agy 1.5.12 Linux interactive,
-   measured 2026-11-19 / re-test after an agy update], so **stay present for the whole mission**; a subagent's command that waits
-   for your approval for 60 seconds fails. Whether "always allow" also covers the same command with other arguments is
+   "always allow" does not stop the questions [host: agy 1.5.12 Linux interactive, measured 2026-11-19 / re-test after an
+   agy update]. On Windows interactive agy runs commands in a sandbox that cannot write the work folder or `.git`, so
+   `run.py` launches and commits go out with `BypassSandbox: true`; the user recalled approval prompts on those
+   commands, whether every such call asks is unconfirmed [host: agy 1.5.12 Windows interactive, one session, measured
+   2026-11-19 / re-test after an agy update]. **Stay present for
+   the whole mission**; on Linux a subagent's command that waits for your approval for 60 seconds fails. Whether "always
+   allow" also covers the same command with other arguments, and how many approvals a mission needs, is
    unconfirmed; on Windows an allow rule has to match the
    command exactly ([platform/windows.md](platform/windows.md#agy-google)). The orchestrator tells you at the start of a
    mission roughly how many to expect.

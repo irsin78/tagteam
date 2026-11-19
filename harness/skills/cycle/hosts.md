@@ -152,7 +152,7 @@ policy, not an agy limit. agy's own subagents are not harness roles (note 5).
    argument `Path`), and a guard that cannot start (no Python, a wrong guard path) blocks exactly those tools, edits
    included: agy cannot repair its own hooks, so recover from a terminal or another editor (manual section 1.3). A
    worker's edit of the control plane is denied (in the main checkout, a linked worktree and its subfolders) [host: agy
-   1.5.12 Linux headless, measured 2026-11-19 / re-test after an agy update]; every other edit, and the orchestrator's,
+   1.5.12 Linux headless and Windows headless, measured 2026-11-19 / re-test after an agy update]; every other edit, and the orchestrator's,
    is `ask`. With allow rules for both edit tools, `ask` adds no prompt and does not block the edit [host: agy 1.5.12
    Windows interactive, measured 2026-11-19 / re-test after an agy update]; on other platforms, and without allow rules,
    that is unconfirmed. [host: agy 1.5.10 to 1.5.12 Windows and Linux (hook behaviour), measured 2026-11-18 and 2026-11-19 /
@@ -162,16 +162,19 @@ policy, not an agy limit. agy's own subagents are not harness roles (note 5).
    model call has no user input; the guard records that as a worker, so it can neither commit nor delegate. The
    orchestrator's own `invoke_subagent` gets `ask`. A subagent inherits `HARNESS_DELEGATE_RUN=1` from its parent's
    environment. The other delegation tool names (`define_subagent`, `run_workflow`, `swarm`) come from agy's change
-   log and are unseen. In an interactive session the subagent's `run_command` waits for an approval for 60 seconds and
-   then times out, which ends the subagent with `REFUSED`: a user who is busy elsewhere makes the subagent fail. [host:
-   agy 1.5.10 to 1.5.12, measured 2026-11-18 and 2026-11-19 / re-test after an agy update]
+   log and are unseen. In an interactive session on Linux the subagent's `run_command` waits for an approval for 60
+   seconds and then times out, which ends the subagent with `REFUSED`: a user who is busy elsewhere makes the subagent
+   fail [host: agy 1.5.12 Linux interactive, measured 2026-11-19 / re-test after an agy update]. On Windows interactive
+   the subagent's commands ran without that timeout [host: agy 1.5.12 Windows interactive, one session, measured
+   2026-11-19 / re-test after an agy update]. [host: agy 1.5.10 to 1.5.12 (the role handling), measured 2026-11-18 and
+   2026-11-19 / re-test after an agy update]
 6. A headless agy in `accept-edits` mode denies a shell command that no allow rule covers, whatever a hook answers, so
    `run.py` gives a google worker `--settings` with its own allow list (it replaces the user's list for that run). In
    the default mode a command runs without a rule but cannot write, and `--mode plan` runs no commands; Windows needs
    an exact allow rule (windows.md). [host: agy 1.5.10, measured 2026-11-18 / re-test after an agy update]
 7. Git Bash rewrites an argument that starts with `/` (for example `agy -p /permissions`); prefix the command with
    `MSYS_NO_PATHCONV=1` (windows.md).
-8. Interactive agy (Linux; Windows interactive: unconfirmed):
+8. Interactive agy (observed once on Linux and once on Windows):
    - the first model call of the orchestrator's conversation carries the user's input, so the guard records the
      orchestrator as an orchestrator (role `orchestrator`, no `basis`);
    - a long `run.py` worker goes to the background after about ten seconds, and `run.py --wait <id>` and the completion
@@ -180,6 +183,17 @@ policy, not an agy limit. agy's own subagents are not harness roles (note 5).
    - `ask` opens approval prompts, several per mission (how many: unconfirmed), and "always allow" does not stop them.
      An agy orchestrator therefore needs the user present for the whole mission to approve commands.
    [host: agy 1.5.12 Linux interactive, measured 2026-11-19 / re-test after an agy update]
+   On Windows interactive, the same points held for the role of the orchestrator, the long `run.py` worker and the
+   alternating models, and:
+   - `run_command` runs in a sandbox by default that cannot write the work folder or `.git` (a commit fails with a
+     permission error on `index.lock`). Read-only commands, `route.py` and the tests run inside it. Launch `run.py` and
+     `git commit` with the tool argument `BypassSandbox: true`: a `run.py` started inside the sandbox did not get going.
+     Whether Linux interactive does the same is unconfirmed (there `run.py` and commits ran without it);
+   - the user recalled approval prompts on the `BypassSandbox: true` commands; whether every such call asks, how many
+     a mission needs and what "always allow" covers are unconfirmed;
+   - the opening screen of the interactive `/hooks` view lists a count per event type, not hook names, and SessionStart
+     is not listed as a type although it runs; the detail screens were not looked at.
+   [host: agy 1.5.12 Windows interactive, one session, measured 2026-11-19 / re-test after an agy update]
    Unconfirmed; record what happens in status.md the first time it matters:
    - whether "always allow" also covers the same command with other arguments;
    - whether an interactive agy in an untrusted folder loads `.agents/hooks.json` (headless runs do) and whether it asks
