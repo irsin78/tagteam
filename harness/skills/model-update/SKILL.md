@@ -16,8 +16,7 @@ most capable first.
 
 0. **Worker check.** If this session is a worker, change nothing; report "model update proposal pending" in NOTES and stop.
 1. **Read the proposal.** Open `<state dir>/model-update.json` (state dir = the folder holding `sessions/`:
-   `.tagteam/` in the main checkout, see `.claude/tagteam/state.py`; an older install kept it in
-   `<git common dir>/tagteam` until `install.py --update` moved it). Show the user the `changes` and any `cli` errors in a few lines.
+   `.tagteam/` in the main checkout, see `.claude/tagteam/state.py`). Show the user the `changes` and any `cli` errors in a few lines.
    A CLI error (logged out, missing CLI) is the user's to fix; say so, do not guess the missing list.
 2. **Route baseline.** Before editing, run `python3 .claude/tagteam/route.py --role R --host H --json` (on Windows `python` in every command here)
    for the 5 roles x 2 hosts (claude, codex). For `review` add `--author-vendor` = the host's own vendor

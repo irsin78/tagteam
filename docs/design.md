@@ -41,9 +41,9 @@ tagteam addresses these with a few mechanisms and keeps the rest as plain text a
    delegation: one hook. Everything else is guidance.
 3. **Honest about strength.** The hook and the launcher are accident checks. They catch the plain forms of a mistake;
    they are not a security boundary (section 5).
-4. **Measure, then rely.** Platform behaviour used by the design (what a hook sees, whether a turn may open sessions,
-   how the cache behaves) was tested on real installs; a limit of one host version carries a `[host: ...]` tag in the
-   instructions so it is re-tested after an update. What the tests could not confirm is a gap (section 10).
+4. **Measure, then rely.** Platform behaviour the design uses (what a hook sees, whether a turn may open sessions, how the
+   cache behaves) is checked on real installs; a limit of one host version carries a `[host: ...]` tag in the instructions
+   so it is re-tested after an update. What cannot be confirmed is a gap (section 10).
 5. **Grades per model and effort.** The same model is a different tool at `low` and at `max`. A grade names a (model,
    effort) pair, and the router picks within a grade.
 6. **No language model in the update path.** Collecting model lists is a script; a skill applies the changes.
@@ -97,7 +97,7 @@ Every row is an accident check. The right-hand column is what it does not stop.
 | Worker is identified | any line of the first prompt starting with `HARNESS ROLE: DELEGATE`, or `HARNESS_DELEGATE_RUN=1`, or running as a subagent (agy: a first model call with no user input); recorded once per session | tasks sent later by message cannot add the marker |
 | Read-only reading | the `reader` definition lists no edit tools and tells the worker to run only read-only commands | its Bash tool is limited by instruction, not by the hook |
 | Launcher commits and read-only writes | `run.py` compares local HEAD, branch, status and file hashes before and after a run (manual section 7) | pushes, ignored files, paths outside the repository, stashes, other refs; changes by other writers in the same checkout are seen too and can be blamed on the run |
-| Launcher workers do not change the control plane; Codex hooks ran | `run.py` compares, before and after, the content hash of every control-plane path `git status` lists and of the machine-local hook and setting files that git ignores: a write run that changed a control-plane path or a hook file ends `control_plane_changed` (the setting files and the main checkout of a worktree only warn). After a clean Codex run it looks for the role record the hooks write: none ends `hooks_not_run` (manual section 7) | a change made and undone inside the run; ignored files outside those lists; the orchestrator or another process writing in the same checkout is blamed on the run; the Codex hook check in a linked worktree was measured in a trusted project only |
+| Launcher workers do not change the control plane; Codex hooks ran | `run.py` compares, before and after, the content hash of every control-plane path `git status` lists and of the machine-local hook and setting files that git ignores: a write run that changed a control-plane path or a hook file ends `control_plane_changed` (the setting files and the main checkout of a worktree only warn). After a clean Codex run it looks for the role record the hooks write: none ends `hooks_not_run` (manual section 7) | a change made and undone inside the run; ignored files outside those lists; the orchestrator or another process writing in the same checkout is blamed on the run; the Codex hook check in a linked worktree is confirmed for a trusted project only |
 
 Notes:
 
@@ -116,15 +116,15 @@ Notes:
 
 ### 5.1 What is stopped on each host
 
-**stops**: a real worker was refused in a measured run. *test*: refused in handler tests (fake payloads), not yet seen
-in a real run. **after**: noticed after the run (only for workers started by `run.py`). **no**: not stopped.
+**stops**: blocked by the hook. *test*: blocked in handler tests (fake payloads) only; the real path is unconfirmed.
+**after**: noticed after the run (only for workers started by `run.py`). **no**: not stopped.
 
 | Action | Claude Code | Codex CLI | agy |
 |---|---|---|---|
-| Worker runs `git commit` (plain forms) | **stops** (real worker, Windows 2.1.327); macOS 2.1.326: the old hook let it through without Python, re-check of the fix pending; Linux 2.1.327: **stops**, and with no Python on PATH every tool call was blocked (measured 2026-11-18) | **stops** (real worker, 0.169.0 Windows, after repair and trust; macOS 0.170.0 `codex exec`, read-only: a `git commit --dry-run` was blocked). In a project Codex does not trust the hooks are skipped and the commit can pass where a user rule allows it (0.170.0 Windows): `git_head_moved` (exit 7) catches the commit **after**, and wins over `hooks_not_run` (11), which is the status when the run ended cleanly with no HEAD move | **stops** (real `run.py` worker, agy 1.5.11 Windows: main checkout, worktree root and a subfolder of it; also an orchestrator's subagent, recorded as a worker by its empty first input); a `run.py` worker's commit or branch move is also **after** (`git_head_moved`) |
-| Worker runs `git push` (plain forms) | *test* | *test* | **stops** (real `run.py` worker, agy 1.5.11 Windows, once; no remote, so nothing was sent) |
-| Worker opens a session or a subagent | *test* | **stops** (`spawn_agent`) | **stops** for `invoke_subagent` (real `run.py` worker, agy 1.5.11 Windows); *test* for `define_subagent`, `run_workflow` and `swarm` (names from agy's change log, not seen) |
-| Worker edits the control plane | *test* (edit tools); shell writes **no**; **after** (`control_plane_changed`, `run.py` workers) | **stops** (`apply_patch` on `AGENTS.md`); shell writes **no**; **after** (`control_plane_changed`, `run.py` workers) | **stops** (`write_file` and `edit_file` on `.claude/`, `AGENTS.md` and `.agents/hooks.json`: real `run.py` agy workers were refused in the main tree, a linked worktree and a worktree subfolder, while their ordinary edits ran [host: agy 1.5.12 Linux headless, measured 2026-11-19; Windows: `--check` hook-command run only / re-test after an agy update]); shell writes **no**; **after** (`control_plane_changed`, `run.py` workers; before the hook covered edits, a real `write_file` and `edit_file` edit ran and was reported `ok`) |
+| Worker runs `git commit` (plain forms) | **stops** (with no Python on PATH every tool call is blocked) | **stops**. In a project Codex does not trust the hooks are skipped and the commit can pass where a user rule allows it: `git_head_moved` (exit 7) catches the commit **after**, and wins over `hooks_not_run` (11), which is the status when the run ended cleanly with no HEAD move | **stops** (main checkout, worktree root and a subfolder of it; an orchestrator's subagent is recorded as a worker by its empty first input); a `run.py` worker's commit or branch move is also **after** (`git_head_moved`) |
+| Worker runs `git push` (plain forms) | *test* | *test* | **stops** |
+| Worker opens a session or a subagent | *test* | **stops** (`spawn_agent`) | **stops** for `invoke_subagent`; *test* for `define_subagent`, `run_workflow` and `swarm` (names from agy's change log) |
+| Worker edits the control plane | *test* (edit tools); shell writes **no**; **after** (`control_plane_changed`, `run.py` workers) | **stops** (`apply_patch` on `AGENTS.md`); shell writes **no**; **after** (`control_plane_changed`, `run.py` workers) | **stops** (`write_file` and `edit_file` on the control plane, in the main tree, a linked worktree and a worktree subfolder; ordinary edits run; on Windows *test*); shell writes **no**; **after** (`control_plane_changed`, `run.py` workers) |
 | Orchestrator opens a session without model and effort | *test* (`start_session`); other tools **no** | *test* (`spawn_agent`) | not applicable: agy has no session tool, and `invoke_subagent` takes only a model tier, so harness roles use `run.py` (a rule, not a hook) |
 | `run.py` worker starts another `run.py` worker | `run.py` refuses (test), on every host; a session worker calling `run.py` is not stopped (translation needs it) | same | same |
 | `run.py` read-only run changes the work tree | **after** (git check, `wrote_files`), on every host; a concurrent change by another writer can be blamed on the run, so use a quiet checkout or a separate worktree; ignored files and other refs are not seen | same | same |
@@ -132,7 +132,10 @@ in a real run. **after**: noticed after the run (only for workers started by `ru
 Codex hooks protect only after the user has trusted the project and then the hooks in `/hooks` (a changed entry, or an
 untrusted project, is skipped silently; `run.py` and `install.py --check --host codex` report it). agy hooks are
 machine-local (`.agents/hooks.json`); `run.py` copies them into a worktree it runs a google worker in. A PreToolUse hook
-failure blocks the tool on agy. The agy column stays at *test* until a real refusal of a `run.py` worker is measured.
+failure blocks the tool on agy.
+
+[host: Claude Code 2.1.326 and 2.1.327 Windows, Linux and macOS; codex-cli 0.170.0 Windows and macOS; agy 1.5.11 and 1.5.12
+Windows and Linux; measured 2026-11-18 and 2026-11-19 / re-test after a host update]
 
 ### 5.2 One guard, several hosts
 
@@ -152,21 +155,22 @@ failure blocks the tool on agy. The agy column stays at *test* until a real refu
   or the record is unreadable, the role is `unresolved` and protected calls get a worker's rules. The matcher is
   `run_command`, the delegation tools and the two edit tools (`write_file`, `edit_file`; the guard judges their `Path`
   with the same control-plane rule as the other hosts). A worker's or an unresolved role's edit of the control plane
-  is denied, every other edit is `ask`, and the orchestrator's edits are `ask` too: measured on Windows (agy 1.5.12,
-  with allow rules for both tools), `ask` on an edit adds no approval prompt and does not stop the edit; without allow
-  rules (for example `request-review` and an empty list) the effect of `ask` was not measured. The hook never
-  answers `allow`. The price is that a guard
-  that cannot start now blocks the edit tools as well as shell commands and delegation, so agy cannot repair its own
-  hooks from the inside; recovery is from a terminal or another editor (manual section 1.3). The wiring is `.agents/hooks.json`, machine-local
-  because the guard path is absolute; the installer owns only its `tagteam` key. The guard also appends a line to
+  is denied [host: agy 1.5.12 Linux headless, measured 2026-11-19 / re-test after an agy update], every other edit is
+  `ask`, and the orchestrator's edits are `ask` too. With allow rules for both tools, `ask` on an edit adds no approval
+  prompt and does not stop the edit [host: agy 1.5.12 Windows interactive, measured 2026-11-19 / re-test after an agy
+  update]; on other platforms, and without allow rules (for example `request-review` and an empty list), the effect of
+  `ask` is unconfirmed. The hook never answers `allow`. The price is that
+  a guard that cannot start blocks the edit tools as well as shell commands and delegation, so agy cannot repair its own
+  hooks from the inside; recovery is from a terminal or another editor (manual section 1.3). The wiring is
+  `.agents/hooks.json`, machine-local because the guard path is absolute; the installer owns only its `tagteam` key. The guard also appends a line to
   `agy-models.jsonl` whenever a conversation's model changes, since the execution half of the Orchestrator model may
   be a weaker model than the planning half (section 10).
 - **Interpreter chosen at run time, closed if absent.** Claude Code runs the hook commands in `settings.json` with `sh`
-  (Git Bash on Windows, measured). The shell tries `python3`, then `python`, by running each (so a Windows Store stub or a
+  (Git Bash on Windows). The shell tries `python3`, then `python`, by running each (so a Windows Store stub or a
   broken shim is skipped), and `exec`s the guard so its exit code is not masked. With no Python, PreToolUse exits 2 with a
   message (tool calls stay blocked until Python is installed); SessionStart and UserPromptSubmit warn and continue, so the
-  user can still repair it. A bare `python` that is missing exits 127, which Claude Code reads as "no objection": measured
-  on a stock macOS, and why the commands look like this. Codex hooks name `python3` (`python` on Windows) directly and do
+  user can still repair it. A bare `python` that is missing exits 127, which Claude Code reads as "no objection"; that is why
+  the commands look like this. Codex hooks name `python3` (`python` on Windows) directly and do
   not run without it; `--check` says so. The agy commands name one interpreter, chosen when the machine-local file is
   written (`python` on Windows, else `python3` when it exists), and `--check --host agy` looks for it on PATH.
 - **One state folder, outside `.git`**, because Codex sandboxes cannot write there. **One table for host handling**:
@@ -174,7 +178,7 @@ failure blocks the tool on agy. The agy column stays at *test* until a real refu
 
 ## 6. Roles and sessions
 
-The orchestrator is the session you commanded; every other session is a worker. Three measured facts shaped the cycle; their
+The orchestrator is the session you commanded; every other session is a worker. Three facts shape the cycle; their
 operational consequences are in [manual section 3.1](manual.md#31-the-session-pool-and-automatic-turns):
 
 - A turn started by a worker's report cannot open sessions, but it can message an existing one. Hence the **session
@@ -219,7 +223,7 @@ give another grade.
 - A candidate is usable only if the plan allows the vendor, the model is not hidden, and the vendor CLI lists it. The
   `available` lists are written by the collector; a vendor with no list is assumed to offer everything, which keeps an
   install usable before its first collection.
-- agy's built-in Orchestrator model has no effort and no measured grade. The router compares it as a stated pair
+- agy's built-in Orchestrator model has no effort and no grade of its own. The router compares it as a stated pair
   (`compare_as` in `orchestrators`, an assumption the notice repeats), and refuses an effort given with it.
 - On `--host agy` a review is raised to at least grade A: the execution half of that model may be weaker than the
   planning half, and nothing else watches its comparison of reports with diffs. A pinned reviewer below A is
@@ -254,15 +258,15 @@ collector carry the notice.
 | Gap | Effect | Status |
 |---|---|---|
 | No `run.py` adapter for CLIs of other companies (for example xAI) | such models cannot be launched as workers; the collector can still compare their benchmarks through `aa_creator` | open |
-| Claude `/model` output differs by plan | availability was verified on one plan only | open |
-| macOS: measured on one machine (the interpreter and launchd fixes re-checked, a Codex `exec` run made; sleep and missed runs, the desktop app's tool name and interactive Codex not); Linux: measured once, on a server without the desktop app (Ubuntu 26.04, aarch64) | the sleep and missed-run behaviour of the weekly job is unknown | open; [platform/macos.md](platform/macos.md) lists what was checked, [platform/linux.md](platform/linux.md) lists what was observed |
-| agy: interactive behaviour was observed once, on Linux (first model call input, completion notices and approval prompts as expected); not measured: whether "always allow" covers the same command with other arguments, hook loading in an untrusted folder, `ask` on `invoke_subagent`, and any Windows interactive run | commands ask for approval often enough that the user has to stay present; the rest may differ on Windows | open; [hosts.md](../harness/skills/cycle/hosts.md#agy-notes) note 8 lists them |
-| agy: the hook judges only the edit tools seen so far (`write_file`, `edit_file`: one headless run and a model's own report), not a tool that deletes or renames a file if agy has one, and not shell writes; on a guard error the answer is `ask`, and a headless worker's edit then runs | a `run.py` worker on agy can still change `.claude/`, `.codex/`, `.agents/` and the instruction files through such a path; the control-plane check then ends the run `control_plane_changed` | open; the check and the review of the diff are the net |
+| Claude `/model` output differs by plan | availability on other plans is unconfirmed | open |
+| macOS and Linux: unconfirmed are the sleep and missed-run behaviour of the weekly job, the desktop app's tool name, interactive Codex on macOS, other Linux distributions and CPUs | the weekly job may skip a week on a machine that sleeps or is off | open; [platform/macos.md](platform/macos.md) and [platform/linux.md](platform/linux.md) |
+| agy: unconfirmed are whether "always allow" covers the same command with other arguments, hook loading in an untrusted folder, `ask` on `invoke_subagent`, and any Windows interactive run | commands ask for approval often enough that the user has to stay present; the rest may differ on Windows | open; [hosts.md](../harness/skills/cycle/hosts.md#agy-notes) note 8 lists them |
+| agy: the hook judges only the edit tools known so far (`write_file`, `edit_file`), not a tool that deletes or renames a file if agy has one, and not shell writes; on a guard error the answer is `ask`, and a headless worker's edit then runs | a `run.py` worker on agy can still change `.claude/`, `.codex/`, `.agents/` and the instruction files through such a path; the control-plane check then ends the run `control_plane_changed` | open; the check and the review of the diff are the net |
 | The control-plane check sees only what `git status` lists plus the named machine-local files, compares a file over 16 MiB by size and time, and shares the checkout with every other writer (the orchestrator, another worker) | a change made and undone inside the run, or in an ignored file the lists do not name, is missed; another writer's edit can be blamed on the run | accepted; manual section 7 |
-| agy: the execution half of the Orchestrator model may be a weaker model than the planning half (one Flash-class observation) | it does the orchestrator's checks and commits; a weak comparison of a report with the diff can pass a bad change | mitigated, not closed: a rule against direct fixes, the diff comparison repeated in the review, review grade at least A, `agy-models.jsonl` |
+| agy: the execution half of the Orchestrator model may be a weaker model than the planning half (a Flash-class model) | it does the orchestrator's checks and commits; a weak comparison of a report with the diff can pass a bad change | mitigated, not closed: a rule against direct fixes, the diff comparison repeated in the review, review grade at least A, `agy-models.jsonl` |
 | Git detection of commits is textual | a worker can evade the hook with indirection | accepted; review the diff |
 | The hook does not know the vendor of a reviewer | independence depends on the orchestrator using the router | accepted |
-| Codex: commits and `run.py` launches need the user's approval (6 prompts in one small mission); whether a finishing subagent starts an orchestrator turn is unconfirmed | more interaction than on Claude Code; the orchestrator waits for its subagents in the same turn | accepted; [hosts.md](../harness/skills/cycle/hosts.md#codex-notes) |
+| Codex: commits, branches, worktrees, `run.py` launches and test runs in the sandbox need the user's approval (`codex exec --approve-for-me` approves them automatically, which is not the user's approval); whether a finishing subagent starts an orchestrator turn is unconfirmed | more interaction than on Claude Code; the orchestrator waits for its subagents in the same turn | accepted; [hosts.md](../harness/skills/cycle/hosts.md#codex-notes) |
 | `start_session` is the Claude Code desktop app's session tool | the session pool needs it; elsewhere, native subagents and the launcher remain | accepted |
 | Hook recovery needs git | a broken hook is repaired outside Claude Code | see manual section 9.1 |
 

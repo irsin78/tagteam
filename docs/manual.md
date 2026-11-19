@@ -192,7 +192,7 @@ inside, and the orchestrator cannot write its mission records either. From a ter
 
 1. `python3 install.py <project dir> --update` rewrites the key; `--check --host agy` then says what is still wrong.
 2. To switch the hooks off, delete the `"tagteam"` key from `.agents/hooks.json` (your other keys stay), or add
-   `"enabled": false` inside the key (`/hooks` then lists them as disabled; measured on agy 1.5.11).
+   `"enabled": false` inside the key (`/hooks` then lists them as disabled; agy 1.5.11).
 3. A role recorded wrongly. The guard decides the role at the first model call of a conversation and never changes it.
    If it refuses the orchestrator's `git commit` and the reason ends with `role recorded as worker: the first model call had
    no user input`, or the role is `unresolved` (the first decision was lost or the record is unreadable), delete the record
@@ -246,8 +246,8 @@ the cross-vendor review run at chosen cut points.
 ### 3.1 The session pool and automatic turns
 
 **Rule: open the sessions a phase needs at its start; when another is needed later, try first, and if the host refuses,
-reuse one by message.** A turn that starts because a worker reported back is an *automatic turn*. Measured on Claude Code
-desktop 2.1 (2026-11-17): `start_session` is refused in an automatic turn, but a message to an already open session works.
+reuse one by message.** A turn that starts because a worker reported back is an *automatic turn*. On Claude Code
+desktop 2.1, `start_session` is refused in an automatic turn, but a message to an already open session works.
 This is a host limit, not a harness rule; the instructions tag it `[host: ...]` so it is re-tested after host updates.
 Consequences:
 
@@ -290,38 +290,40 @@ Details per operation: [hosts.md](../harness/skills/cycle/hosts.md). What to do 
    ending its turn) or `run.py` workers on another vendor.
 4. The Codex sandbox protects `.git` and does not let nested CLIs start, so `git add/commit`, branches, worktrees and
    every `run.py` launch are escalation requests. Interactive Codex shows each as an approval prompt: a small mission
-   (design, implementation, one review, two commits) took six, all approved by the user. If a commit is refused the unit is
+   (design, implementation, one review, two commits) shows one prompt per commit, branch, worktree, `run.py` launch and
+   test run. If a commit is refused the unit is
    verified but not committed; a refused review launch leaves it incomplete.
 5. On Windows, `windows.sandbox = "elevated"` breaks `codex exec` and temporary folders may be denied inside the sandbox
    (`--check` and the tests then need escalation): [platform/windows.md](platform/windows.md#codex).
 
 ### 3.4 agy as the orchestrator
 
-Details per operation and the measured limits: [hosts.md](../harness/skills/cycle/hosts.md#agy-notes). What to do as the user:
+Details per operation and the limits: [hosts.md](../harness/skills/cycle/hosts.md#agy-notes). What to do as the user:
 
 1. Install (or `--update`), then run `python3 install.py <project dir> --check --host agy`. Optionally `--live` (one model
    call). Recovery if the hooks misbehave: section 1.3.
 2. Start `agy` **interactively** in the project and pick the built-in "Orchestrator" model. A headless `agy -p` cannot
    orchestrate: it waits only three minutes for a background command. The built-in Orchestrator has more than one id
    (agy 1.5.12 lists `gemini-pro-orchestrator-neon` "Orchestrator (Neon)" and `gemini-pro-orchestrator-g1-pro`
-   "Orchestrator (Argon)"; the interactive model list showed only one entry). The orchestrator passes `--host agy
+   "Orchestrator (Argon)"; the interactive model list offers one entry). The orchestrator passes `--host agy
    --orchestrator-model <the id of its own conversation>` to the router, for example `gemini-pro-orchestrator-neon`.
    It takes it from `<state folder>/agy-models.jsonl`: the most recent line with its conversation id (`cid`, the
    `ANTIGRAVITY_CONVERSATION_ID` of its shell) whose `model` is one of the `orchestrators` ids of `models.json`. The log also
-   records the execution model (`gemini-flash-worker-agy` alternated with `neon`), so the last line may name that one;
+   records the execution model (`gemini-flash-worker-agy` alternates with `neon`), so the last line may name that one;
    `agy models` lists both Orchestrator ids but not which one is selected. It passes no `--orchestrator-effort` (the model has none; giving one is a usage error,
    exit 2). The router compares either id as `gemini-4-argon` at `high`, an assumption, and says so in the notice. Your
-   account must list the model (`agy models`); it did not on one test account.
+   account must list the model (`agy models`); some accounts do not.
 3. Every worker is a `run.py` run (the router returns `run` for every role on agy), started by the orchestrator's shell
    command. Which worker vendor does what is the router's decision as on any host. Reviews are at least grade A.
 4. Expect approval prompts: the hook answers `ask` for shell commands that are neither refused nor covered by an allow rule, so
-   agy's own permission rules decide. In the one interactive mission observed (Linux, agy 1.5.12) it asked several times and
-   "always allow" did not stop the questions, so **stay present for the whole mission**; a subagent's command that waits
+   agy's own permission rules decide. In interactive agy on Linux it asks several times per mission and
+   "always allow" does not stop the questions (Windows interactive: unconfirmed) [host: agy 1.5.12 Linux interactive,
+   measured 2026-11-19 / re-test after an agy update], so **stay present for the whole mission**; a subagent's command that waits
    for your approval for 60 seconds fails. Whether "always allow" also covers the same command with other arguments is
    unconfirmed; on Windows an allow rule has to match the
    command exactly ([platform/windows.md](platform/windows.md#agy-google)). The orchestrator tells you at the start of a
    mission roughly how many to expect.
-5. The Orchestrator model hands its plan to an execution model that, in the one observation, was a Flash-class model. The
+5. The Orchestrator model hands its plan to an execution model that can be a Flash-class model (for a long or complex mission: unconfirmed). The
    harness mitigates it with a rule (the execution side edits only mission records and launches every implementation unit
    through `run.py`), a review that repeats the comparison of the worker's report with `git diff`, the review grade floor A,
    and `<state folder>/agy-models.jsonl`, which shows the model of each conversation. If you need more, pick a single model
@@ -547,15 +549,14 @@ record written since the start. None means the hooks did not run, or ran and cou
 state folder); the usual cause is that Codex skips project hooks until the project is trusted (the report quotes Codex's
 own `Untrusted project-local configuration is disabled` line when it is there), but a missing record does not prove it. A
 new record that cannot be read is treated like an unreadable sessions folder (`hook check unavailable`, below), not as
-"hooks did not run". A missing record is status `hooks_not_run` (exit 11) with an `ERROR:` line that says to run `codex` once in the project (in a
-linked worktree: the main checkout),
-trust it, then trust the hooks with `/hooks`; the worker ran without the role guard, so review its changes. This holds in a
-linked worktree too: in a trusted project the hooks ran there and left a record (Codex seems to load the main
-checkout's project configuration, inferred). [host:
-codex-cli 0.170.0 Windows, trusted project, linked worktrees under and outside the main tree, measured 2026-11-19 / re-test
-after a Codex update] A worktree of a project Codex does not trust was not measured; it should leave no record and end
-`hooks_not_run`. If the sessions folder cannot
-be read the report says `WARNING: hook check unavailable`. The check is made only when the CLI exited cleanly.
+"hooks did not run". A missing record is status `hooks_not_run` (exit 11) with an `ERROR:` line that says to run `codex`
+once in the project (in a linked worktree: the main checkout), trust it, then trust the hooks with `/hooks`; the worker ran
+without the role guard, so review its changes. This holds in a linked worktree too: in a trusted project the hooks run
+there and leave a record (Codex seems to load the main checkout's project configuration; unconfirmed); a worktree of a project
+Codex does not trust is unconfirmed (it should leave no record and end `hooks_not_run`). If the sessions folder cannot be
+read the report says `WARNING: hook check unavailable`. The check is made only when the CLI exited cleanly. [host: codex-cli
+0.170.0 Windows, trusted project, linked worktrees under and outside the main tree, measured 2026-11-19 / re-test after a
+Codex update]
 
 **Model check.** After a clean exit the launcher compares the model that answered with the one requested, from `modelUsage`
 in the Claude JSON, the `model:` line in the Codex stderr header, or the model label in the `agy` log. A model it cannot
@@ -690,7 +691,7 @@ registered), so a failing run leaves a trace: without it cron mails the output, 
 | Launcher `control_plane_changed` (10) | a write run changed `.claude/`, `.codex/`, `.agents/`, `AGENTS.md`, `CLAUDE.md` or a hook file (the worker, or another process in the checkout) | read the `ERROR:` line; check `git status` and `git diff` of those paths, restore what is wrong (section 9.1), and do not edit them while a worker runs |
 | Launcher `refused` (12) | the worker answered `REFUSED: <reason>`: for example a hook or the sandbox blocked every tool, or the brief asked for something outside its limits | read the reason in the `ERROR:` line; fix the cause (a broken guard: `install.py --check`) or the brief, then run it again |
 | Launcher `hooks_not_run` (11) | a Codex worker's hooks wrote no role record: usually the project or its hooks are not trusted; or the hooks ran and could not write it (state folder) | run `codex` once in the project, trust it, then the hooks (`/hooks`, section 1.2); `install.py <project dir> --check --host codex --live`; review what the worker changed |
-| Automatic turn cannot open a session | measured platform limit | open it on your next turn, or reuse a pool session by message |
+| Automatic turn cannot open a session | host limit | open it on your next turn, or reuse a pool session by message |
 | `tagteam: python3/python not found on PATH; tool calls are blocked ...` | no working Python for the Claude hooks | install Python 3.9+ (`python3`, on Windows `python`); a Windows Store stub does not count |
 | `--check` reports `FAILED` | hook missing or changed, or no interpreter | read the line; `install.py <project dir> --update` (Codex: `--repair-hooks`, section 1.2), then `--check` again |
 | Codex ignores a worker's `git commit` | hooks not trusted, or `python3` missing | `/hooks` in Codex (section 1.2); `--check --host codex` |

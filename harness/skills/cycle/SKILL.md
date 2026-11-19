@@ -53,7 +53,7 @@ How to open, follow up, watch and stop workers on each host: [hosts.md](hosts.md
 
 Open everything the phase needs on the user turn that starts it. If a new worker is needed
 later, try to open it; if the host refuses, reuse a pool worker by a follow-up, or ask on the
-next user turn. Try once per phase and note a refusal in status.md. The measured limits per
+next user turn. Try once per phase and note a refusal in status.md. The limits per
 host are in hosts.md. [host: Claude Code desktop 2.1 refuses start_session in turns started by
 a worker's report, measured 2026-11-17 / re-test after a host update]
 - One worker per role needed now: usually one design worker and one or two implementation
@@ -163,8 +163,8 @@ reversible details yourself and continue. Waiting is not consent.
 1. Re-read intent.md, spec.md, status.md and the latest design document.
 2. Compare status.md with `git log`, HEAD, open worktrees and branches, and with the
    workers the host lists (hosts.md). In a turn resumed with `codex exec resume`, `list_agents`
-   showed no earlier subagents; use the recorded `task_name`s. [host: codex-cli 0.169.0 exec resume,
-   measured 2026-11-17 / re-test after a Codex update] Interactive Codex: unconfirmed.
+   shows no earlier subagents; use the recorded `task_name`s. [host: codex-cli 0.170.0 exec resume,
+   measured 2026-11-19 / re-test after a Codex update] Interactive Codex: unconfirmed.
 3. For each running or returned unit, check the actual files before trusting the record. A `run` worker that
    was still running: `run.py --status <id>` (the id is in status.md or in the folder names under `<state
    folder>/runs/`).

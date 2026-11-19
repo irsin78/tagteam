@@ -87,7 +87,7 @@ Procedure: skill `cycle` (load it for any mission with more than one unit; files
    (design and implementation workers, fixed models). When a new worker is needed
    later, try to open it; if the host refuses, reuse a pool worker by a follow-up, else
    ask on the next user turn. Try once per phase and note a refusal in status.md.
-   Measured host limits are in `hosts.md`. [host: Claude Code desktop 2.1 refuses
+   Host limits are in `hosts.md`. [host: Claude Code desktop 2.1 refuses
    start_session in automatic turns, measured 2026-11-17 / re-test after a host update]
 3. Design session writes the design document in the mission folder and reports
    its path. The orchestrator checks it and sends units to implementation sessions.

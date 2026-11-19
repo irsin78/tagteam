@@ -34,8 +34,8 @@ It does not ship a service, a UI or a message relay (scope and known gaps: [docs
 - Python 3.9 or newer (standard library only) and git.
 - At least one supported orchestrator CLI; the others are optional, and a vendor whose CLI is missing is skipped by the
   router. Which CLI can do what: [manual section 1](docs/manual.md#1-install-and-update).
-- Windows is the verified platform. macOS was measured once and two defects found there were fixed (re-check pending);
-  Linux was measured once, on a server without a desktop app; see [docs/platform/](docs/platform/windows.md).
+- Windows is the verified platform; macOS and Linux are checked on one machine each (Linux: a server without a desktop
+  app); see [docs/platform/](docs/platform/windows.md).
 
 ## Quick start
 
