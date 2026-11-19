@@ -7,9 +7,14 @@ of started.json in the run folder (found from -o or --log-file; None if absent) 
 then behaves per FAKE_MODE:
 ok, wrong_model, no_model_field, exhausted, exhausted_epoch, quota_text_in_prompt, crash, sleep, empty (google),
 write_file (writes fake_written.txt in the cwd, then ok), commit (makes an empty git commit in the cwd, then ok).
+Options, whatever the mode: FAKE_WRITE (JSON object path -> text, null deletes; relative paths are in the cwd) is
+applied first, then FAKE_LINK (JSON object path -> target: the file or folder is replaced by a symbolic link, on Windows a folder
+possibly by a junction); FAKE_STDERR is written to stderr; openai writes a role record like a Codex hook would, to
+$TAGTEAM_STATE_DIR/sessions, with host FAKE_SESSION (default codex; "none" writes nothing).
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +32,43 @@ def read_if_file(path):
         with open(path, encoding="utf-8") as fh:
             return fh.read()
     return None
+
+
+def replace_by_link(path, target):
+    """Replace a file or folder by a symbolic link to target; on Windows a folder may become a junction instead."""
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        os.remove(path)
+    try:
+        os.symlink(target, path, target_is_directory=os.path.isdir(target))
+        return
+    except (OSError, NotImplementedError):
+        pass
+    if os.name == "nt" and os.path.isdir(target) and subprocess.run(
+            ["cmd", "/c", "mklink", "/J", path, target], capture_output=True).returncode == 0:
+        return
+    raise OSError("cannot make a link here")
+
+
+def apply_options(vendor):
+    for path, text in json.loads(os.environ.get("FAKE_WRITE") or "{}").items():
+        if text is None:
+            if os.path.exists(path):
+                os.remove(path)
+            continue
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+    for path, target in json.loads(os.environ.get("FAKE_LINK") or "{}").items():
+        replace_by_link(path, target)
+    sys.stderr.write(os.environ.get("FAKE_STDERR", ""))
+    host = os.environ.get("FAKE_SESSION", "codex")
+    if vendor == "openai" and host != "none":
+        folder = os.path.join(os.environ["TAGTEAM_STATE_DIR"], "sessions")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "fake-%d.json" % os.getpid()), "w", encoding="utf-8") as fh:
+            json.dump({"role": "worker", "host": host, "ts": int(time.time())}, fh)
 
 
 def emit(code, out="", err=""):
@@ -102,6 +144,7 @@ def main():
                        "antigravity": os.environ.get("ANTIGRAVITY_CONVERSATION_ID"),
                        "pid": os.getpid(), "peek": peek,
                        "started": read_if_file(started)}, fh)
+    apply_options(vendor)
     if mode == "crash":
         echo = "model: %s\nuser\n%s\n" % (opt(args, "-m"), stdin) if vendor == "openai" else ""
         emit(1, "", echo + "boom\n")

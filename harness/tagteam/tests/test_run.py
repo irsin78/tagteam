@@ -15,6 +15,8 @@ from unittest import mock
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(TESTS))
+sys.path.insert(0, TESTS)
+import fake_cli  # noqa: E402
 import run  # noqa: E402
 
 FAKE = os.path.join(TESTS, "fake_cli.py")
@@ -32,6 +34,13 @@ def pid_alive(pid):
         return True
     except OSError:
         return False
+
+
+def last_result(test):
+    """result.json of the newest run of a RunTestBase test."""
+    paths = [os.path.join(d, "result.json") for d in test.run_dirs()]
+    with open(max(paths, key=os.path.getmtime), encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 class RunTestBase(unittest.TestCase):
@@ -924,13 +933,23 @@ class HookCopyTests(GitRepoBase):
             self.assertEqual(json.load(fh), {"theirs": 4})
 
     def test_a_file_the_system_calls_a_link_is_not_written_even_when_no_link_can_be_made(self):
-        dst = os.path.join(self.wt, ".agents", "hooks.json")
+        dst = os.path.realpath(os.path.join(self.wt, ".agents", "hooks.json"))  # git names the work tree by its real path
         real_islink = os.path.islink
-        with mock.patch.object(run.os.path, "islink", side_effect=lambda p: real_islink(p) or os.path.normpath(p) == dst):
+        with mock.patch.object(run.os.path, "islink", side_effect=lambda p: real_islink(p) or os.path.realpath(p) == dst):
             code, out, _ = self.go("google", cwd=self.wt)
         self.assertEqual(code, 0, out)
         self.assertIn("is a link or resolves elsewhere", out)
         self.assertFalse(os.path.exists(dst))
+
+    def test_the_copied_hooks_are_not_a_control_plane_change_but_a_worker_edit_of_them_is(self):
+        code, out, _ = self.go("google", cwd=self.wt)  # a write run: the baseline is taken after the copy
+        self.assertEqual(code, 0, out)
+        self.copied_to(out)
+        self.assertEqual(last_result(self)["control_plane"], {"changed": [], "main_changed": []})
+        os.environ["FAKE_WRITE"] = json.dumps({".agents/hooks.json": "{}"})
+        code, out, _ = self.go("google", cwd=self.wt)
+        self.assertEqual(code, 10, out)
+        self.assertIn("the control plane changed during the run (.agents/hooks.json)", out)
 
     def make_submodule(self):
         """The repository gets a submodule libs/sub; both the superproject and the submodule have their own hooks."""
@@ -964,6 +983,360 @@ class HookCopyTests(GitRepoBase):
         self.copied_to(out)
         self.assertEqual(self.hooks(wt), self.hooks(inner))  # not the superproject's {"tagteam": TAGTEAM, ...}
         self.assertNotEqual(self.hooks(wt)["tagteam"], self.TAGTEAM)
+
+
+class ControlPlaneTests(GitRepoBase):
+    """The control-plane check: what a run changed in .claude/, .codex/, .agents/, AGENTS.md, CLAUDE.md."""
+    IGNORED = run.CONTROL_HOOK_FILES + run.CONTROL_SETTING_FILES  # machine-local files, ignored by git
+
+    def setUp(self):
+        super().setUp()
+        self.put("AGENTS.md", "a\n")
+        self.git("add", "AGENTS.md")
+        self.commit("agents")
+        with open(os.path.join(self.repo, ".git", "info", "exclude"), "a", encoding="utf-8") as fh:
+            fh.write("\n".join(self.IGNORED) + "\n")
+        self.reset()
+
+    def put(self, rel, text, root=None):
+        path = os.path.join(root or self.repo, *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+
+    def reset(self):
+        self.git("checkout", "--", "AGENTS.md")
+        self.git("clean", "-fdq")
+        for rel in self.IGNORED:
+            self.put(rel, "{}")
+
+    def writes(self, files, vendor="claude", mode="ok", cwd=None, extra=()):
+        os.environ["FAKE_WRITE"] = json.dumps(files)
+        try:
+            return self.go(vendor, mode, cwd=cwd or self.repo, extra=extra)
+        finally:
+            os.environ.pop("FAKE_WRITE", None)
+
+    def test_the_lists_are_role_guards_and_lower_case(self):
+        import role_guard
+        self.assertIs(run.CONTROL_DIRS, role_guard.CONTROL_DIRS)
+        self.assertIs(run.CONTROL_FILES, role_guard.CONTROL_FILES)
+        for name in self.IGNORED:
+            self.assertEqual(name, name.lower())
+            self.assertTrue(run.control_path(name), name)
+
+    def test_which_paths_are_the_control_plane(self):
+        for rel in (".claude/x", ".Claude/x", ".codex/a/b", ".agents/hooks.json", "AGENTS.md", "Agents.md", "claude.MD",
+                    ".claude/tagteam/role_guard.py", ".claude\\x"):
+            self.assertTrue(run.control_path(rel), rel)
+        for rel in ("src/a.py", "docs/AGENTS.md", "x/.claude/y", "notes.md", ".claudex/y", "AGENTS.md.bak",
+                    ".claude/tagteam/__pycache__/role_guard.cpython-39.pyc", ".codex/z.pyc", ".claude/worktrees/s1/a.txt",
+                    ".Claude/Worktrees/s1", ".claude/worktrees"):
+            self.assertFalse(run.control_path(rel), rel)
+
+    def test_a_write_run_that_changes_the_control_plane_ends_with_exit_10(self):
+        cases = (("untracked file", {".claude/x.txt": "1"}), ("tracked file", {"AGENTS.md": "b\n"}),
+                 ("ignored hook file", {".agents/hooks.json": '{"a": 1}'}), ("codex hook file", {".codex/hooks.json": "[]"}),
+                 ("new folder", {".codex/a/b.txt": "1"}), ("several", {".claude/x.txt": "1", ".agents/hooks.json": "[]"}))
+        for name, files in cases:
+            with self.subTest(name):
+                code, out, _ = self.writes(files)
+                self.assertEqual(code, 10, out)
+                self.assertIn("status=control_plane_changed", out)
+                self.assertRegex(out, r"ERROR: the control plane changed during the run \(.*%s" % re.escape(sorted(files)[0]))
+                self.assertEqual(last_result(self)["control_plane"], {"changed": sorted(files), "main_changed": []})
+                self.assertEqual(last_result(self)["run_exit"], 10)
+                self.reset()
+
+    def test_every_vendor_is_checked(self):
+        for vendor in VENDORS:
+            code, out, _ = self.writes({".claude/x.txt": "1"}, vendor=vendor)
+            self.assertEqual(code, 10, (vendor, out))
+            self.reset()
+
+    def test_changes_made_before_the_run_are_not_findings_but_a_further_change_is(self):
+        self.put("AGENTS.md", "dirty\n")
+        self.put(".claude/old.txt", "1")
+        self.put(".agents/hooks.json", '{"mine": 1}')
+        code, out, _ = self.go("claude", cwd=self.repo)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("ERROR", out)
+        self.assertEqual(last_result(self)["control_plane"]["changed"], [])
+        code, out, _ = self.writes({"AGENTS.md": "dirtier\n"})
+        self.assertEqual(code, 10, out)
+        self.assertEqual(last_result(self)["control_plane"]["changed"], ["AGENTS.md"])
+
+    def test_a_read_only_run_gets_no_new_exit_code(self):
+        code, out, _ = self.writes({".codex/hooks.json": "[]", ".claude/settings.local.json": '{"x": 1}'}, extra=["--read-only"])
+        self.assertEqual(code, 0, out)  # ignored machine-local files never make wrote_files
+        self.assertIn("status=ok", out)
+        self.assertRegex(out, r"WARNING: \.claude/settings\.local\.json, \.codex/hooks\.json changed during the run")
+        self.assertNotIn("ERROR", out)
+        code, out, _ = self.writes({".claude/x.txt": "1"}, extra=["--read-only"])
+        self.assertEqual(code, 8, out)  # what `git status` shows is wrote_files, as before
+        self.assertIn("status=wrote_files", out)
+        self.assertIn("ERROR: a read-only run changed the control plane (.claude/x.txt)", out)
+        self.assertNotIn("control_plane_changed", out)
+
+    def test_setting_files_only_warn(self):
+        files = {".claude/settings.local.json": '{"permissions": {}}', ".claude/tagteam/models.local.json": '{"a": 1}'}
+        code, out, _ = self.writes(files)
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"WARNING: \.claude/settings\.local\.json, \.claude/tagteam/models\.local\.json changed during "
+                              r"the run; the host \(an \"always allow\" approval\) or the model collector")
+        self.assertNotIn("ERROR", out)
+        self.assertEqual(last_result(self)["control_plane"]["changed"], sorted(files))
+
+    def test_python_caches_and_session_worktrees_are_not_findings(self):
+        files = {".claude/tagteam/__pycache__/role_guard.cpython-39.pyc": "x", ".claude/worktrees/s1/a.txt": "1",
+                 ".codex/z.pyc": "x"}
+        code, out, _ = self.writes(files)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(last_result(self)["control_plane"], {"changed": [], "main_changed": []})
+
+    def test_the_names_are_compared_in_lower_case(self):
+        code, out, _ = self.writes({"Agents.md": "x\n"})  # a new file here, AGENTS.md itself on a case-insensitive disk
+        self.assertEqual(code, 10, out)
+        self.assertIn("agents.md", out.lower())
+
+    def test_the_original_path_of_a_rename_is_kept(self):
+        self.git("mv", "AGENTS.md", "notes.md")  # the status entry names notes.md; AGENTS.md is the control file
+        self.assertEqual(run.git_snapshot(self.repo)[0]["control"].get("AGENTS.md"), "missing")
+
+    def test_the_main_checkout_of_a_linked_worktree_only_warns(self):
+        wt = os.path.join(self.tmp.name, "wt")
+        self.git("worktree", "add", "-q", wt, "-b", "side")
+        other = os.path.join(self.repo, ".claude", "x.txt")
+        code, out, _ = self.writes({other: "1", os.path.join(self.repo, ".agents", "hooks.json"): "[]"}, cwd=wt)
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"WARNING: the main checkout's control plane changed during the run "
+                              r"\(\.agents/hooks\.json, \.claude/x\.txt\); another process may have done it")
+        self.assertEqual(last_result(self)["control_plane"],
+                         {"changed": [], "main_changed": [".agents/hooks.json", ".claude/x.txt"]})
+        code, out, _ = self.writes({".claude/y.txt": "1"}, cwd=wt)  # the worktree's own control plane is checked
+        self.assertEqual(code, 10, out)
+        self.assertEqual(last_result(self)["control_plane"], {"changed": [".claude/y.txt"], "main_changed": []})
+
+    def test_a_control_file_swapped_for_a_link_into_the_state_folder_is_seen(self):
+        state = os.path.join(self.repo, ".tagteam")  # the state folder is inside the work tree, so it is left out
+        os.environ["TAGTEAM_STATE_DIR"] = state
+        os.makedirs(state)
+        target = os.path.join(state, "replacement.md")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("evil\n")
+        probe = os.path.join(self.tmp.name, "probe")
+        try:
+            os.symlink(target, probe)
+        except (OSError, NotImplementedError):
+            self.skipTest("cannot create links here")
+        os.environ["FAKE_LINK"] = json.dumps({"AGENTS.md": target})
+        code, out, _ = self.go("claude", cwd=self.repo)
+        self.assertEqual(code, 10, out)
+        self.assertEqual(last_result(self)["control_plane"]["changed"], ["AGENTS.md"])
+        self.assertNotIn(".tagteam", next(ln for ln in out.splitlines() if ln.startswith("ERROR:")))  # only the swap
+
+    def test_exclusions_follow_the_path_git_reports_not_its_resolved_target(self):  # needs no link: realpath is faked
+        root = os.path.realpath(self.repo)
+        skip = [os.path.normcase(os.path.join(root, ".tagteam"))]
+        real = os.path.realpath
+        into_state = lambda p: os.path.join(root, ".tagteam", "replacement.md") if p.endswith("AGENTS.md") else real(p)
+        with mock.patch.object(run.os.path, "realpath", side_effect=into_state):
+            lines, paths, _ = run._parse_status(" T AGENTS.md\0?? .tagteam/runs/x/stdout.txt\0", root, skip)
+        self.assertEqual(lines, [" T AGENTS.md"])  # the swapped control file stays, the state folder's own file goes
+
+    def test_the_content_hash_of_control_files_has_no_budget(self):
+        with mock.patch.object(run, "HASH_MAX_BYTES", 10):  # the general check is capped; this one must not be
+            big = "x" * 100
+            self.put(".codex/hooks.json", big)
+            code, out, _ = self.writes({".codex/hooks.json": big + "y"})
+        self.assertEqual(code, 10, out)
+        self.assertEqual(last_result(self)["control_plane"]["changed"], [".codex/hooks.json"])
+
+    def test_a_budget_shift_cannot_turn_an_untouched_file_into_a_change(self):
+        self.put("AGENTS.md", "dirty " * 20)  # modified before the run and left alone
+        self.put(".claude/settings.local.json", "{" + " " * 200 + "}")
+        with mock.patch.object(run, "HASH_MAX_BYTES", 300):
+            code, out, _ = self.writes({".claude/settings.local.json": "{}"})
+        self.assertEqual(code, 0, out)  # only the setting file changed: a warning
+        self.assertEqual(last_result(self)["control_plane"]["changed"], [".claude/settings.local.json"])
+
+    def test_a_file_that_could_not_be_read_is_never_a_proven_change_and_makes_the_check_incomplete(self):
+        def snap(digest):
+            return {"control": {".codex/hooks.json": digest, "AGENTS.md": "d"}}
+        for before, after in (("a", "unreadable"), ("unreadable", "a"), ("unreadable", "unreadable")):
+            flags, lines, record = run.control_compare(snap(before), snap(after), None, None, False, False)
+            self.assertEqual((flags, record["changed"]), (set(), []), (before, after))
+            self.assertEqual(lines, ["WARNING: the control-plane check is incomplete: .codex/hooks.json could not be read"])
+        flags, lines, _ = run.control_compare(snap("a"), snap("b"), None, None, False, False)
+        self.assertEqual(flags, {"control_plane_changed"})
+
+    def test_a_control_folder_replaced_by_a_link_to_an_identical_one_is_seen(self):
+        elsewhere = os.path.join(self.tmp.name, "elsewhere", ".codex")
+        os.makedirs(elsewhere)
+        with open(os.path.join(elsewhere, "hooks.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")  # the same content as the ignored .codex/hooks.json: no file digest differs
+        try:
+            fake_cli.replace_by_link(os.path.join(self.tmp.name, "probe"), elsewhere)
+        except OSError:
+            self.skipTest("cannot create links or junctions here")
+        os.environ["FAKE_LINK"] = json.dumps({os.path.join(self.repo, ".codex"): elsewhere})
+        code, out, _ = self.go("claude", cwd=self.repo)
+        self.assertEqual(code, 10, out)
+        self.assertEqual(last_result(self)["control_plane"]["changed"], [".codex (link)"])
+
+    def test_a_file_over_the_cap_is_compared_by_size_and_time(self):
+        self.put(".codex/hooks.json", "x" * 100)
+        with mock.patch.object(run, "CONTROL_HASH_CAP", 50):
+            code, out, _ = self.go("claude", cwd=self.repo)  # equal: a warning, never a change
+            self.assertEqual(code, 0, out)
+            self.assertIn("WARNING: the control-plane check for .codex/hooks.json compared size and time only", out)
+            code, out, _ = self.writes({".codex/hooks.json": "y" * 101})
+            self.assertEqual(code, 10, out)  # a different size is a change
+        snap = run.control_digests(os.path.realpath(self.repo), [])
+        self.assertRegex(snap[".codex/hooks.json"], r"^[0-9a-f]{64}$")  # under the real cap it is read
+        flags, lines, _ = run.control_compare({"control": {"AGENTS.md": "stat:5:1"}}, {"control": {"AGENTS.md": "ab"}},
+                                              None, None, False, False)
+        self.assertEqual(flags, {"control_plane_changed"})  # leaving the cap changes the file, so it is a change
+
+    def test_outside_a_work_tree_only_the_machine_local_files_are_checked(self):
+        plain = os.path.join(self.tmp.name, "plain")
+        os.makedirs(os.path.join(plain, ".agents"))
+        with open(os.path.join(plain, ".agents", "hooks.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        code, out, _ = self.writes({".claude/x.txt": "1", ".claude/settings.local.json": "{}"}, cwd=plain)
+        self.assertEqual(code, 0, out)  # no git status to see .claude/x.txt; a setting file only warns
+        self.assertIn("WARNING: .claude/settings.local.json changed during the run", out)
+        self.assertNotIn("ERROR", out)
+        code, out, _ = self.writes({".agents/hooks.json": "[]"}, cwd=plain)
+        self.assertEqual(code, 10, out)
+        self.assertEqual(last_result(self)["control_plane"], {"changed": [".agents/hooks.json"], "main_changed": []})
+        self.assertEqual(last_result(self)["git_check"], "skipped")
+        code, out, _ = self.writes({".agents/hooks.json": "{}"}, cwd=plain, extra=["--read-only"])
+        self.assertEqual(code, 0, out)  # a read-only run only warns
+        self.assertIn("WARNING: .agents/hooks.json changed during the run", out)
+
+    def test_priority_of_the_new_statuses(self):
+        order = [s for s, _ in run.PRIORITY]
+        self.assertEqual(order[:4], ["exhausted", "git_head_moved", "control_plane_changed", "hooks_not_run"])
+        self.assertEqual(order.index("hooks_not_run") + 1, order.index("timeout"))
+        self.assertEqual((dict(run.PRIORITY)["control_plane_changed"], dict(run.PRIORITY)["hooks_not_run"]), (10, 11))
+        code, out, _ = self.writes({".claude/x.txt": "1"}, mode="commit")
+        self.assertEqual(code, 7, out)  # a commit outweighs a control-plane change
+        self.assertIn("ERROR: the control plane changed during the run", out)  # whose line is still printed
+
+
+class CodexHookTests(GitRepoBase):
+    """A Codex worker whose hooks did not run left no role record: hooks_not_run."""
+    UNTRUSTED = "warning: Untrusted project-local configuration is disabled. Trust this project to load its hooks.\n"
+
+    def codex(self, session="none", mode="ok", cwd=None, extra=(), stderr=""):
+        os.environ["FAKE_SESSION"] = session
+        os.environ["FAKE_STDERR"] = stderr
+        return self.go("openai", mode, cwd=cwd or self.repo, extra=extra)
+
+    def during(self, host, ts=None, body=None):
+        """Another process writes a record while the run is going (before the CLI starts, after the baseline)."""
+        real = run.execute
+
+        def execute(*args, **kwargs):
+            folder = os.path.join(self.state, "sessions")
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "other.json"), "w", encoding="utf-8") as fh:
+                fh.write(body if body is not None else json.dumps({"role": "worker", "host": host, "ts": ts or int(time.time())}))
+            return real(*args, **kwargs)
+        return mock.patch.object(run, "execute", side_effect=execute)
+
+    def test_a_record_of_the_run_passes(self):
+        for extra in ((), ("--read-only",)):
+            code, out, _ = self.codex("codex", extra=extra)
+            self.assertEqual(code, 0, out)
+            self.assertIn("status=ok", out)
+
+    def test_no_record_is_hooks_not_run_even_for_a_read_only_review(self):
+        for extra in ((), ("--read-only",)):
+            code, out, _ = self.codex(extra=extra)
+            self.assertEqual(code, 11, out)
+            self.assertIn("status=hooks_not_run exit=0", out)
+            top = os.path.realpath(self.repo)
+            self.assertIn("ERROR: no tagteam role record appeared for this Codex run: the project's hooks did not run "
+                          "(or could not write the record). Codex skips project hooks until the project is trusted: "
+                          "run codex once in %s, trust the project, then trust the hooks with /hooks; "
+                          "`install.py %s --check --host codex --live` confirms it. The worker ran without the role "
+                          "guard; review its changes." % (top, top), out)
+            self.assertNotIn("CODEX:", out)
+            self.assertEqual(last_result(self)["run_exit"], 11)
+
+    def test_records_that_are_not_this_runs(self):
+        folder = os.path.join(self.state, "sessions")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "old.json"), "w", encoding="utf-8") as fh:  # there before the run
+            json.dump({"role": "worker", "host": "codex", "ts": int(time.time())}, fh)
+        self.assertEqual(self.codex()[0], 11)
+        with self.during("claude"):  # another host
+            self.assertEqual(self.codex()[0], 11)
+        with self.during("codex", ts=1):  # made before the run started
+            self.assertEqual(self.codex()[0], 11)
+
+    def test_a_record_made_by_another_process_counts(self):  # a false negative that is accepted (design 4.2)
+        with self.during("codex"):
+            code, out, _ = self.codex()
+        self.assertEqual(code, 0, out)
+
+    def test_only_a_clean_exit_is_judged(self):
+        code, out, _ = self.codex(mode="crash")
+        self.assertEqual(code, 1, out)
+        self.assertIn("status=cli_failed", out)
+        self.assertNotIn("hooks_not_run", out)
+        self.assertNotIn("no tagteam role record", out)
+        code, out, _ = self.codex(mode="wrong_model")  # judged, and 11 outranks model_mismatch (4)
+        self.assertEqual(code, 11, out)
+
+    def test_a_folder_or_a_record_that_cannot_be_read_only_warns(self):
+        os.makedirs(self.state)
+        with open(os.path.join(self.state, "sessions"), "w", encoding="utf-8") as fh:  # a file where the folder belongs
+            fh.write("x")
+        code, out, _ = self.codex()
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARNING: hook check unavailable", out)
+        os.remove(os.path.join(self.state, "sessions"))
+        with self.during("codex", body="{broken"):
+            code, out, _ = self.codex()
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARNING: hook check unavailable", out)
+
+    def test_the_trust_warning_of_codex_is_carried_over_when_the_check_fails(self):
+        code, out, _ = self.codex(stderr=self.UNTRUSTED)
+        self.assertEqual(code, 11, out)
+        self.assertIn("CODEX: " + self.UNTRUSTED.strip(), out)
+        code, out, _ = self.codex("codex", stderr=self.UNTRUSTED)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("CODEX:", out)
+
+    def test_other_vendors_are_not_judged(self):
+        for vendor in ("claude", "google"):
+            code, out, _ = self.go(vendor, cwd=self.repo)
+            self.assertEqual(code, 0, (vendor, out))
+            self.assertFalse(os.path.exists(os.path.join(self.state, "sessions")))
+
+    def test_in_a_linked_worktree_it_only_warns(self):  # I20: not known whether Codex runs the hooks of a worktree
+        wt = os.path.join(self.tmp.name, "wt")
+        self.git("worktree", "add", "-q", wt, "-b", "side")
+        code, out, _ = self.codex(cwd=wt, stderr=self.UNTRUSTED)
+        self.assertEqual(code, 0, out)
+        self.assertIn("status=ok", out)
+        self.assertRegex(out, r"WARNING: no tagteam role record appeared for this Codex run.*linked worktree")
+        self.assertIn("CODEX: " + self.UNTRUSTED.strip(), out)
+        self.assertEqual(self.codex(cwd=self.repo)[0], 11)  # the main checkout is judged
+
+    def test_a_control_plane_change_outranks_it_and_both_lines_are_printed(self):
+        os.environ["FAKE_WRITE"] = json.dumps({".claude/x.txt": "1"})
+        code, out, _ = self.codex()
+        self.assertEqual(code, 10, out)
+        self.assertIn("status=control_plane_changed", out)
+        self.assertIn("ERROR: the control plane changed during the run", out)
+        self.assertIn("ERROR: no tagteam role record appeared", out)
+        code, out, _ = self.codex(mode="commit")
+        self.assertEqual(code, 7, out)
 
 
 if __name__ == "__main__":

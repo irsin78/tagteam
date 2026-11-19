@@ -6,9 +6,12 @@ Options, exit codes, records and the git check's limits: `run.py --help` and doc
 - A run's records are <state dir>/runs/<id>/; started.json is written before the CLI starts and report.txt last,
   so --status and --wait can tell a finished, a running and a dead run apart. A usage-limit sign goes to
   <state dir>/exhausted.json (route.py reads it).
+- After a run: the git check, a control-plane check (.claude/, .codex/, .agents/, AGENTS.md, CLAUDE.md and the
+  machine-local files git ignores, compared before and after) and, for Codex, a check that its hooks wrote a role record.
 - Codex on Windows gets `-c windows.sandbox=<value>` from models.local.json codex.windows_sandbox
   [host: codex-cli 0.169.0 Windows, the elevated sandbox failed every command with CreateProcessWithLogonW 1385,
-  measured 2026-11-17 / re-test after a Codex update].
+  measured 2026-11-17; codex-cli 0.170.0 ran `codex exec` commands under elevated on one PC (two runs, not
+  interactive), measured 2026-11-18 / re-test after a Codex update]. The default stays unelevated.
 - A CLI starts without the variables that name another host: CLAUDECODE and CLAUDE_CODE_ENTRYPOINT unless it is
   claude, ANTIGRAVITY_CONVERSATION_ID unless it is google. Workers get no extra writable folder (no --add-dir).
 - Environment (tests): TAGTEAM_STATE_DIR, TAGTEAM_CONFIG_DIR, TAGTEAM_CLI_<VENDOR> (JSON array replacing the CLI).
@@ -21,6 +24,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -30,12 +34,14 @@ from datetime import datetime, timedelta, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import state as statelib  # noqa: E402  (same folder; `state` is a local name in main)
+from role_guard import CONTROL_DIRS, CONTROL_FILES  # noqa: E402  (one list of what the control plane is)
 
 MARKER = "HARNESS ROLE: DELEGATE"
 AGY_ARG_LIMIT = 30000  # characters of the serialized command; Windows stops near 32K
 REPORT_CHARS = 4000
 HASH_MAX_PATHS = 2000  # git check: content hashes of listed files; beyond this the check is partial
 HASH_MAX_BYTES = 50 * 1024 * 1024
+CONTROL_HASH_CAP = 16 * 1024 * 1024  # a control-plane file over this is compared by size and time, not read
 FLAGS = re.I | re.S
 CLAUDE_EX = re.compile(
     r"(?:API Error: )?(?:HTTP )?429.*|(?:usage|rate)[ -]limit(?: exceeded| reached)?.*"
@@ -52,8 +58,15 @@ GOOGLE_LINE_EX = re.compile(
     r"|quota(?: exceeded| exhausted)?[.!]?)", re.I)
 AGY_LABEL = re.compile(r'Propagating selected model override to backend: label="([^"]+)"')
 CODEX_MODEL = re.compile(r"^model:\s*(\S+)", re.M)
-PRIORITY = [("exhausted", 3), ("git_head_moved", 7), ("timeout", 5), ("model_mismatch", 4), ("wrote_files", 8),
-            ("cli_failed", 1), ("no_output", 6)]
+PRIORITY = [("exhausted", 3), ("git_head_moved", 7), ("control_plane_changed", 10), ("hooks_not_run", 11),
+            ("timeout", 5), ("model_mismatch", 4), ("wrote_files", 8), ("cli_failed", 1), ("no_output", 6)]
+# Machine-local files git ignores, so `git status` never shows a change: kept by content hash (see control_path).
+# Hook files are written by the installer and copy_agy_hooks only; a change in a run is the worker's or a stray process's.
+# Setting files are also written by the host ("always allow") and the weekly model collector: a change only warns.
+CONTROL_HOOK_FILES = (".agents/hooks.json", ".codex/hooks.json")
+CONTROL_SETTING_FILES = (".claude/settings.local.json", ".claude/tagteam/models.local.json",
+                         ".claude/tagteam/bench.local.json")
+TRUST_WARNING = re.compile(r"^.*Untrusted project-local configuration is disabled.*$", re.M)
 WINDOWS_SANDBOX = "unelevated"  # codex windows.sandbox default; models.local.json codex.windows_sandbox overrides it
 # The values Codex accepts: codex-cli 0.169.0 rejects others at start with
 # "unknown variant `x`, expected one of `elevated`, `unelevated`, `mxc` in `windows.sandbox`".
@@ -283,6 +296,33 @@ def hash_file(path, room):
         return "unreadable", 0
 
 
+def _parse_status(raw, root, skip):
+    """`status --porcelain -z` output -> (entry lines, (path, full path) pairs, original paths of renames).
+    Entries under the directories in `skip` are left out."""
+    lines, paths, origs = [], [], []
+    entries = raw.split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        orig = None
+        if "R" in entry[:2] or "C" in entry[:2]:
+            orig = entries[i] if i < len(entries) else None  # the original path follows as its own entry
+            i += 1
+        full = os.path.join(root, entry[3:])
+        # the path git reports decides, never what a link there points to (a control file swapped for a link into
+        # the state folder must stay in the list); `root` and `skip` are real paths already
+        if _under(os.path.normcase(os.path.normpath(full)), skip):
+            continue
+        lines.append(entry)
+        paths.append((entry[3:], full))
+        if orig:
+            origs.append(orig)
+    return lines, paths, origs
+
+
 def git_snapshot(cwd, exclude=()):
     """Return (snapshot, problem). (None, None): not a git work tree, or no git: skip silently.
     (None, text): git failed. The snapshot has head, ref (symbolic HEAD, "" when detached), the
@@ -318,21 +358,7 @@ def git_snapshot(cwd, exclude=()):
         return None, "git status failed: " + status.stderr.decode("utf-8", errors="replace").strip()[:120]
     root = os.path.realpath(text(top).strip())
     skip = [os.path.normcase(os.path.realpath(d)) for d in exclude]
-    lines, paths = [], []
-    entries = text(status).split("\0")
-    i = 0
-    while i < len(entries):
-        entry = entries[i]
-        i += 1
-        if len(entry) < 4:
-            continue
-        if "R" in entry[:2] or "C" in entry[:2]:
-            i += 1  # the original path follows as its own entry
-        full = os.path.join(root, entry[3:])
-        if _under(os.path.normcase(os.path.realpath(full)), skip):
-            continue
-        lines.append(entry)
-        paths.append((entry[3:], full))
+    lines, paths, origs = _parse_status(text(status), root, skip)
     hashes, used, partial = {}, 0, False
     for rel, full in sorted(paths):
         if len(hashes) >= HASH_MAX_PATHS:
@@ -346,7 +372,8 @@ def git_snapshot(cwd, exclude=()):
             used += size
     return {"head": text(head).strip() if head.returncode == 0 else "",
             "ref": text(ref).strip() if ref.returncode == 0 else "",
-            "status": sorted(lines), "hashes": hashes, "partial": partial}, None
+            "status": sorted(lines), "hashes": hashes, "partial": partial, "root": root,
+            "control": control_digests(root, [p for p, _ in paths] + origs)}, None
 
 
 def _where(snap):
@@ -373,6 +400,141 @@ def git_compare(before, after, read_only):
             lines.append("ERROR: a read-only run changed the work tree: %s%s"
                          % (", ".join(shown[:5]), " (+%d more)" % (len(shown) - 5) if len(shown) > 5 else ""))
     return flags, lines
+
+
+# ---- control-plane check (before and after the run) ----------------------------------------
+# Only what differs between the two snapshots counts, so an edit made before the run is not a finding. It sees the
+# paths `git status` lists plus the machine-local files above; a change made and undone inside the run is not seen.
+
+def control_path(rel):
+    """Is this repository-relative path in the control plane (the lists of role_guard, compared in lower case)?
+    Python caches and the session worktrees of Claude Code's desktop app (.claude/worktrees/) are not."""
+    parts = rel.replace("\\", "/").lower().split("/")
+    if "__pycache__" in parts or parts[-1].endswith(".pyc"):
+        return False
+    if parts[0] == ".claude" and len(parts) > 1 and parts[1] == "worktrees":
+        return False
+    return parts[0] in CONTROL_DIRS or (len(parts) == 1 and parts[0] in CONTROL_FILES)
+
+
+def control_digest(path):
+    """sha256 of the whole file (read in chunks, outside the budget of the general check), 'missing', 'link:...',
+    'unreadable'; a regular file over CONTROL_HASH_CAP is 'stat:<size>:<mtime_ns>' instead, so a huge file is not read
+    on every run. Never a marker that differs from another only by being a marker."""
+    try:
+        st = os.lstat(path)
+        if stat.S_ISREG(st.st_mode) and st.st_size > CONTROL_HASH_CAP:
+            return "stat:%d:%d" % (st.st_size, st.st_mtime_ns)
+    except OSError:
+        pass
+    return hash_file(path, float("inf"))[0]
+
+
+def control_digests(root, paths):
+    """{path: control_digest} for the control-plane paths among `paths` and for the machine-local files, plus
+    '<name> (link)': 'plain', or 'link:<real path>' when a top-level control folder or file is a link or junction
+    (its files can then look the same through the link). `root` is a real path."""
+    rels = {p for p in paths if control_path(p)} | set(CONTROL_HOOK_FILES) | set(CONTROL_SETTING_FILES)
+    digests = {rel: control_digest(os.path.join(root, rel)) for rel in sorted(rels)}
+    for name in CONTROL_DIRS + ("AGENTS.md", "CLAUDE.md"):
+        lexical = os.path.normcase(os.path.join(root, name))
+        real = os.path.normcase(os.path.realpath(lexical))
+        digests[name + " (link)"] = "plain" if real == lexical else "link:" + real
+    return digests
+
+
+def tree_control(top, exclude):
+    """control_digests of another work tree (one `git status` in it); None when git cannot say."""
+    try:
+        res = subprocess.run(["git", "-C", top, "status", "--porcelain", "-z", "--untracked-files=all"],
+                             capture_output=True, timeout=30, env=dict(os.environ, GIT_OPTIONAL_LOCKS="0"))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    skip = [os.path.normcase(os.path.realpath(d)) for d in exclude]
+    _, paths, origs = _parse_status(res.stdout.decode("utf-8", errors="replace"), top, skip)
+    return control_digests(top, [p for p, _ in paths] + origs)
+
+
+def linked_main_tree(snap):
+    """The main work tree when the snapshot's work tree is a linked worktree of another checkout, else None."""
+    main = own_main_work_tree(snap["root"]) if snap else None
+    if not main or os.path.normcase(os.path.realpath(main)) == os.path.normcase(snap["root"]):
+        return None
+    return os.path.realpath(main)
+
+
+def control_compare(before, after, main_before, main_after, read_only, wrote_files):
+    """Return (flags, lines, record for result.json). Needs both snapshots of the run's own work tree.
+    A write run that changed a control-plane path or a hook file is `control_plane_changed`. Setting files, hook files
+    of a read-only run and the main checkout of a linked worktree only warn; a read-only run gets no new status
+    (what it changed in `git status` is `wrote_files` already)."""
+    if not before or not after:
+        return set(), [], None
+
+    def diff(a, b):  # a file that could not be read on either side proves nothing: it is not a change
+        return sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p) and "unreadable" not in (a.get(p), b.get(p)))
+
+    def show(paths):
+        return ", ".join(paths[:5]) + (" (+%d more)" % (len(paths) - 5) if len(paths) > 5 else "")
+    changed = diff(before["control"], after["control"])
+    hooks = [p for p in changed if p.lower() in CONTROL_HOOK_FILES]
+    settings = [p for p in changed if p.lower() in CONTROL_SETTING_FILES]
+    plain = [p for p in changed if p not in hooks and p not in settings]
+    flags, lines = set(), []
+    blind = sorted(p for p in set(before["control"]) | set(after["control"])
+                   if "unreadable" in (before["control"].get(p), after["control"].get(p)))
+    if blind:
+        lines.append("WARNING: the control-plane check is incomplete: %s could not be read" % show(blind))
+    capped = sorted(p for p, v in after["control"].items() if v.startswith("stat:") and before["control"].get(p) == v)
+    if capped:
+        lines.append("WARNING: the control-plane check for %s compared size and time only (file over %d MiB)"
+                     % (show(capped), CONTROL_HASH_CAP >> 20))
+    if not read_only and (plain or hooks):
+        flags.add("control_plane_changed")
+        lines.append("ERROR: the control plane changed during the run (%s); workers must not edit .claude/, .codex/, "
+                     ".agents/, AGENTS.md or CLAUDE.md (this worker or another process in this checkout)"
+                     % show(sorted(plain + hooks)))
+    elif plain:
+        lines.append("%s: a read-only run changed the control plane (%s)" % ("ERROR" if wrote_files else "WARNING", show(plain)))
+    warn = settings + (hooks if read_only else [])
+    if warn:
+        lines.append('WARNING: %s changed during the run; the host (an "always allow" approval) or the model collector '
+                     'may have written it, or the worker did; check it' % show(sorted(warn)))
+    main_changed = diff(main_before, main_after) if main_before is not None and main_after is not None else []
+    if main_changed:
+        lines.append("WARNING: the main checkout's control plane changed during the run (%s); another process may have "
+                     "done it" % show(main_changed))
+    return flags, lines, {"changed": changed, "main_changed": main_changed}
+
+
+# ---- Codex hooks: did they write a role record? ---------------------------------------------
+
+def list_sessions(state):
+    """(file names under <state>/sessions, None), or (None, why) when the folder cannot be read. No folder: none."""
+    try:
+        return set(os.listdir(os.path.join(state, "sessions"))), None
+    except FileNotFoundError:
+        return set(), None
+    except OSError as exc:
+        return None, "%s: %s" % (type(exc).__name__, exc)
+
+
+def hooks_ran(state, before, since):
+    """True when a role record of host codex with ts >= since appeared that `before` (file names) did not have, False
+    when none did, None when that cannot be told (a folder or a new record that cannot be read)."""
+    after = list_sessions(state)[0]
+    if before is None or after is None:
+        return None
+    unreadable = False
+    for name in sorted(n for n in after - before if n.endswith(".json")):
+        rec = parse_json(read_text(os.path.join(state, "sessions", name)))
+        if rec is None:
+            unreadable = True
+        elif rec.get("host") == "codex" and isinstance(rec.get("ts"), (int, float)) and rec["ts"] >= since:
+            return True
+    return None if unreadable else False
 
 
 # ---- reading results --------------------------------------------------------------------
@@ -718,7 +880,12 @@ def main(argv):
     sys.stdout.flush()
     stdin_bytes = None if args.vendor == "google" else prompt.encode("utf-8")
     own_files = [run_dir, state]  # the launcher's records may lie inside the work tree
-    git_before, problem = git_snapshot(cwd, own_files)
+    git_before, problem = git_snapshot(cwd, own_files)  # the baseline of the control-plane check too (after the hook copy)
+    main_top = linked_main_tree(git_before)
+    plain = os.path.realpath(cwd)
+    loose_before = {"control": control_digests(plain, [])} if git_before is None and problem is None else None  # no git
+    main_before = tree_control(main_top, own_files) if main_top else None
+    sessions_before = list_sessions(state)[0] if args.vendor == "openai" else None
     t0 = time.time()
     start_error = None
     try:
@@ -732,6 +899,12 @@ def main(argv):
     if not problem and bool(git_before) != bool(git_after):
         problem = "the work tree changed between the two snapshots"
     git_flags, git_lines = git_compare(git_before, git_after, args.read_only)
+    main_after = tree_control(main_top, own_files) if main_top else None
+    loose = (loose_before, {"control": control_digests(plain, [])}) if loose_before else (git_before, git_after)
+    control_flags, control_lines, control = control_compare(*loose, main_before, main_after,
+                                                            args.read_only, "wrote_files" in git_flags)
+    git_flags |= control_flags
+    git_lines += control_lines
     if problem:
         git_check = "unavailable"
         git_lines.append("WARNING: git check unavailable (%s)" % problem)
@@ -760,12 +933,34 @@ def main(argv):
     elif code != 0:
         flags.add("cli_failed")
     found, matches = (None, True)
-    if not flags:  # the model is checked only on a clean exit
+    check_lines = []
+    if not flags:  # the model and the Codex hooks are checked only on a clean exit
         found, matches = actual_model(args.vendor, args.model, args.effort, label, data, out, err, run_dir)
         if not matches:
             flags.add("model_mismatch")
         elif not last.strip():  # a clean exit with an empty answer is a failed run, not a result
             flags.add("no_output")
+        if args.vendor == "openai":
+            top = git_before["root"] if git_before else cwd
+            ran = hooks_ran(state, sessions_before, int(t0))
+            trust = TRUST_WARNING.search(err)
+            if ran is False:
+                none = ("no tagteam role record appeared for this Codex run: the project's hooks did not run (or could "
+                        "not write the record)")
+                if main_top:  # I20: whether Codex runs the hooks of a linked worktree is not known, so only a warning
+                    check_lines.append("WARNING: %s; not a failure in a linked worktree (unconfirmed whether Codex runs "
+                                      "hooks there); the worker may have run without the role guard" % none)
+                else:
+                    flags.add("hooks_not_run")
+                    check_lines.append("ERROR: %s. Codex skips project hooks until the project is trusted: run codex once "
+                                      "in %s, trust the project, then trust the hooks with /hooks; `install.py %s --check "
+                                      "--host codex --live` confirms it. The worker ran without the role guard; review its "
+                                      "changes." % (none, top, top))
+                if trust:
+                    check_lines.append("CODEX: " + trust.group(0).strip())
+            elif ran is None:
+                check_lines.append("WARNING: hook check unavailable (the sessions folder or a new role record could not be "
+                                  "read)")
     flags |= git_flags
     status, exit_code = next(((s, c) for s, c in PRIORITY if s in flags), ("ok", 0))
 
@@ -777,6 +972,8 @@ def main(argv):
               "exit_code": code, "secs": secs, "actual_model": found, "model_match": matches if found or status in ("ok", "model_mismatch") else None,
               "read_only": args.read_only, "run_dir": run_dir}
     result["git_check"] = git_check
+    if control is not None:
+        result["control_plane"] = control
     result["run_exit"] = exit_code  # run.py's own exit code (exit_code above is the CLI's): --status repeats it
     if status == "exhausted":
         evidence, epoch = hit
@@ -789,7 +986,7 @@ def main(argv):
     write_text(os.path.join(run_dir, "result.json"), json.dumps(result, indent=2) + "\n")
     if start_error:
         lines.append("ERROR: could not start the CLI (%s)" % start_error)
-    lines.extend(hook_lines + git_lines)
+    lines.extend(hook_lines + git_lines + check_lines)
     if status == "no_output":
         denied = [d.get("display_name") or d.get("action") for d in (data or {}).get("denied_actions") or []
                   if isinstance(d, dict)] if isinstance(data, dict) else []
