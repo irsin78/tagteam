@@ -2290,6 +2290,14 @@ class RunBoundedTests(unittest.TestCase):
                                 dict(os.environ), 30, None)
         self.assertEqual((p.returncode, p.stdout.strip(), p.stderr), (3, "ABC", ""))
 
+    def test_output_in_any_encoding_is_read_not_dropped(self):
+        # a hook printing non-ASCII UTF-8 (or bytes no code page decodes) left stdout None under cp949 and crashed --check
+        code = ("import sys; sys.stdout.buffer.write('caf\\u00e9 \\u4f5c'.encode('utf-8') + bytes([0xff, 0xfe])); "
+                "sys.stderr.buffer.write(bytes([0x80]))")
+        p = install.run_bounded([sys.executable, "-c", code], "", dict(os.environ), 30, None)
+        self.assertTrue(p.stdout.startswith("café 作"), p.stdout)
+        self.assertIsInstance(p.stderr, str)
+
 
 class HookCommandTests(unittest.TestCase):
     """The commands of harness/claude/settings.json, run as the host runs them (sh -c; Git Bash on Windows), with

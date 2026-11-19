@@ -1329,10 +1329,12 @@ PIPE_DRAIN_SECONDS = 2  # after a timeout kills the tree, how long the pipes may
 def run_bounded(argv, input_text, env, timeout, cwd):
     """subprocess.run(..., capture_output=True, text=True, timeout=timeout) whose timeout holds for the whole tree: a child
     of the killed shell that keeps the pipes open would make plain run() wait for it (measured on Windows: 2 s for a 0.2 s
-    timeout). On a timeout the tree is killed, the pipes get PIPE_DRAIN_SECONDS, and TimeoutExpired is raised."""
+    timeout). On a timeout the tree is killed, the pipes get PIPE_DRAIN_SECONDS, and TimeoutExpired is raised.
+    Output is read as UTF-8 with replacement: with the locale's code page (cp949 on a Korean Windows) a byte it cannot
+    decode killed the reader thread and left stdout None."""
     kwargs = {} if is_windows() else {"start_new_session": True}
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-                            cwd=cwd, **kwargs)
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace", env=env, cwd=cwd, **kwargs)
     try:
         out, err = proc.communicate(input_text, timeout=timeout)
     except subprocess.TimeoutExpired:
