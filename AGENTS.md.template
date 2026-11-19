@@ -4,7 +4,7 @@ This is the only instruction file. Codex reads it directly; Claude Code loads it
 through `@AGENTS.md` in CLAUDE.md. Terms in *italics* are defined once, in the
 term table below.
 
-The user's instructions override skill guidance; on a conflict, follow the user and name the skill line you set aside. [fix: Astra resolved conflicts between skill text and the user unpredictably (vendor guide) / remove when a run with a deliberately conflicting skill follows the user unprompted]
+The user's instructions override skill guidance.
 
 ## 1. Every new session or worker names its model and effort
 

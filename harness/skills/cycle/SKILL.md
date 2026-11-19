@@ -97,7 +97,6 @@ Every brief (first prompt or follow-up message) contains:
 3. Tools and materials: files to read first, interfaces to keep, worktree path.
 4. Scope boundary: files the worker owns; everything else is read-only.
 5. Verification: exact commands to run before reporting.
-6. The line "Finish the whole task before replying." [fix: Fable at low/medium effort ended turns before finishing the brief / remove when low-effort workers finish multi-step briefs without this line]
 
 Keep briefs short; point to files instead of pasting them. New instructions go in the
 latest message, not in edits to earlier context.
