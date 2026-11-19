@@ -43,8 +43,8 @@ The first line `run.py` prints is `RUN <id> started run_dir=...`; the run's logs
 
 1. Start the Codex orchestrator in the main checkout. Its sandbox writes only inside the workspace, and the
    state folder `.tagteam/` is in the main checkout; a session started in a worktree needs `--add-dir <state
-   folder>`. [host: codex-cli 0.169.0 Windows workspace-write sandbox, measured 2026-11-17 / re-test after a
-   Codex update]
+   folder>`. [host: codex-cli 0.169.0 and 0.170.0 Windows workspace-write sandbox, measured 2026-11-17 and
+   2026-11-19 (0.170.0: worktree only) / re-test after a Codex update]
 2. On Windows, `windows.sandbox = "elevated"` made every command of `codex exec` fail with
    `CreateProcessWithLogonW failed: 1385` in codex-cli 0.169.0; in 0.170.0 the same commands ran on one PC (two runs,
    `codex exec` only). Interactive Codex with `elevated`: unconfirmed. tagteam keeps `unelevated` as its default and
@@ -53,23 +53,30 @@ The first line `run.py` prints is `RUN <id> started run_dir=...`; the run's logs
 3. A custom agent (`.codex/agents/*.toml`) runs on its definition's model and effort; `model` and
    `reasoning_effort` passed to `spawn_agent` are silently ignored for it, and honoured for `default`.
    The real model is recorded per subagent in `<state folder>/agents.jsonl`; compare it with the route.
-   [host: codex-cli 0.169.0, measured 2026-11-17 / re-test after a Codex update]
-4. A subagent inherits the orchestrator's sandbox; `sandbox_mode` in an agent definition was not applied.
-   A review that must not write goes through `run.py --read-only`. [host: codex-cli 0.169.0, measured 2026-11-17 /
+   A project Codex does not trust loads none of its `.codex/agents` definitions: the same `spawn_agent` then behaves as
+   for `default` (arguments honoured, parent sandbox). [host: codex-cli 0.169.0 and 0.170.0, measured 2026-11-17 and
+   2026-11-19 (0.170.0 Windows `codex exec`; the arguments test ran with hooks disabled, the real model also with hooks on) /
    re-test after a Codex update]
+4. A subagent inherits the orchestrator's sandbox; `sandbox_mode` in an agent definition was not applied.
+   A review that must not write goes through `run.py --read-only`. [host: codex-cli 0.169.0 and 0.170.0, measured
+   2026-11-17 and 2026-11-19 / re-test after a Codex update]
 5. When the orchestrator's turn ends, subagents still running are interrupted (measured in `codex exec`).
    Wait for them with `wait_agent` before ending the turn. In interactive Codex a subagent's completion arrived
    in the same turn while the orchestrator was in `wait_agent`; a new orchestrator turn started by a finishing
    subagent was not observed, and whether it happens is unconfirmed. [host: codex-cli 0.169.0 exec 2026-11-17 and
-   interactive 2026-11-18 / re-test after a Codex update]
+   interactive 2026-11-18; 0.170.0 exec only, measured 2026-11-19 / re-test after a Codex update]
 6. In a turn resumed with `codex exec resume`, `spawn_agent` works and `followup_task` reaches a subagent of an
    earlier turn by its `task_name`, but `list_agents` does not show earlier subagents. Record each `task_name` in
-   status.md. [host: codex-cli 0.169.0 exec resume, measured 2026-11-17 / re-test after a Codex update]
+   status.md. [host: codex-cli 0.169.0 and 0.170.0 exec resume, measured 2026-11-17 and 2026-11-19 / re-test after a
+   Codex update]
 7. Subagents get no SessionStart or UserPromptSubmit hook, and the task text of `spawn_agent` reaches hooks
    encrypted; the hook knows a subagent by its `agent_id`, so a subagent is always a worker. [host: codex-cli
-   0.169.0, measured 2026-11-17 / re-test after a Codex update]
-8. The Stop hook did not run reliably in `codex exec` (8 of 14 turns); nothing here depends on it.
-   [host: codex-cli 0.169.0 exec, measured 2026-11-17 / re-test after a Codex update]
+   0.169.0, measured 2026-11-17; 0.170.0 measured 2026-11-19: no SessionStart context in the subagent, encrypted task
+   text and `agent_id` seen, UserPromptSubmit not re-observed / re-test after a Codex update]
+8. The Stop hook did not run reliably in `codex exec` with 0.169.0 (8 of 14 turns); in 0.170.0 the Stop hook that Codex
+   printed ran in 11 of 11 turns and failed once in a twelfth, a different method (output lines of a user-level hook, not
+   a probe record). Nothing here depends on it. [host: codex-cli 0.169.0 exec, measured 2026-11-17; codex-cli 0.170.0
+   exec, measured 2026-11-19 / re-test after a Codex update]
 9. Inside the sandbox, `git add`, `git commit`, `git branch`, `git worktree add` and `run.py` failed (`.git` is
    protected; the nested Claude and Codex CLIs did not start), and so did temporary-folder access for `install.py
    --check` and the tests (`WinError 5`). Run them with an escalation request and a one-line justification. In
@@ -89,13 +96,21 @@ The first line `run.py` prints is `RUN <id> started run_dir=...`; the run's logs
     In a project Codex does not trust, the project's `.codex/hooks.json` is skipped with the start line `warning:
     Untrusted project-local configuration is disabled.`, and no role record is written;
     `--dangerously-bypass-hook-trust` skips only the hook trust and does not stand in for the project trust. `run.py`
-    reports this as `hooks_not_run` (exit 11) and `install.py --check --host codex` warns when the project is not in
+    reports this as `hooks_not_run` (exit 11; in a linked worktree too, note 12) and `install.py --check --host codex` warns when the project is not in
     `config.toml`'s trusted projects. Whether the two flags exist in 0.169.0 is unknown. [host: codex-cli 0.169.0,
     measured 2026-11-17; project trust and the two flags codex-cli 0.170.0 Windows, measured 2026-11-18 / re-test after
     a Codex update]
 11. On macOS, `/usr/bin/git` inside the Seatbelt sandbox prints `xcrun: couldn't create cache file ...` on stderr but
     exits 0 and its result is right: do not read it as a failure. Whether a Homebrew git avoids it is unconfirmed. [host:
     codex-cli 0.170.0 macOS `codex exec`, measured 2026-11-19 / re-test after a Codex update]
+12. In a linked git worktree the project's Codex hooks ran although the worktree has no `.codex/hooks.json` (git ignores
+    it). Observed: a `run.py` openai worker in a worktree under the main checkout and in one outside it wrote its role
+    record in the main checkout's `.tagteam/sessions/`, and a `spawn_agent` call was denied by the PreToolUse hook. Only
+    the trust key of the main checkout's hooks file is in `config.toml`, so Codex seems to load the main checkout's
+    project configuration there (inferred; the mechanism is unconfirmed). Seen in a project Codex trusts; an untrusted
+    project's worktree was not measured (it should leave no record). `run.py` therefore judges `hooks_not_run` (exit 11)
+    in a worktree as in the main checkout. [host: codex-cli 0.170.0 Windows, trusted project, linked worktrees under and
+    outside the main tree, measured 2026-11-19 / re-test after a Codex update]
 
 ## agy notes
 

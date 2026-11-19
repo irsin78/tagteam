@@ -941,21 +941,17 @@ def main(argv):
         elif not last.strip():  # a clean exit with an empty answer is a failed run, not a result
             flags.add("no_output")
         if args.vendor == "openai":
-            top = git_before["root"] if git_before else cwd
+            top = main_top or (git_before["root"] if git_before else cwd)  # Codex trusts the main checkout
             ran = hooks_ran(state, sessions_before, int(t0))
             trust = TRUST_WARNING.search(err)
             if ran is False:
                 none = ("no tagteam role record appeared for this Codex run: the project's hooks did not run (or could "
                         "not write the record)")
-                if main_top:  # I20: whether Codex runs the hooks of a linked worktree is not known, so only a warning
-                    check_lines.append("WARNING: %s; not a failure in a linked worktree (unconfirmed whether Codex runs "
-                                      "hooks there); the worker may have run without the role guard" % none)
-                else:
-                    flags.add("hooks_not_run")
-                    check_lines.append("ERROR: %s. Codex skips project hooks until the project is trusted: run codex once "
-                                      "in %s, trust the project, then trust the hooks with /hooks; `install.py %s --check "
-                                      "--host codex --live` confirms it. The worker ran without the role guard; review its "
-                                      "changes." % (none, top, top))
+                flags.add("hooks_not_run")
+                check_lines.append("ERROR: %s. Codex skips project hooks until the project is trusted: run codex once "
+                                   "in %s, trust the project, then trust the hooks with /hooks; `install.py %s --check "
+                                   "--host codex --live` confirms it. The worker ran without the role guard; review its "
+                                   "changes." % (none, top, top))
                 if trust:
                     check_lines.append("CODEX: " + trust.group(0).strip())
             elif ran is None:

@@ -1318,15 +1318,19 @@ class CodexHookTests(GitRepoBase):
             self.assertEqual(code, 0, (vendor, out))
             self.assertFalse(os.path.exists(os.path.join(self.state, "sessions")))
 
-    def test_in_a_linked_worktree_it_only_warns(self):  # I20: not known whether Codex runs the hooks of a worktree
+    def test_in_a_linked_worktree_it_is_judged_like_the_main_checkout(self):  # I20: Codex runs the main checkout's hooks
         wt = os.path.join(self.tmp.name, "wt")
         self.git("worktree", "add", "-q", wt, "-b", "side")
         code, out, _ = self.codex(cwd=wt, stderr=self.UNTRUSTED)
+        self.assertEqual(code, 11, out)
+        self.assertIn("status=hooks_not_run", out)
+        main = os.path.realpath(self.repo)
+        self.assertIn("run codex once in %s," % main, out)  # the project to trust is the main checkout
+        self.assertIn("CODEX: " + self.UNTRUSTED.strip(), out)
+        code, out, _ = self.codex("codex", cwd=wt)  # a record of the run: ok
         self.assertEqual(code, 0, out)
         self.assertIn("status=ok", out)
-        self.assertRegex(out, r"WARNING: no tagteam role record appeared for this Codex run.*linked worktree")
-        self.assertIn("CODEX: " + self.UNTRUSTED.strip(), out)
-        self.assertEqual(self.codex(cwd=self.repo)[0], 11)  # the main checkout is judged
+        self.assertNotIn("WARNING: no tagteam role record", out)
 
     def test_a_control_plane_change_outranks_it_and_both_lines_are_printed(self):
         os.environ["FAKE_WRITE"] = json.dumps({".claude/x.txt": "1"})

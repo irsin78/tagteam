@@ -545,9 +545,14 @@ record written since the start. None means the hooks did not run, or ran and cou
 state folder); the usual cause is that Codex skips project hooks until the project is trusted (the report quotes Codex's
 own `Untrusted project-local configuration is disabled` line when it is there), but a missing record does not prove it. A
 new record that cannot be read is treated like an unreadable sessions folder (`hook check unavailable`, below), not as
-"hooks did not run". In the main checkout a missing record is status `hooks_not_run` (exit 11) with an `ERROR:` line that says to run `codex` once in the project,
-trust it, then trust the hooks with `/hooks`; the worker ran without the role guard, so review its changes. In a linked
-worktree it is a `WARNING` only (whether Codex runs the hooks of a worktree is unconfirmed). If the sessions folder cannot
+"hooks did not run". A missing record is status `hooks_not_run` (exit 11) with an `ERROR:` line that says to run `codex` once in the project (in a
+linked worktree: the main checkout),
+trust it, then trust the hooks with `/hooks`; the worker ran without the role guard, so review its changes. This holds in a
+linked worktree too: in a trusted project the hooks ran there and left a record (Codex seems to load the main
+checkout's project configuration, inferred). [host:
+codex-cli 0.170.0 Windows, trusted project, linked worktrees under and outside the main tree, measured 2026-11-19 / re-test
+after a Codex update] A worktree of a project Codex does not trust was not measured; it should leave no record and end
+`hooks_not_run`. If the sessions folder cannot
 be read the report says `WARNING: hook check unavailable`. The check is made only when the CLI exited cleanly.
 
 **Model check.** After a clean exit the launcher compares the model that answered with the one requested, from `modelUsage`
