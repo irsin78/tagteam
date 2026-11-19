@@ -1120,6 +1120,7 @@ class ControlPlaneTests(GitRepoBase):
     def test_a_control_file_swapped_for_a_link_into_the_state_folder_is_seen(self):
         state = os.path.join(self.repo, ".tagteam")  # the state folder is inside the work tree, so it is left out
         os.environ["TAGTEAM_STATE_DIR"] = state
+        self.state = state  # last_result() reads the folder the run really used
         os.makedirs(state)
         target = os.path.join(state, "replacement.md")
         with open(target, "w", encoding="utf-8") as fh:
@@ -1132,7 +1133,8 @@ class ControlPlaneTests(GitRepoBase):
         os.environ["FAKE_LINK"] = json.dumps({"AGENTS.md": target})
         code, out, _ = self.go("claude", cwd=self.repo)
         self.assertEqual(code, 10, out)
-        self.assertEqual(last_result(self)["control_plane"]["changed"], ["AGENTS.md"])
+        self.assertIn("status=control_plane_changed", out)
+        self.assertIn("AGENTS.md", last_result(self)["control_plane"]["changed"])  # macOS also lists "AGENTS.md (link)"
         self.assertNotIn(".tagteam", next(ln for ln in out.splitlines() if ln.startswith("ERROR:")))  # only the swap
 
     def test_exclusions_follow_the_path_git_reports_not_its_resolved_target(self):  # needs no link: realpath is faked
@@ -1182,7 +1184,10 @@ class ControlPlaneTests(GitRepoBase):
         os.environ["FAKE_LINK"] = json.dumps({os.path.join(self.repo, ".codex"): elsewhere})
         code, out, _ = self.go("claude", cwd=self.repo)
         self.assertEqual(code, 10, out)
-        self.assertEqual(last_result(self)["control_plane"]["changed"], [".codex (link)"])
+        self.assertIn("status=control_plane_changed", out)
+        # a junction (Windows) shows only the link key; a symlink (macOS, Linux) also lists the folder git reports as changed
+        self.assertIn(".codex (link)", last_result(self)["control_plane"]["changed"])
+        self.assertNotIn(".tagteam", next(ln for ln in out.splitlines() if ln.startswith("ERROR:")))
 
     def test_a_file_over_the_cap_is_compared_by_size_and_time(self):
         self.put(".codex/hooks.json", "x" * 100)
