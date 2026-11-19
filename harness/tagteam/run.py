@@ -59,7 +59,7 @@ GOOGLE_LINE_EX = re.compile(
 AGY_LABEL = re.compile(r'Propagating selected model override to backend: label="([^"]+)"')
 CODEX_MODEL = re.compile(r"^model:\s*(\S+)", re.M)
 PRIORITY = [("exhausted", 3), ("git_head_moved", 7), ("control_plane_changed", 10), ("hooks_not_run", 11),
-            ("timeout", 5), ("model_mismatch", 4), ("wrote_files", 8), ("cli_failed", 1), ("no_output", 6)]
+            ("refused", 12), ("timeout", 5), ("model_mismatch", 4), ("wrote_files", 8), ("cli_failed", 1), ("no_output", 6)]
 # Machine-local files git ignores, so `git status` never shows a change: kept by content hash (see control_path).
 # Hook files are written by the installer and copy_agy_hooks only; a change in a run is the worker's or a stray process's.
 # Setting files are also written by the host ("always allow") and the weekly model collector: a change only warns.
@@ -957,6 +957,12 @@ def main(argv):
             elif ran is None:
                 check_lines.append("WARNING: hook check unavailable (the sessions folder or a new role record could not be "
                                   "read)")
+        head = last.lstrip("\ufeff \t\r\n").split("\n", 1)[0].rstrip()  # the first line of the answer
+        if head.startswith("REFUSED:"):  # AGENTS.md: a worker that cannot do the task answers with this first line
+            flags.add("refused")
+            check_lines.append("ERROR: the worker refused the task: " + head)
+        elif head.startswith("NEEDS_INPUT:"):  # a normal question, still ok; shown where the orchestrator will see it
+            check_lines.append(head)
     flags |= git_flags
     status, exit_code = next(((s, c) for s, c in PRIORITY if s in flags), ("ok", 0))
 

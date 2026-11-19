@@ -610,8 +610,14 @@ the name after `RUN` in the first line, and the lookup works from any folder of 
 | 9 | (`running`) | `--status`/`--wait` only: the run has not reported yet |
 | 10 | `control_plane_changed` | a write run changed the control plane (below) |
 | 11 | `hooks_not_run` | a Codex worker's hooks wrote no role record (below) |
+| 12 | `refused` | the CLI exited cleanly and the answer's first line starts with `REFUSED:` (the worker's refusal, AGENTS.md section 2) |
 
-When several apply, 3 wins, then 7, 10, 11, 5, 4, 8, 1, 6.
+When several apply, 3 wins, then 7, 10, 11, 12, 5, 4, 8, 1, 6.
+
+`refused` is judged on a clean CLI exit only, from the first line of the answer (a leading BOM or blank space is ignored; the
+text must be written `REFUSED:` as in AGENTS.md), for every vendor and for read-only runs. The report shows an `ERROR:` line with
+the refusal; read the reason, it is often a blocked tool or a missing input, not a failed task. A first line `NEEDS_INPUT:` is a
+normal question: the status stays `ok`, and that line is repeated in the report header so it is not missed.
 
 ## 8. Keeping the model list current
 
@@ -682,6 +688,7 @@ registered), so a failing run leaves a trace: without it cron mails the output, 
 | Launcher `model_mismatch` (4) | CLI used another model, or the model line was not found | read `runs/<id>/stderr.txt` and `cmd.json`; do not use the output as if it came from the requested model |
 | Launcher `exhausted` (3), `git_head_moved` (7), `wrote_files` (8) | usage limit; a worker committed; a read-only run wrote | wait for `until` or let the router use another vendor; read the `ERROR:` line and review the diff (section 7) |
 | Launcher `control_plane_changed` (10) | a write run changed `.claude/`, `.codex/`, `.agents/`, `AGENTS.md`, `CLAUDE.md` or a hook file (the worker, or another process in the checkout) | read the `ERROR:` line; check `git status` and `git diff` of those paths, restore what is wrong (section 9.1), and do not edit them while a worker runs |
+| Launcher `refused` (12) | the worker answered `REFUSED: <reason>`: for example a hook or the sandbox blocked every tool, or the brief asked for something outside its limits | read the reason in the `ERROR:` line; fix the cause (a broken guard: `install.py --check`) or the brief, then run it again |
 | Launcher `hooks_not_run` (11) | a Codex worker's hooks wrote no role record: usually the project or its hooks are not trusted; or the hooks ran and could not write it (state folder) | run `codex` once in the project, trust it, then the hooks (`/hooks`, section 1.2); `install.py <project dir> --check --host codex --live`; review what the worker changed |
 | Automatic turn cannot open a session | measured platform limit | open it on your next turn, or reuse a pool session by message |
 | `tagteam: python3/python not found on PATH; tool calls are blocked ...` | no working Python for the Claude hooks | install Python 3.9+ (`python3`, on Windows `python`); a Windows Store stub does not count |

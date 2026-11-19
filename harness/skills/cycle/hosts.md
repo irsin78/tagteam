@@ -201,3 +201,11 @@ policy, not a measured agy limit. agy's own subagents are not harness roles (not
    - what the edit tools (`write_file`, `edit_file`) do when no allow rule covers them (for example `toolPermission`
      `request-review` with an empty allow list): measured only with allow rules for both tools (note 4), so whether the
      hook's `ask` adds a prompt or blocks the edit for such a user is unconfirmed.
+9. Start an agy orchestrator in the main checkout, as with Codex note 1. The hooks file `.agents/hooks.json` is
+   machine-local and git-ignored, so a linked worktree has none; `run.py` copies the `tagteam` key there before it runs a
+   google worker, but an agy session started by hand in a worktree is expected to run without the tagteam hooks and
+   therefore unchecked (inferred: the hooks file was absent from the worktrees until `run.py` copied it; an interactive
+   session in a worktree was not run). `install.py` has no code for a linked worktree and was not tried on one: it would
+   treat the worktree as a project and re-apply every harness file in it, so no command is suggested; use the main checkout.
+   [host: agy 1.5.12 Linux headless, worktree without a hooks file measured 2026-11-19; the interactive worktree case is
+   inferred / re-test after an agy update]

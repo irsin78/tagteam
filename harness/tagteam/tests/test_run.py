@@ -1223,7 +1223,7 @@ class ControlPlaneTests(GitRepoBase):
     def test_priority_of_the_new_statuses(self):
         order = [s for s, _ in run.PRIORITY]
         self.assertEqual(order[:4], ["exhausted", "git_head_moved", "control_plane_changed", "hooks_not_run"])
-        self.assertEqual(order.index("hooks_not_run") + 1, order.index("timeout"))
+        self.assertLess(order.index("hooks_not_run"), order.index("timeout"))  # refused (12) sits between them
         self.assertEqual((dict(run.PRIORITY)["control_plane_changed"], dict(run.PRIORITY)["hooks_not_run"]), (10, 11))
         code, out, _ = self.writes({".claude/x.txt": "1"}, mode="commit")
         self.assertEqual(code, 7, out)  # a commit outweighs a control-plane change
@@ -1346,6 +1346,73 @@ class CodexHookTests(GitRepoBase):
         self.assertIn("ERROR: no tagteam role record appeared", out)
         code, out, _ = self.codex(mode="commit")
         self.assertEqual(code, 7, out)
+
+
+class RefusedTests(GitRepoBase):
+    """A worker whose answer starts with REFUSED: is not an ok run."""
+    def say(self, text, vendor="claude", mode="ok", extra=(), cwd=None):
+        os.environ["FAKE_ANSWER"] = text
+        return self.go(vendor, mode, cwd=cwd or self.repo, extra=extra)
+
+    def test_a_refusal_on_the_first_line_is_status_refused_for_every_vendor_and_read_only(self):
+        for vendor in VENDORS:
+            for extra in ((), ("--read-only",)):
+                code, out, _ = self.say("REFUSED: every tool was blocked\nmore text", vendor, extra=extra)
+                self.assertEqual(code, 12, (vendor, extra, out))
+                self.assertIn("status=refused", out)
+                self.assertIn("ERROR: the worker refused the task: REFUSED: every tool was blocked", out)
+                self.assertEqual(last_result(self)["run_exit"], 12)
+                self.assertNotIn("ACTUAL_MODEL", out.split("OUTPUT:")[0].split("ERROR:")[0])  # only ok/model_mismatch print it
+
+    def test_leading_space_and_a_byte_order_mark_are_ignored_but_the_case_is_not(self):
+        for text in ("\ufeffREFUSED: x", "  \n\t REFUSED: x"):
+            self.assertEqual(self.say(text)[0], 12, repr(text))
+        for text in ("Refused: x", "refused: x", "REFUSED x", "NOT REFUSED: x"):
+            code, out, _ = self.say(text)
+            self.assertEqual(code, 0, (text, out))
+            self.assertNotIn("ERROR", out)
+
+    def test_a_refusal_after_the_first_line_is_not_a_refusal(self):
+        code, out, _ = self.say("Done with the part I could do.\nREFUSED: the rest")
+        self.assertEqual(code, 0, out)
+        self.assertIn("status=ok", out)
+
+    def test_needs_input_stays_ok_and_is_repeated_in_the_header(self):
+        code, out, _ = self.say("NEEDS_INPUT: which file?\ndetails")
+        self.assertEqual(code, 0, out)
+        self.assertIn("status=ok", out)
+        header = out.split("OUTPUT:")[0].splitlines()
+        self.assertIn("NEEDS_INPUT: which file?", header)
+        self.assertNotIn("ERROR", out)
+
+    def test_a_plain_answer_is_untouched(self):
+        code, out, _ = self.say("DONE")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("REFUSED", out)
+
+    def test_only_a_clean_exit_is_judged(self):
+        code, out, _ = self.say("REFUSED: x", mode="crash")
+        self.assertEqual(code, 1, out)
+        self.assertIn("status=cli_failed", out)
+
+    def test_precedence(self):
+        order = [s for s, _ in run.PRIORITY]
+        self.assertEqual(order.index("refused"), order.index("hooks_not_run") + 1)
+        self.assertEqual(order.index("timeout"), order.index("refused") + 1)
+        self.assertEqual(dict(run.PRIORITY)["refused"], 12)
+        code, out, _ = self.say("REFUSED: x", mode="commit")
+        self.assertEqual(code, 7, out)  # a commit outweighs the refusal, whose line is still printed
+        self.assertIn("ERROR: the worker refused the task", out)
+        os.environ["FAKE_WRITE"] = json.dumps({".claude/x.txt": "1"})
+        self.assertEqual(self.say("REFUSED: x")[0], 10)
+        os.environ.pop("FAKE_WRITE")
+        os.environ["FAKE_SESSION"] = "none"
+        self.assertEqual(self.say("REFUSED: x", "openai")[0], 11)
+        os.environ.pop("FAKE_SESSION")
+        os.environ["FAKE_WRITE"] = json.dumps({"fake_written.txt": "x"})
+        code, out, _ = self.say("REFUSED: x", extra=["--read-only"])
+        self.assertEqual(code, 12, out)  # refused (12) before wrote_files (8)
+        self.assertIn("ERROR: a read-only run changed the work tree", out)
 
 
 if __name__ == "__main__":

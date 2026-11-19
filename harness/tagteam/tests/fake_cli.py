@@ -8,7 +8,7 @@ then behaves per FAKE_MODE:
 ok, wrong_model, no_model_field, exhausted, exhausted_epoch, quota_text_in_prompt, crash, sleep, empty (google),
 write_file (writes fake_written.txt in the cwd, then ok), commit (makes an empty git commit in the cwd, then ok).
 Options, whatever the mode: FAKE_WRITE (JSON object path -> text, null deletes; relative paths are in the cwd) is
-applied first, then FAKE_LINK (JSON object path -> target: the file or folder is replaced by a symbolic link, on Windows a folder
+applied first (FAKE_ANSWER: the answer text, default OK), then FAKE_LINK (JSON object path -> target: the file or folder is replaced by a symbolic link, on Windows a folder
 possibly by a junction); FAKE_STDERR is written to stderr; openai writes a role record like a Codex hook would, to
 $TAGTEAM_STATE_DIR/sessions, with host FAKE_SESSION (default codex; "none" writes nothing).
 """
@@ -21,6 +21,10 @@ import time
 
 QUOTA_TEXT = "the log says 429 usage limit reached"
 EPOCH = 1900000000
+
+
+def answer():
+    return os.environ.get("FAKE_ANSWER", "OK")
 
 
 def opt(args, flag, default=""):
@@ -79,7 +83,7 @@ def emit(code, out="", err=""):
 
 
 def claude(args, mode, model):
-    body = {"type": "result", "is_error": False, "result": "OK", "modelUsage": {model: {"inputTokens": 1}}}
+    body = {"type": "result", "is_error": False, "result": answer(), "modelUsage": {model: {"inputTokens": 1}}}
     if mode == "wrong_model":
         body["modelUsage"] = {"claude-other-1": {}}
     elif mode == "no_model_field":
@@ -99,7 +103,7 @@ def openai(args, mode, model):
     header = {"wrong_model": "model: gpt-other-1\n", "no_model_field": ""}.get(mode, "model: %s\n" % model)
     if mode in ("exhausted", "exhausted_epoch"):
         emit(1, "", "ERROR: You've hit your usage limit.\n")
-    text = QUOTA_TEXT if mode == "quota_text_in_prompt" else "OK"
+    text = QUOTA_TEXT if mode == "quota_text_in_prompt" else answer()
     if last:
         with open(last, "w", encoding="utf-8") as fh:
             fh.write(text)
@@ -122,7 +126,7 @@ def google(args, mode, model_arg):
     if mode == "empty":
         emit(0, json.dumps({"status": "SUCCESS", "response": "",
                             "denied_actions": [{"action": "command", "display_name": "Bash"}]}))
-    emit(0, json.dumps({"response": QUOTA_TEXT if mode == "quota_text_in_prompt" else "OK"}))
+    emit(0, json.dumps({"response": QUOTA_TEXT if mode == "quota_text_in_prompt" else answer()}))
 
 
 def main():
