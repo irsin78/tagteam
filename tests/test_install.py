@@ -5,6 +5,7 @@ import io
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -703,7 +704,9 @@ class InstallTests(unittest.TestCase):
         with mock.patch.object(install.tempfile, "mkstemp", side_effect=lambda **kw: made.append(kw) or real(**kw)):
             self.write_agy({"mine": 1})
             self.run_install("--update")
-        self.assertEqual([kw["dir"] for kw in made if kw.get("suffix") == ".tmp"], [str(self.agy_path().parent)])  # next to the target, exclusive creation
+        # next to the target, exclusive creation (MAC18: the folder may be reached through a link, /var -> /private/var on macOS)
+        self.assertEqual([os.path.realpath(kw["dir"]) for kw in made if kw.get("suffix") == ".tmp"],
+                         [os.path.realpath(self.agy_path().parent)])
 
     def test_a_failed_replacement_is_a_warning_and_leaves_no_temporary_file(self):
         self.write_agy({"mine": 1})
@@ -1462,7 +1465,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual((self.dst / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\nextra\n")
 
     def test_gitignore_lists_local_files_and_the_state_folder_in_every_project(self):
-        local = [".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", ".agents/hooks.json"]
+        local = [".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", ".codex/hooks.json", ".agents/hooks.json"]
         self.run_install()
         text = (self.dst / ".gitignore").read_text(encoding="utf-8")
         for line in local + [".tagteam/"]:
@@ -1739,6 +1742,512 @@ class InstallTests(unittest.TestCase):
         p = subprocess.run([sys.executable, str(INSTALL), str(self.dst), "--source", str(self.src),
                             "--yes"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
         self.assertEqual(p.returncode, 0, p.stderr)
+
+    # ---- M7 U3: Codex warnings (P1), .codex/hooks.json ignored and never untracked (P5), MAC19, P4, R3 ----------
+
+    def make_codex_home(self, rules=None, config=None):
+        home = self.dst.parent / "codex-home"
+        home.mkdir(exist_ok=True)
+        for name, text in (rules or {}).items():
+            (home / "rules").mkdir(exist_ok=True)
+            (home / "rules" / name).write_text(text, encoding="utf-8")
+        if config is not None:
+            (home / "config.toml").write_text(config, encoding="utf-8")
+        return home
+
+    def snapshot(self, root):
+        return {p.relative_to(root).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns) for p in Path(root).rglob("*") if p.is_file()}
+
+    def trust_toml(self, path, level="trusted", table="projects"):
+        return f"[{table}.'{path}']\ntrust_level = \"{level}\"\n"
+
+    def test_p1_rules_that_allow_git_commit_or_push_are_warned_about_and_nothing_is_written(self):
+        self.use_real_guard()
+        self.run_install()
+        allow = lambda w: f'prefix_rule(pattern=["git", "{w}"], decision="allow")\n'  # noqa: E731
+        home = self.make_codex_home(rules={
+            "a.rules": allow("commit"),
+            "b.rules": 'prefix_rule(\n    pattern = ["git", "push"],  # why "quoted"\n    decision = "allow",\n)\n',
+            "c.rules": 'prefix_rule(pattern=["git", ["commit", "push"]], decision="allow", justification="x")\n',
+            "d.rules": 'prefix_rule(pattern=["git", "commit"], decision="forbidden")\nprefix_rule(pattern=["git", "push"], decision="prompt")\n',
+            "e.rules": allow("status") + allow("add") + 'prefix_rule(pattern=["ls"], decision="allow")\n',
+            "f.rules": "# " + allow("commit"),
+            "g.rules": 'prefix_rule(pattern=["git", "commit"',  # never closes
+            "h.txt": allow("commit"),  # not a rules file
+        })
+        before = self.snapshot(home)
+        code, out, _ = self.codex_check(CODEX_HOME=str(home))
+        self.assertEqual(code, 0, out)  # a warning, not a failure
+        found = sorted(re.findall(r'allow "git (\w+)" \((.*?\.rules)\):', out))
+        self.assertEqual([(w, Path(f).name) for w, f in found],
+                         [("commit", "a.rules"), ("commit", "c.rules"), ("push", "b.rules"), ("push", "c.rules")])
+        self.assertIn("stopped only by the tagteam hooks", out)
+        self.assertEqual(self.snapshot(home), before)  # read only: not one byte or timestamp of the user's files changed
+
+    def test_p1_missing_and_unreadable_codex_files_are_quiet(self):
+        self.use_real_guard()
+        self.run_install()
+        code, out, _ = self.codex_check(CODEX_HOME=str(self.dst.parent / "no-such-home"))
+        self.assertEqual(code, 0, out)
+        for text in ("your Codex rules allow", "not in Codex's trusted projects", "Traceback"):
+            self.assertNotIn(text, out)
+        self.assertIn("Codex project trust: unverified", out)
+        home = self.make_codex_home(config="[projects.\n")
+        (home / "rules").mkdir()
+        (home / "rules" / "bad.rules").write_bytes(b"\xff\xfe\x00bad")
+        (home / "rules" / "dir.rules").mkdir()  # reading a folder fails
+        code, out, _ = self.codex_check(CODEX_HOME=str(home))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count("Codex rules: unverified (cannot read"), 2)
+        self.assertNotIn("your Codex rules allow", out)
+
+    @unittest.skipUnless(install.tomllib, "reading config.toml needs Python 3.11+")
+    def test_p1_the_project_trust_is_read_from_config_toml(self):
+        self.use_real_guard()
+        self.run_install()
+        real = str(self.dst.resolve())
+        parent = str(self.dst.resolve().parent)
+        double = "[projects.\"" + real.replace("\\", "\\\\") + "\"]\ntrust_level = \"trusted\"\n"
+        cases = [
+            ("trusted", self.trust_toml(real), None),
+            ("trusted, double-quoted key", double, None),
+            ("trusted after other tables", "[windows]\nsandbox = \"x\"\n\n" + self.trust_toml(real) + "\n[other]\nk = 1\n", None),
+            ("untrusted level", self.trust_toml(real, "untrusted"), "not in Codex's trusted projects"),
+            ("another project", self.trust_toml(real + "-other"), "not in Codex's trusted projects"),
+            ("no entry", "[windows]\nsandbox = \"x\"\n", "not in Codex's trusted projects"),
+            ("trust_level in another table", self.trust_toml(real, table="other"), "not in Codex's trusted projects"),
+            ("trusted parent only", self.trust_toml(parent), "a parent folder is trusted"),
+            # text inside a string is not a table: a line scan would have taken it for one
+            ("fake table in a multiline string", "note = '''\n" + self.trust_toml(real) + "'''\n", "not in Codex's trusted projects"),
+        ]
+        for label, text, warning in cases:
+            home = self.make_codex_home(config=text)
+            got, note = install.codex_trust_check(self.dst, home)
+            self.assertIsNone(note, label)
+            if warning is None:
+                self.assertIsNone(got, label)
+            else:
+                self.assertIn(warning, got, label)
+                self.assertIn(str(home / "config.toml"), got)
+        (home / "config.toml").unlink()
+        got, note = install.codex_trust_check(self.dst, home)
+        self.assertEqual(got, None)
+        self.assertIn("not found", note)
+        home = self.make_codex_home(config="[projects.\n")
+        got, note = install.codex_trust_check(self.dst, home)
+        self.assertEqual(got, None)
+        self.assertIn("cannot be used", note)  # broken TOML: unverified, not a verdict
+        home = self.make_codex_home(config=self.trust_toml(real, "untrusted"))  # end to end: a warning, not a failure
+        code, out, _ = self.codex_check(CODEX_HOME=str(home))
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"WARN\s+this project is not in Codex's trusted projects")
+
+    def test_p1_without_tomllib_the_trust_is_unverified_and_never_guessed(self):
+        real = str(self.dst.resolve())
+        home = self.make_codex_home(config=self.trust_toml(real))
+        with mock.patch.object(install, "tomllib", None):
+            got, note = install.codex_trust_check(self.dst, home)
+        self.assertIsNone(got)
+        self.assertIn("unverified", note)
+        self.assertIn("Python 3.11", note)
+
+    @unittest.skipUnless(install.tomllib, "reading config.toml needs Python 3.11+")
+    def test_p1_trust_ignores_case_and_slash_kind_on_windows_only(self):
+        self.run_install()
+        real = str(self.dst.resolve())
+        home = self.make_codex_home(config=self.trust_toml(real.swapcase().replace("\\", "/")))
+        with mock.patch.object(install, "is_windows", return_value=True):
+            self.assertEqual(install.codex_trust_check(self.dst, home), (None, None))
+        with mock.patch.object(install, "is_windows", return_value=False):
+            self.assertIn("not in Codex's trusted projects", install.codex_trust_check(self.dst, home)[0])
+
+    def test_p1_a_binary_config_does_not_break_the_check_and_one_reader_serves_both_readers(self):
+        self.use_real_guard()
+        self.run_install()
+        home = self.make_codex_home()
+        (home / "config.toml").write_bytes(b"\xff\xfe[windows]\nsandbox = \"elevated\"\n")
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            self.assertIsNone(install.codex_windows_sandbox())  # was: UnicodeDecodeError
+        with mock.patch.object(install, "is_windows", return_value=True):
+            code, out, err = self.codex_check(CODEX_HOME=str(home))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("Traceback", out + err)
+        if install.tomllib:
+            self.assertIn("Codex project trust: unverified", out)
+
+    def test_p1_user_files_are_read_with_bounds(self):
+        folder = self.dst.parent / "bounds"
+        folder.mkdir()
+        small, big, empty_dir = folder / "small.txt", folder / "big.txt", folder / "adir"
+        small.write_text("hello", encoding="utf-8")
+        big.write_text("x" * 40, encoding="utf-8")
+        empty_dir.mkdir()
+        self.assertEqual(install.read_user_text(small), ("hello", None))
+        self.assertEqual(install.read_user_text(folder / "none.txt"), (None, "not found"))
+        self.assertEqual(install.read_user_text(empty_dir), (None, "not a regular file"))
+        with mock.patch.object(install, "USER_FILE_MAX", 39):  # no huge file is made: the cap is lowered
+            text, why = install.read_user_text(big)
+        self.assertIsNone(text)
+        self.assertIn("larger than 39 bytes", why)
+        with mock.patch.object(install, "USER_FILE_MAX", 39):  # a file whose size on disk is wrong is cut by the bounded read
+            with mock.patch.object(install.os, "stat", return_value=os.stat(small)):
+                self.assertIn("larger than", install.read_user_text(big)[1])
+        if os.name != "nt":  # a link to a device that never ends, and a pipe
+            link = folder / "zero.rules"
+            link.symlink_to("/dev/zero")
+            self.assertEqual(install.read_user_text(link), (None, "not a regular file"))
+            fifo = folder / "pipe.rules"
+            os.mkfifo(fifo)
+            self.assertEqual(install.read_user_text(fifo), (None, "not a regular file"))
+            home = self.make_codex_home(rules={})
+            (home / "rules").mkdir()
+            (home / "rules" / "zero.rules").symlink_to("/dev/zero")
+            warnings, notes = install.codex_rules_check(home)
+            self.assertEqual(warnings, [])
+            self.assertIn("not a regular file", notes[0])
+
+    @unittest.skipUnless(install.tomllib, "reading config.toml needs Python 3.11+")
+    def test_p1_a_config_that_cannot_be_parsed_is_unverified_not_a_crash(self):
+        home = self.make_codex_home(config="a = " + "[" * 5000 + "]" * 5000 + "\n")  # deep nesting
+        got, note = install.codex_trust_check(self.dst, home)
+        self.assertIsNone(got)
+        self.assertIn("unverified", note)
+        with mock.patch.object(install.tomllib, "loads", side_effect=MemoryError):
+            got, note = install.codex_trust_check(self.dst, home)
+        self.assertIn("MemoryError", note)
+
+    def test_p1_more_ways_a_rule_allows_git_writes(self):
+        found = install.rules_allowing_git_writes
+        self.assertEqual(found('prefix_rule(pattern=["git", "commit"])\n'), ["commit"])  # decision omitted: allow
+        self.assertEqual(found('prefix_rule(pattern=["git"], decision="allow")\n'), ["commit", "push"])  # every git command
+        self.assertEqual(found('prefix_rule(pattern=["git"])\n'), ["commit", "push"])
+        self.assertEqual(found('prefix_rule(pattern=[["git", "hub"], ["push", "pull"]])\n'), ["push"])
+        self.assertEqual(found("prefix_rule(\n    pattern = [\n        'git',  # tool\n        'commit',\n    ],\n)\n"), ["commit"])
+        self.assertEqual(found('prefix_rule(pattern=["git"], decision="prompt")\nprefix_rule(pattern=["git", "push"], decision="forbidden")\n'), [])
+        self.assertEqual(found('prefix_rule(pattern=["git", "status"])\nprefix_rule(pattern=["gitk"])\nprefix_rule(pattern=[])\n'), [])
+        self.assertEqual(found('prefix_rule(pattern=["git", "commit"], match=[["git", "commit", "-m", "x"]])\n'), ["commit"])
+        # text inside a string argument or a comment is not a keyword
+        self.assertEqual(found('prefix_rule(pattern=["git", "commit"], justification="decision=\'prompt\'", decision="allow")\n'), ["commit"])
+        self.assertEqual(found('prefix_rule(\n    pattern=["git", "push"],  # decision="forbidden"\n    justification="decision=\'prompt\'",\n)\n'), ["push"])
+        self.assertEqual(found('prefix_rule(pattern=["git", "push"], justification="decision=\'allow\'", decision="prompt")\n'), [])
+        self.assertEqual(found('# prefix_rule(pattern=["git", "push"])\nx = "prefix_rule(pattern=[\'git\', \'push\'])"\nprefix_rule(pattern=PATTERN)\n'), [])
+        for bad in ('prefix_rule(pattern=["git", "push"]', "prefix_rule(" * 3, "this is not python at all ("):
+            with self.assertRaises((SyntaxError, ValueError, RecursionError)):
+                found(bad)
+
+    def test_p1_a_rules_file_that_does_not_parse_or_a_folder_that_cannot_be_listed_is_unverified(self):
+        self.use_real_guard()
+        self.run_install()
+        home = self.make_codex_home(rules={"ok.rules": 'prefix_rule(pattern=["git", "push"], decision="allow")\n',
+                                           "bad.rules": 'prefix_rule(pattern=["git", "push"]\n'})
+        code, out, _ = self.codex_check(CODEX_HOME=str(home))
+        self.assertEqual(code, 0, out)
+        self.assertIn('allow "git push"', out)  # the readable file is still judged
+        self.assertRegex(out, r"Codex rules: unverified \(cannot parse .*bad\.rules")
+        # rules is a file, not a folder: present but not enumerable
+        other = self.dst.parent / "codex-home2"
+        other.mkdir()
+        (other / "rules").write_text("x", encoding="utf-8")
+        code, out, _ = self.codex_check(CODEX_HOME=str(other))
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"Codex rules: unverified \(cannot list .*rules")
+        with mock.patch.object(install.os, "listdir", side_effect=PermissionError("denied")):
+            warnings, notes = install.codex_rules_check(home)
+        self.assertEqual(warnings, [])
+        self.assertIn("cannot list", notes[0])
+        self.assertIn("PermissionError", notes[0])
+        # an absent folder is not a problem
+        self.assertEqual(install.codex_rules_check(self.dst.parent / "nowhere"), ([], []))
+
+    def test_unknown_tracking_never_lets_the_codex_hooks_file_be_written(self):
+        self.git_init(self.dst)
+        self.run_install()
+        data = self.hooks()
+        del data["hooks"]["SessionStart"]
+        self.write_hooks(data)
+        before = self.hooks_path().read_bytes()
+        unknown = mock.patch.object(install, "git_says", return_value=(128, "", "fatal: index file corrupt"))
+        with unknown:
+            code, out, err = self.run_main("--repair-hooks", "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("cannot tell whether git tracks .codex/hooks.json", err)
+        self.assertEqual(self.hooks_path().read_bytes(), before)
+        self.assertEqual([p.name for p in self.hooks_path().parent.iterdir() if ".bak" in p.name], [])
+        with unknown:
+            code, out, err = self.run_main("--repair-hooks")  # the preview still works
+        self.assertEqual(code, 0)
+        self.assertIn("preview only", out)
+        # install: an existing file is kept, a missing one is not recreated; the install itself goes on
+        with unknown, contextlib.redirect_stderr(io.StringIO()) as err:
+            code, out = self.run_install("--update")
+        self.assertEqual(code, 0)
+        self.assertIn("cannot tell whether git tracks", err.getvalue())
+        self.assertEqual(self.hooks_path().read_bytes(), before)
+        self.hooks_path().unlink()
+        with unknown, contextlib.redirect_stderr(io.StringIO()) as err:
+            code, out = self.run_install("--update")
+        self.assertEqual(code, 0)
+        self.assertFalse(self.hooks_path().exists())
+        self.assertIn("cannot tell whether git tracks", err.getvalue())
+        self.assertIn("was not written", err.getvalue())
+        self.assertTrue((self.dst / "AGENTS.md").is_file())  # the rest of the install ran
+        code, out = self.run_install("--update")  # git answers again: written
+        self.assertTrue(self.hooks_path().is_file())
+
+    def test_p1_user_codex_files_are_never_opened_for_writing(self):
+        import builtins
+        self.use_real_guard()
+        self.run_install()
+        home = self.make_codex_home(rules={"a.rules": 'prefix_rule(pattern=["git", "commit"], decision="allow")\n'},
+                                    config=self.trust_toml("/elsewhere"))
+        real_open = builtins.open
+
+        def guarded_open(file, mode="r", *a, **k):
+            if str(home) in str(file) and set(mode) & set("wax+"):
+                raise AssertionError(f"opened {file!r} for writing")
+            return real_open(file, mode, *a, **k)
+        before = self.snapshot(home)
+        with mock.patch.object(builtins, "open", guarded_open):
+            code, out, _ = self.codex_check(CODEX_HOME=str(home))
+        self.assertEqual(code, 0, out)
+        self.assertIn("your Codex rules allow", out)
+        self.assertEqual(self.snapshot(home), before)
+
+    def test_p6_the_elevated_sandbox_warning_names_the_versions_measured(self):
+        self.use_real_guard()
+        self.run_install()
+        home = self.make_codex_home(config='[windows]\nsandbox = "elevated"\n')
+        with mock.patch.object(install, "is_windows", return_value=True):
+            code, out, _ = self.codex_check(CODEX_HOME=str(home))
+        for text in ("0.169.0", "0.170.0", "one PC", "unelevated"):
+            self.assertIn(text, out)
+
+    def git_add_f(self, rel):
+        subprocess.run(["git", "-C", str(self.dst), "add", "-f", rel], check=True, capture_output=True)
+
+    def git_ls(self):
+        return subprocess.run(["git", "-C", str(self.dst), "ls-files"], capture_output=True, text=True).stdout.split()
+
+    def test_p5_a_fresh_install_makes_git_ignore_the_codex_hooks_file(self):
+        self.git_init(self.dst)
+        self.run_install()
+        gi = self.dst / ".gitignore"
+        self.assertIn(".codex/hooks.json", gi.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(subprocess.run(["git", "-C", str(self.dst), "check-ignore", "-q", ".codex/hooks.json"]).returncode, 0)
+        subprocess.run(["git", "-C", str(self.dst), "add", "-A"], check=True, capture_output=True)
+        tracked = self.git_ls()
+        self.assertNotIn(".codex/hooks.json", tracked)
+        self.assertNotIn(".agents/hooks.json", tracked)
+        self.assertIn(".codex/agents/b.toml", tracked)
+        text = gi.read_text(encoding="utf-8")
+        self.run_install("--update")
+        self.assertEqual(gi.read_text(encoding="utf-8"), text)  # once is enough
+        (self.dst / ".gitignore").write_text("node_modules\n", encoding="utf-8")  # an older project: the line is added on --update
+        self.run_install("--update")
+        self.assertIn(".codex/hooks.json", gi.read_text(encoding="utf-8").splitlines())
+
+    def test_p5_a_tracked_codex_hooks_file_is_reported_and_the_repository_is_left_alone(self):
+        self.git_init(self.dst)
+        self.hooks_path().parent.mkdir(parents=True)
+        self.hooks_path().write_text('{"hooks": {}}\n', encoding="utf-8")
+        self.git_add_f(".codex/hooks.json")
+        index = (self.dst / ".git/index").read_bytes()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code, out = self.run_install()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.hooks_path().read_text(encoding="utf-8"), '{"hooks": {}}\n')  # not touched
+        self.assertIn("is tracked by git", err.getvalue())
+        self.assertIn("git rm --cached .codex/hooks.json", err.getvalue())
+        self.assertEqual((self.dst / ".git/index").read_bytes(), index)  # tagteam never untracks, adds or refreshes anything
+        self.assertIn(".codex/hooks.json", self.git_ls())
+        # a tracked file that was deleted is not written back (that would change a tracked file)
+        self.hooks_path().unlink()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.run_install("--update")
+        self.assertFalse(self.hooks_path().exists())
+        self.assertIn("is tracked by git", err.getvalue())
+        self.assertIn("not written", err.getvalue())
+        self.assertEqual((self.dst / ".git/index").read_bytes(), index)
+
+    def test_p5_repair_hooks_writes_no_tracked_file_but_still_previews(self):
+        self.git_init(self.dst)
+        self.run_install()
+        data = self.hooks()
+        del data["hooks"]["SessionStart"]
+        self.write_hooks(data)
+        self.git_add_f(".codex/hooks.json")
+        before, index = self.hooks_path().read_bytes(), (self.dst / ".git/index").read_bytes()
+        code, out, err = self.run_main("--repair-hooks")
+        self.assertEqual(code, 0)
+        self.assertIn("preview only", out)
+        self.assertIn("SessionStart", out)
+        code, out, err = self.run_main("--repair-hooks", "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("git rm --cached .codex/hooks.json", err)
+        self.assertEqual(self.hooks_path().read_bytes(), before)
+        self.assertEqual([p.name for p in self.hooks_path().parent.iterdir() if ".bak" in p.name], [])  # no backup either
+        self.assertEqual((self.dst / ".git/index").read_bytes(), index)
+        subprocess.run(["git", "-C", str(self.dst), "rm", "--cached", "-q", ".codex/hooks.json"], check=True, capture_output=True)
+        code, out, err = self.run_main("--repair-hooks", "--yes")  # the user untracked it: now it is repaired
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.issues(), [])
+
+    def test_p5_check_warns_about_a_tracked_hooks_file_and_is_unverified_when_git_cannot_answer(self):
+        self.use_real_guard()
+        self.git_init(self.dst)
+        self.run_install()
+        home = self.make_codex_home(config=self.trust_toml(str(self.dst.resolve())))
+        code, out, _ = self.codex_check(CODEX_HOME=str(home))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("is tracked by git", out)
+        self.git_add_f(".codex/hooks.json")
+        code, out, _ = self.codex_check(CODEX_HOME=str(home))
+        self.assertEqual(code, 0, out)  # a warning: the guard still runs
+        self.assertRegex(out, r"WARN\s+\.codex/hooks\.json is tracked by git;.*git rm --cached \.codex/hooks\.json")
+        with mock.patch.object(install, "git_says", return_value=(128, "", "fatal: index file corrupt")):
+            code, out, _ = self.codex_check(CODEX_HOME=str(home))
+        self.assertEqual(code, 0, out)
+        self.assertIn("whether git tracks it is unverified", out)
+        self.assertNotIn("is tracked by git", out)
+
+    def with_agy_interpreter(self, word):
+        doc = self.agy_doc()
+        for event in ("SessionStart", "PreInvocation"):
+            for h in doc["tagteam"][event]:
+                h["command"] = word + " " + h["command"].split(" ", 1)[1]
+        for g in doc["tagteam"]["PreToolUse"]:
+            for h in g["hooks"]:
+                h["command"] = word + " " + h["command"].split(" ", 1)[1]
+        self.write_agy(doc)
+
+    def test_mac19_only_the_interpreter_word_is_loosened_in_the_drift_comparison(self):
+        self.use_real_guard()
+        self.run_install()
+        want = install.expected_agy_hooks(self.src, self.dst)
+
+        def edit(fn):
+            def walk(v, key=None):
+                if isinstance(v, dict):
+                    return {k: walk(x, k) for k, x in v.items()}
+                if isinstance(v, list):
+                    return [walk(x) for x in v]
+                return fn(v) if key == "command" else v
+            return walk(want)
+        same = install.agy_same_entry
+        for word in ("python", "python3"):
+            self.assertTrue(same(edit(lambda c: re.sub(r"^\S+", word, c)), want), word)
+        for word in ("python3.11", "python2", "pythonw", "/usr/bin/python3", '"python3"', "py", "python3.", ""):
+            self.assertFalse(same(edit(lambda c: re.sub(r"^\S+", word, c, count=1)), want), word)
+        self.assertFalse(same(edit(lambda c: c + " --extra"), want))
+        self.assertFalse(same(edit(lambda c: c.replace("--host agy", "--host codex")), want))
+        self.assertFalse(same(edit(lambda c: "echo " + c), want))  # not the first word
+        other = copy.deepcopy(want)
+        other["PreToolUse"][0]["matcher"] = "nothing"
+        self.assertFalse(same(other, want))
+        other = copy.deepcopy(want)
+        other["SessionStart"][0]["timeout"] = 11
+        self.assertFalse(same(other, want))
+        other = copy.deepcopy(want)
+        other["SessionStart"][0]["type"] = "python3"  # only "command" values are looked at
+        self.assertFalse(same(other, want))
+        swapped = copy.deepcopy(want)
+        swapped["SessionStart"][0]["extra"] = "python3 x"
+        self.assertFalse(same(swapped, want))
+
+    def test_mac19_a_missing_interpreter_is_reported_as_missing_not_as_drift(self):
+        self.use_real_guard()
+        self.run_install()
+        real = shutil.which
+        nothing = lambda n, **k: None if n in ("python", "python3") else real(n, **k)  # noqa: E731
+        for installed in ("python3", "python"):
+            self.with_agy_interpreter(installed)
+            with mock.patch.object(install.shutil, "which", side_effect=nothing):
+                code, out, _ = self.agy_check()
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"{installed} is not on PATH", out)
+            self.assertNotIn("differs from the template", out)
+        for word in ("python3.11", "python3 --version;"):  # not the same interpreter word, or an extra argument: drift
+            self.with_agy_interpreter(word)
+            code, out, _ = self.agy_check()
+            self.assertEqual(code, 1, out)
+            self.assertIn('"tagteam" differs from the template', out)
+
+    def test_mac19_the_installed_command_runs_as_written_whatever_this_machine_would_install(self):
+        self.use_real_guard()
+        self.run_install()
+        for installed, would_install in (("python3", "python"), ("python", "python3")):
+            self.with_agy_interpreter(installed)
+            with mock.patch.object(install, "agy_interpreter", return_value=would_install):
+                entry, why = install.agy_runnable_hooks(self.dst, self.src)
+            self.assertIsNone(why)
+            self.assertTrue(all(c.startswith(installed + " ") for e in ("SessionStart", "PreInvocation", "PreToolUse")
+                                for _, _, c in install.agy_commands(entry, e)))  # not rewritten to this machine's word
+        self.with_agy_interpreter("python3.11")
+        entry, why = install.agy_runnable_hooks(self.dst, self.src)
+        self.assertIsNone(entry)
+        self.assertIn("differs from the template", why)
+
+    def test_p4_a_file_that_differs_only_in_line_endings_is_kept(self):
+        p = self.dst / "t.txt"
+        cases = [(b"a\r\nb\r\n", b"a\nb\n", "kept"), (b"a\r\nb\n", b"a\nb\n", "kept"), (b"a\nb\n", b"a\r\nb\r\n", "kept"),
+                 (b"a\r\n", b"a\r\n", "kept"), (b"", b"", "kept"),
+                 (b"a\r\nB\r\n", b"a\nb\n", "updated"), (b"a\r\nb\r\n", b"a\nb\nc\n", "updated"),
+                 (b"a \r\n", b"a\n", "updated"), (b"a\r\n", b"a\n\n", "updated"), (b"a\rb\r", b"a\nb\n", "updated"),
+                 (b"a\r\n\x00b", b"a\n\x00b", "updated"), (b"\x00a\n", b"\x00a\r\n", "updated"),  # NUL: a binary file, exact
+                 (b"\xff\r\n", b"\xff\n", "updated"), (b"\xff\n", b"\xff\r\n", "updated"),  # not UTF-8, no NUL: still exact
+                 (b"\xc3\xa9\r\n", b"\xc3\xa9\n", "kept")]  # UTF-8 text with a non-ASCII letter
+        for old, new, state in cases:
+            p.write_bytes(old)
+            rep = install.Report()
+            install.put(rep, self.dst, Path("t.txt"), new)
+            self.assertEqual([s for s, _ in rep.items], [state], (old, new))
+            self.assertEqual(p.read_bytes(), old if state == "kept" else new, (old, new))
+        p.unlink()
+        rep = install.Report()
+        install.put(rep, self.dst, Path("t.txt"), b"a\r\n")
+        self.assertEqual([s for s, _ in rep.items], ["created"])
+
+    def test_p4_update_of_a_crlf_working_tree_rewrites_only_real_changes(self):
+        self.use_real_guard()
+        self.run_install()
+        self.run_install("--update")  # settings.json is merged and re-dumped once; after that an update is a no-op
+        files = [p for p in self.dst.rglob("*") if p.is_file() and p.suffix in (".md", ".py", ".json", ".toml", "")
+                 and "__pycache__" not in p.parts]
+        for p in files:
+            p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))  # what core.autocrlf=true checks out
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in files}
+        self.assertTrue(any(b"\r\n" in b for b, _ in before.values()))
+        code, out = self.run_install("--update")
+        self.assertEqual(code, 0)
+        self.assertNotRegex(out, r"(?m)^\s+updated\s", out)
+        self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns) for p in files}, before)  # not one file was written
+        (self.src / "harness/claude/agents/a.md").write_text("agent v2", encoding="utf-8")  # a real change still goes through
+        code, out = self.run_install("--update")
+        self.assertRegex(out, r"updated\s+\.claude/agents/a\.md")
+        self.assertEqual((self.dst / ".claude/agents/a.md").read_text(encoding="utf-8"), "agent v2")
+
+    def test_r3_a_failure_judged_from_the_output_does_not_claim_a_wrong_exit_code(self):
+        self.use_real_hooks()
+        self.run_install()
+        if not install.hook_shell():
+            self.skipTest("no sh / Git Bash")
+
+        def start_hook(command):
+            self.edit_settings(lambda d: d["hooks"]["SessionStart"][0]["hooks"][0].update(command=command))
+            code, out, _ = self.run_main("--check")
+            self.assertEqual(code, 1, out)
+            return out
+        out = start_hook("echo role_guard.py ran quietly")  # exit 0, but no TAGTEAM: line: the guard did not run
+        self.assertIn("hook command 'SessionStart': exit 0 as expected, but the output shows the guard did not run.", out)
+        self.assertNotIn("expected exit 0, got 0", out)
+        out = start_hook('echo "role_guard.py: python3/python not found on PATH"; exit 0')
+        self.assertIn("exit 0 as expected, but the output shows the guard did not run (python3/python was not found by the command)", out)
+        self.assertNotIn("expected exit 0, got 0", out)
+        out = start_hook("echo TAGTEAM: x; exit 3  # role_guard.py")  # a wrong exit code keeps its own message
+        self.assertIn("hook command 'SessionStart': expected exit 0, got 3.", out)
+        self.assertNotIn("as expected", out)
 
 
 class KillTreeTests(unittest.TestCase):

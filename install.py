@@ -7,6 +7,7 @@
     python install.py <target> --schedule | --unschedule [--dry-run]
 """
 import argparse
+import ast
 import copy
 import difflib
 import hashlib
@@ -17,12 +18,18 @@ import plistlib
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
 from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+
+except ImportError:  # 3.9 and 3.10 (Apple's /usr/bin/python3): trust_levels() reads the lines instead
+    tomllib = None
 
 POLICY_MARK = "## Project policy"
 HOOK_KEYS = ("hooks", "subagentPromptCacheTtl")
@@ -44,11 +51,25 @@ class Report:
                     print(f"  {s:8} {p}")
 
 
+def same_but_line_endings(old, new):
+    """True when two texts differ only in \r\n versus \n. Only valid UTF-8 without a NUL byte counts as text; any other
+    file (a binary one, even without a NUL) is compared exactly, and a lone \r is not a line ending, so a file that
+    changes anything else is never taken for the same one."""
+    try:
+        if b"\0" in old or b"\0" in new:
+            raise ValueError("binary")
+        old.decode("utf-8"), new.decode("utf-8")
+    except ValueError:  # UnicodeDecodeError too
+        return old == new
+    return old.replace(b"\r\n", b"\n") == new.replace(b"\r\n", b"\n")
+
+
 def put(rep, target, rel, data, *, keep_existing=False, note=""):
-    """Write bytes to target/rel and record created/updated/kept."""
+    """Write bytes to target/rel and record created/updated/kept. A file that differs only in line endings (a
+    core.autocrlf=true checkout) is kept: rewriting it would show as a change in git with no change in content."""
     dst = target / rel
     if dst.exists():
-        if keep_existing or dst.read_bytes() == data:
+        if keep_existing or same_but_line_endings(dst.read_bytes(), data):
             rep.add("kept" + note, rel)
             return
         state = "updated"
@@ -88,6 +109,13 @@ TRUST_NOTE = ("Codex trusts each hook by its definition. Open this project in an
               "tagteam hooks; until then a new or changed hook is skipped silently, with no warning.")
 
 
+CODEX_TRACKED = (f"{HOOKS_REL.as_posix()} is tracked by git; it holds this machine's absolute guard path; "
+                 f"untrack it with: git rm --cached {HOOKS_REL.as_posix()} (then commit)")  # tagteam never untracks it itself
+
+
+CODEX_UNKNOWN = f"cannot tell whether git tracks {HOOKS_REL.as_posix()} (git is missing, timed out or cannot read the index)"
+
+
 def expected_codex_hooks(source, target):
     """The template's hooks.json with the guard path made absolute, as install writes it. None without a template."""
     src = source / "harness" / "codex" / "hooks.json"
@@ -114,6 +142,21 @@ def expected_agy_hooks(source, target):
         return None
     doc = json.loads(localize_hooks(src, target / GUARD_REL).decode("utf-8"))
     return map_strings(doc.get(AGY_KEY), lambda s: re.sub(r"^python3 ", agy_interpreter() + " ", s))
+
+
+def agy_same_entry(have, want):
+    """Whether two "tagteam" entries are the same up to the interpreter: the first word of a "command" string counts as
+    the same when it is exactly python or python3 on both sides (install picks python3 when this machine has it, so the
+    file differs between machines and with a PATH that has neither). Nothing else is loosened: another interpreter name
+    (python3.11, a path), another argument or another field is a difference. Whether the interpreter can be found is
+    reported on its own."""
+    def norm(v, key=None):
+        if isinstance(v, dict):
+            return {k: norm(x, k) for k, x in v.items()}
+        if isinstance(v, list):
+            return [norm(x) for x in v]
+        return re.sub(r"^python3?(?=\s)", "python", v) if key == "command" and isinstance(v, str) else v
+    return norm(have) == norm(want)
 
 
 def git_says(target, *args):
@@ -454,6 +497,10 @@ def repair_hooks(target, source, apply):
     if not apply:
         print("preview only: nothing was written. Run again with --yes to apply.")
         return 0
+    state = git_tracking(target, HOOKS_REL.as_posix())
+    if state not in ("untracked", "no repository"):  # the repository is the user's: report, write nothing, no backup either
+        print(f"warning: {CODEX_TRACKED if state == 'tracked' else CODEX_UNKNOWN}; nothing was written", file=sys.stderr)
+        return 1
     path = target / HOOKS_REL
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
@@ -536,7 +583,7 @@ def ask_tiers():
     return plans
 
 
-LOCAL_IGNORES = (".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", AGY_HOOKS_REL)
+LOCAL_IGNORES = (".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", HOOKS_REL.as_posix(), AGY_HOOKS_REL)
 STATE_IGNORE = ".tagteam/"
 BENCH_REL = Path(".claude/tagteam/bench.local.json")
 SKILL_ROOTS = (".claude/skills", ".agents/skills")  # Claude Code reads the first, Codex the second
@@ -642,6 +689,36 @@ def ensure_available(target):
               % (text.splitlines()[-1][:200] if text else "no output"), file=sys.stderr)
 
 
+def install_codex_hooks(rep, hooks, target):
+    """Write .codex/hooks.json once (an existing file is kept: Codex trust is bound to its content). A file that git
+    tracks is only reported: tagteam never untracks it (the repository is the user's), and a tracked file that is gone is
+    not written back, because that would show up as a change to a tracked file."""
+    if not hooks.is_file():
+        return
+    existed = (target / HOOKS_REL).exists()
+    state = git_tracking(target, HOOKS_REL.as_posix())
+    why = {"tracked": CODEX_TRACKED, "unknown": CODEX_UNKNOWN}.get(state)  # None: a write is allowed
+    if why and not existed:
+        print(f"warning: {why}; the file is missing, so it was not written and Codex has no role hooks here", file=sys.stderr)
+        return
+    data = localize_hooks(hooks, target / GUARD_REL)
+    put(rep, target, HOOKS_REL, data, keep_existing=True)
+    if why:
+        print(f"warning: {why}", file=sys.stderr)
+    if not existed:
+        print("note: " + TRUST_NOTE)
+        return
+    print("note: .codex/hooks.json already exists and was kept (machine-local trust).")
+    current, err = load_codex_hooks(target)
+    expected = json.loads(data.decode("utf-8"))
+    err = err or (hook_shape_error(current, expected) if current is not None else None)
+    drift = [i for i in diagnose_hooks(target, expected, current)
+             if i[1] not in ("extra", "stale")] if current is not None and not err else []
+    if err or drift:
+        print("warning: the tagteam hooks in .codex/hooks.json differ from the template (%s); "
+              "preview the fix with: python install.py %s --repair-hooks" % (err or f"{len(drift)} difference(s)", target))
+
+
 def install(target, source, interactive):
     rep = Report()
     h = source / "harness"
@@ -655,23 +732,7 @@ def install(target, source, interactive):
         if not (linked and skills_root.startswith(".agents/")):
             copy_tree(rep, h / "skills", target, skills_root)
     copy_tree(rep, h / "tagteam", target, ".claude/tagteam")
-    hooks = h / "codex" / "hooks.json"
-    if hooks.is_file():
-        existed = (target / ".codex/hooks.json").exists()
-        data = localize_hooks(hooks, target / ".claude" / "tagteam" / "role_guard.py")
-        put(rep, target, Path(".codex/hooks.json"), data, keep_existing=True)
-        if existed:
-            print("note: .codex/hooks.json already exists and was kept (machine-local trust).")
-            current, err = load_codex_hooks(target)
-            expected = json.loads(data.decode("utf-8"))
-            err = err or (hook_shape_error(current, expected) if current is not None else None)
-            drift = [i for i in diagnose_hooks(target, expected, current)
-                     if i[1] not in ("extra", "stale")] if current is not None and not err else []
-            if err or drift:
-                print("warning: the tagteam hooks in .codex/hooks.json differ from the template (%s); "
-                      "preview the fix with: python install.py %s --repair-hooks" % (err or f"{len(drift)} difference(s)", target))
-        else:
-            print("note: " + TRUST_NOTE)
+    install_codex_hooks(rep, h / "codex" / "hooks.json", target)
     copy_tree(rep, h / "codex" / "agents", target, ".codex/agents", "*.toml")
     install_agy_hooks(rep, source, target)
     if (source / "AGENTS.md.template").is_file():
@@ -761,12 +822,120 @@ def is_windows():
     return sys.platform == "win32"
 
 
+def codex_home():
+    return os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+
+
+USER_FILE_MAX = 1_000_000  # bytes of a user's Codex file that are worth reading; more is not a rules or config file
+
+
+def read_user_text(path):
+    """(text, None) or (None, why) for one of the user's own files: only a regular file (after links are resolved: a link to
+    /dev/zero or a pipe would never end), at most USER_FILE_MAX bytes, valid UTF-8. Never raises; why is 'not found' when the
+    file is absent. The only way tagteam reads the user's Codex files."""
+    try:
+        real = os.path.realpath(path)
+        if not stat.S_ISREG(os.stat(real).st_mode):
+            return None, "not a regular file"
+        with open(real, "rb") as fh:
+            data = fh.read(USER_FILE_MAX + 1)  # the size on disk may lie (a growing file): the read is bounded too
+        if len(data) > USER_FILE_MAX:
+            return None, f"larger than {USER_FILE_MAX} bytes"
+        return data.decode("utf-8"), None
+    except FileNotFoundError:
+        return None, "not found"
+    except (OSError, ValueError) as exc:  # UnicodeDecodeError is a ValueError
+        return None, type(exc).__name__
+
+
+def rules_allowing_git_writes(text):
+    """['commit' and/or 'push'] that a Codex rules file allows without asking. Rules files are Starlark; the prefix_rule(...)
+    calls read as Python, so the file is parsed and each call's keywords are read (a word inside a comment or a string
+    argument such as justification="decision='prompt'" is not a keyword). A call counts when its decision is "allow" or
+    left out (Codex's default) and its pattern starts with "git" and then names the word, or stops at "git" (every git
+    command); a token may be an alternatives list. Raises SyntaxError, ValueError, RecursionError or MemoryError when the
+    text does not parse: the caller reports the file as unverified."""
+    has = lambda tok, word: tok == word or (isinstance(tok, list) and word in tok)  # noqa: E731
+    found = []
+    for node in ast.walk(ast.parse(text)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "prefix_rule"):
+            continue
+        try:
+            args = {k.arg: ast.literal_eval(k.value) for k in node.keywords if k.arg in ("pattern", "decision")}
+        except ValueError:  # an argument that is not a literal (a variable): not recognised
+            continue
+        pattern = args.get("pattern")
+        if args.get("decision", "allow") == "allow" and isinstance(pattern, list) and pattern and has(pattern[0], "git"):
+            found += [w for w in ("commit", "push") if w not in found and (len(pattern) == 1 or has(pattern[1], w))]
+    return found
+
+
+def codex_rules_check(home):
+    """(warnings, notes) about the user's Codex rules ($CODEX_HOME/rules/*.rules). Read only. A missing folder says
+    nothing; a folder that cannot be listed, or a file that cannot be read or parsed, is one 'unverified' note."""
+    warnings, notes = [], []
+    folder = Path(home, "rules")
+    try:
+        files = [folder / n for n in sorted(os.listdir(folder)) if n.endswith(".rules")]
+    except FileNotFoundError:  # no rules folder: nothing to look at
+        return warnings, notes
+    except OSError as exc:  # it exists but cannot be listed (a file, no permission): not the same as absent
+        return warnings, [f"Codex rules: unverified (cannot list {folder}: {type(exc).__name__})"]
+    for f in files:
+        text, why = read_user_text(f)
+        problem = f"cannot read {f}: {why}" if why else None
+        try:
+            allowed = rules_allowing_git_writes(text) if not why else []
+        except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:
+            problem = f"cannot parse {f}: {type(exc).__name__}"
+        if problem:
+            notes.append(f"Codex rules: unverified ({problem})")
+            continue
+        for word in allowed:
+            warnings.append(f'your Codex rules allow "git {word}" ({f}): Codex runs such commands outside its sandbox, so a '
+                            "worker's commit or push is stopped only by the tagteam hooks; keep the project and its hooks trusted "
+                            "(see manual 1.2)")
+    return warnings, notes
+
+
+def trust_key(path):
+    """A project path as Codex lists it, comparable: Windows ignores case and the kind of slash (and a \\\\?\\ prefix)."""
+    p = str(path)
+    if is_windows():
+        p = p.replace("\\", "/").lower()
+        p = p[4:] if p.startswith("//?/") else p
+    return p.rstrip("/") or p
+
+
+def codex_trust_check(target, home):
+    """(warning or None, note or None) on whether Codex trusts this project, read from $CODEX_HOME/config.toml with tomllib
+    (Python 3.11+; on an older Python the answer is 'unverified', because guessing from lines can be fooled by a string).
+    Only the exact path counts as trusted (a trusted parent folder is mentioned, not relied on: whether Codex inherits it
+    is unverified). A missing, unreadable or unparsable config is 'unverified', not a warning."""
+    config = Path(home, "config.toml")
+    if tomllib is None:
+        return None, f"Codex project trust: unverified (reading {config} needs Python 3.11+; this is {sys.version_info[0]}.{sys.version_info[1]})"
+    text, why = read_user_text(config)
+    try:
+        projects = tomllib.loads(text).get("projects") if why is None else None
+    except (ValueError, RecursionError, MemoryError) as exc:  # TOMLDecodeError is a ValueError; deep nesting recurses
+        why = type(exc).__name__
+    if why:
+        return None, f"Codex project trust: unverified ({config} {'not found' if why == 'not found' else 'cannot be used: ' + why})"
+    levels = {k: v.get("trust_level") for k, v in projects.items() if isinstance(v, dict)} if isinstance(projects, dict) else {}
+    here = {trust_key(target), trust_key(os.path.realpath(target))}
+    if any(trust_key(k) in here and v == "trusted" for k, v in levels.items()):
+        return None, None
+    parent = any(v == "trusted" and any(h.startswith(trust_key(k) + "/") for h in here) for k, v in levels.items())
+    return (f"this project is not in Codex's trusted projects ({config}): Codex skips the project's hooks, so workers run "
+            "without the role guard; trust it in an interactive codex session (manual 1.2)"
+            + (" (a parent folder is trusted; whether Codex inherits that is unverified)" if parent else "")), None
+
+
 def codex_windows_sandbox():
     """The user's Codex `windows.sandbox` setting (from $CODEX_HOME or ~/.codex/config.toml), or None."""
-    home = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
-    try:
-        text = Path(home, "config.toml").read_text(encoding="utf-8")
-    except OSError:
+    text, why = read_user_text(Path(codex_home(), "config.toml"))
+    if why:
         return None
     section = None
     for raw in text.splitlines():
@@ -886,10 +1055,14 @@ def hook_command_test(target):
                 fails.append(f"hook command '{name}': {type(exc).__name__}: {exc}")
                 return
             text = (p.stdout + p.stderr).strip()
-            if p.returncode != want or (expect_out and expect_out not in text):
-                hint = " (python3/python was not found by the command: the guard did not run)" \
-                    if "not found on PATH" in text or p.returncode == 127 else ""
+            missing = "not found on PATH" in text or p.returncode == 127  # the command's own message, or sh's 'command not found'
+            if p.returncode != want:
+                hint = " (python3/python was not found by the command: the guard did not run)" if missing else ""
                 fails.append(f"hook command '{name}': expected exit {want}, got {p.returncode}{hint}. Output: {text[:100]!r}")
+            elif expect_out and expect_out not in text:  # the exit code was right; the output is what shows the guard did not run
+                hint = " (python3/python was not found by the command)" if missing else ""
+                fails.append(f"hook command '{name}': exit {p.returncode} as expected, but the output shows the guard did not run{hint}. "
+                             f"Output: {text[:100]!r}")
 
         # the tagteam hooks may sit in several groups (Bash in one, Edit|Write in another): test those that select Bash
         chosen = [(m, t, c) for m, t, c in pre if matcher_hits(m, "Bash")]
@@ -961,11 +1134,22 @@ def static_checks(target, source, host):
                     errors.append(f"hooks.json {kind}: {text}")
             if any(k not in ("extra", "stale") for _, k, _ in issues):
                 errors.append(f"fix with: python install.py {target} --repair-hooks (preview) / --yes, then trust the hooks in codex")
+        if (target / HOOKS_REL).is_file():  # a missing file is the error above
+            tracking = git_tracking(target, HOOKS_REL.as_posix())
+            if tracking == "tracked":  # a warning, not an error: the guard still runs; only the repository is untidy
+                warnings.append(CODEX_TRACKED)
+            elif tracking == "unknown":
+                notes.append(f"{HOOKS_REL.as_posix()}: whether git tracks it is unverified (git is missing, timed out or cannot read the index)")
+        home = codex_home()  # the user's Codex files are only read, never written
+        rule_warnings, rule_notes = codex_rules_check(home)
+        trust_warning, trust_note = codex_trust_check(target, home)
+        warnings += rule_warnings + ([trust_warning] if trust_warning else [])
+        notes += rule_notes + ([trust_note] if trust_note else [])
         notes.append(APPROVAL_NOTE)
         if is_windows() and (codex_windows_sandbox() or "").lower() == "elevated":
-            warnings.append("Windows: your Codex setting windows.sandbox is elevated; commands failed with CreateProcessWithLogonW 1385 "
-                            "under codex exec (codex-cli 0.169.0). Interactive behaviour is unverified; unelevated is the "
-                            "alternative (your global setting, not changed by tagteam)")
+            warnings.append("Windows: your Codex setting windows.sandbox is elevated; with codex-cli 0.169.0 every `codex exec` command "
+                            "failed (CreateProcessWithLogonW 1385), with 0.170.0 they ran on one PC (codex exec only). Interactive "
+                            "behaviour is unverified; tagteam's default is unelevated (your global setting, not changed by tagteam)")
     if host == "agy":
         bad, shaky = agy_static_problems(target, source)
         errors += bad
@@ -1081,7 +1265,7 @@ def agy_static_problems(target, source):
         errors += [f"{AGY_HOOKS_REL}: {b}" for b in bad]
     else:
         expected = expected_agy_hooks(source, target)
-        if expected is not None and entry != expected:  # not ours any more: its commands are not looked at
+        if expected is not None and not agy_same_entry(entry, expected):  # not ours any more: its commands are not looked at
             errors.append(f'{AGY_HOOKS_REL}: "{AGY_KEY}" differs from the template (edited, or the checkout moved); '
                           f"run install.py {target} --update")
         else:
@@ -1117,7 +1301,7 @@ def agy_runnable_hooks(target, source):
     expected = expected_agy_hooks(source, target)
     if expected is None:
         return None, f"not run: no template under {source} to compare the hook commands with"
-    if entry != expected:
+    if not agy_same_entry(entry, expected):
         return None, f'not run: "{AGY_KEY}" differs from the template'
     return entry, None
 
