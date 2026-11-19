@@ -21,6 +21,31 @@ def pending(host="claude"):
     return "TAGTEAM: role=pending host=%s (set by the first prompt: worker if it carries HARNESS ROLE: DELEGATE)" % host
 
 
+def make_dir_link(link, target):
+    """A directory link to target: a symlink, or on Windows (symlinks need a privilege) a junction. False when
+    this system can make neither."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        pass
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", link, target], capture_output=True)
+        return os.path.isdir(link)
+    return False
+
+
+def remove_dir_link(link):
+    """Remove the link itself, never what it points at."""
+    try:
+        os.unlink(link)
+    except OSError:
+        try:
+            os.rmdir(link)  # a junction
+        except OSError:
+            pass
+
+
 def codex_payloads():
     with open(os.path.join(FIXTURES, "codex_payloads.json"), encoding="utf-8") as f:
         return json.load(f)
@@ -267,6 +292,176 @@ class RoleGuardTest(GuardCase):
         self.assert_allowed(self.run_guard("PreToolUse", p, host="codex"))
         p["tool_input"] = self.patch("*** Update File: ../AGENTS.md")
         self.assert_codex_denied(self.run_guard("PreToolUse", p, host="codex"), "control plane")
+
+    # ---- the same folder under two spellings (links, junctions): M7 U1 ------------------
+
+    def make_link(self, link, target):
+        if not make_dir_link(link, target):
+            self.skipTest("this system cannot make a directory link or junction")
+        self.addCleanup(remove_dir_link, link)  # before the temporary folder is removed
+
+    def test_control_plane_is_found_through_a_link_to_the_project(self):
+        # git prints the real folder as the top; the model may write the path through the link, or the cwd may be
+        # the link (macOS: /var -> /private/var; elsewhere a symlink or junction to the project)
+        real, link = os.path.join(self._tmp.name, "real-repo"), os.path.join(self._tmp.name, "link-repo")
+        os.makedirs(os.path.join(real, "src"))
+        os.makedirs(os.path.join(real, ".claude"))
+        subprocess.run(["git", "-C", real, "init", "-q"], check=True)
+        self.make_link(link, real)
+        inner = os.path.join(real, "plain-looking")  # a link inside the project that points at the control plane
+        self.make_link(inner, os.path.join(real, ".claude"))
+        self.make_worker()
+        denied = (  # (cwd, path)
+            (real, os.path.join(link, "AGENTS.md")), (real, os.path.join(link, ".claude", "x")),
+            (link, os.path.join(real, "CLAUDE.md")), (link, os.path.join(real, ".agents", "x")),
+            (link, "AGENTS.md"), (link, ".codex/x"), (link, "src/../.claude/x"), (os.path.join(link, "src"), "../AGENTS.md"),
+            (real, os.path.join(inner, "settings.json")), (real, "plain-looking/settings.json"),
+            (link, os.path.join(link, "plain-looking", "settings.json")))
+        for cwd, path in denied:
+            r = self.tool("Edit", {"file_path": path}, cwd=cwd)
+            self.assertEqual(r.returncode, 2, (cwd, path))
+            self.assertIn("control plane", r.stderr)
+            self.assert_codex_denied(self.codex("apply_patch", cwd, agent_id="a1", tool_input=self.patch("*** Update File: " + path)),
+                                     "control plane")
+        for cwd, path in ((real, os.path.join(link, "src", "a.py")), (link, os.path.join(real, "src", "a.py")),
+                          (link, "src/a.py"), (link, "src/AGENTS.md"), (os.path.join(link, "src"), "AGENTS.md"),
+                          (real, os.path.join(link, "docs", "CLAUDE.md"))):  # not the root files: still allowed
+            self.assertEqual(self.tool("Edit", {"file_path": path}, cwd=cwd).returncode, 0, (cwd, path))
+            self.assert_allowed(self.codex("apply_patch", cwd, agent_id="a1", tool_input=self.patch("*** Update File: " + path)))
+
+    def test_both_spellings_of_a_folder_are_judged(self):
+        # no operating-system links: realpath and the git top are faked so that one folder has two names. The
+        # real spelling is what git prints; the payload uses the other one.
+        real, link, elsewhere = (os.path.join(self._tmp.name, n) for n in ("real-name", "link-name", "elsewhere"))
+
+        def fake_realpath(path):
+            norm = os.path.normpath(path)
+            if norm == link or norm.startswith(link + os.sep):
+                return real + norm[len(link):]
+            if norm == os.path.join(real, ".claude", "moved"):  # a link inside the project that leaves the control plane
+                return os.path.join(elsewhere, "x")
+            return norm
+
+        with mock.patch.object(role_guard.state, "_git", return_value=real), \
+                mock.patch.object(role_guard.os.path, "realpath", side_effect=fake_realpath):
+            sub = os.path.join(link, "sub")
+            for cwd, path in ((sub, "../AGENTS.md"), (sub, "../.claude/settings.json"), (sub, os.path.join(link, ".agents", "x")),
+                              (link, "CLAUDE.md"), (link, os.path.join(real, ".codex", "x")), (real, os.path.join(link, "AGENTS.md")),
+                              (sub, "../.Claude/x"), (real, os.path.join(real, ".claude", "moved"))):
+                self.assertEqual(role_guard.control_plane_path([path], {"cwd": cwd}), path, (cwd, path))
+                with self.assertRaises(role_guard.Denied):  # Claude's Edit, as a worker (a subagent)
+                    role_guard.on_pre_tool({"cwd": cwd, "agent_id": "a", "tool_name": "Edit", "tool_input": {"file_path": path}}, "claude")
+            for cwd, path in ((sub, "AGENTS.md"), (sub, "../src/a.py"), (link, os.path.join(link, "sub", "CLAUDE.md")),
+                              (real, os.path.join(link, "docs", ".claude", "x")), (sub, "../../outside/AGENTS.md")):
+                self.assertIsNone(role_guard.control_plane_path([path], {"cwd": cwd}), (cwd, path))
+
+    def test_windows_prefix_is_removed_only_from_prefixed_drive_and_unc_paths(self):
+        plain = role_guard.plain_windows_path
+        bs = "\\"
+        self.assertEqual(plain(bs * 2 + "?" + bs + "D:" + bs + "p" + bs + "AGENTS.md"), "D:" + bs + "p" + bs + "AGENTS.md")
+        self.assertEqual(plain(bs * 2 + "." + bs + "d:/p/x"), "d:" + bs + "p" + bs + "x")
+        self.assertEqual(plain(bs * 2 + "?" + bs + "unc" + bs + "srv" + bs + "share" + bs + "x"), bs * 2 + "srv" + bs + "share" + bs + "x")
+        for other in ("D:" + bs + "p", "D:/p", "/var/p", "rel/p", "", bs * 2 + "srv" + bs + "share" + bs + "x",
+                      bs * 2 + "?" + bs + "Volume{1234}" + bs + "x", bs * 2 + "?" + bs, bs * 2 + "?" + bs + "1:" + bs + "x"):
+            self.assertEqual(plain(other), other, other)
+
+    @unittest.skipUnless(os.name == "nt", "extended-length and device paths exist on Windows only")
+    def test_windows_prefixed_drive_spellings_are_judged(self):
+        proj = os.path.join(self._tmp.name, "proj")
+        os.makedirs(os.path.join(proj, "sub"))
+        os.makedirs(os.path.join(proj, "src"))
+        subprocess.run(["git", "-C", proj, "init", "-q"], check=True)
+        with open(os.path.join(proj, "AGENTS.md"), "w", encoding="utf-8") as f:
+            f.write("x")
+        ext, dev = "\\\\?\\" + proj, "\\\\.\\" + proj  # \\?\D:\... and \\.\D:\...
+        low = proj[0].lower() + proj[1:]
+        self.make_worker()
+        denied = (  # (cwd, path): an existing file, and files that do not exist yet under the control plane
+            (proj, ext + "\\AGENTS.md"), (proj, ext + "\\.claude\\newfile"), (proj, ext + "\\.agents\\skills\\x\\SKILL.md"),
+            (proj, ext + "\\sub\\..\\CLAUDE.md"), (proj, ext + "/.codex/x"),
+            (proj, dev + "\\AGENTS.md"), (proj, dev + "\\.claude\\newfile"), (proj, low + "\\.claude\\newfile"),
+            (proj, proj.replace("\\", "/") + "/.claude/newfile"), (ext, "AGENTS.md"), (ext, ".claude/newfile"),
+            (dev, "AGENTS.md"), (os.path.join(proj, "sub"), ext + "\\.CLAUDE\\newfile"))
+        for cwd, path in denied:
+            r = self.tool("Edit", {"file_path": path}, cwd=cwd)
+            self.assertEqual(r.returncode, 2, (cwd, path))
+            self.assertIn("control plane", r.stderr)
+            self.assert_codex_denied(self.codex("apply_patch", cwd, agent_id="a1", tool_input=self.patch("*** Update File: " + path)),
+                                     "control plane")
+        for cwd, path in ((proj, ext + "\\src\\a.py"), (proj, ext + "\\sub\\AGENTS.md"), (proj, dev + "\\docs\\.claude\\x"),
+                          (ext, "src/a.py"), (ext, "sub/CLAUDE.md"), (proj, "\\\\?\\Z:\\nothing\\.claude\\x")):  # not the control plane
+            self.assertEqual(self.tool("Edit", {"file_path": path}, cwd=cwd).returncode, 0, (cwd, path))
+            self.assert_allowed(self.codex("apply_patch", cwd, agent_id="a1", tool_input=self.patch("*** Update File: " + path)))
+
+    def test_stream_suffixes_are_cut_without_touching_the_drive_colon(self):
+        cut = role_guard.without_streams
+        self.assertEqual(cut("D:\\p\\AGENTS.md:review"), "D:\\p\\AGENTS.md")
+        self.assertEqual(cut("D:\\p\\AGENTS.md::$DATA"), "D:\\p\\AGENTS.md")
+        self.assertEqual(cut("D:\\p\\AGENTS.md:s:$DATA"), "D:\\p\\AGENTS.md")
+        self.assertEqual(cut("D:\\p\\.claude::$INDEX_ALLOCATION\\x:s"), "D:\\p\\.claude\\x")
+        self.assertEqual(cut("\\\\srv\\share\\repo\\CLAUDE.md::$DATA"), "\\\\srv\\share\\repo\\CLAUDE.md")
+        self.assertEqual(cut("\\\\?\\D:\\p\\a:s"), "\\\\?\\D:\\p\\a")
+        for other in ("D:\\p\\AGENTS.md", "D:", "D:\\", "D:rel\\x", "rel\\x", "\\\\srv\\share", ""):
+            self.assertEqual(cut(other), other, other)
+
+    @unittest.skipUnless(os.name == "nt", "NTFS streams exist on Windows only")
+    def test_windows_stream_spellings_of_the_control_plane_are_judged(self):
+        proj = os.path.join(self._tmp.name, "proj")
+        os.makedirs(os.path.join(proj, "src"))
+        os.makedirs(os.path.join(proj, ".claude"))
+        subprocess.run(["git", "-C", proj, "init", "-q"], check=True)
+        with open(os.path.join(proj, "AGENTS.md"), "w", encoding="utf-8") as f:
+            f.write("x")  # exists; CLAUDE.md and .codex do not
+        self.make_worker()
+        denied = ((proj, "AGENTS.md:review"), (proj, "AGENTS.md::$DATA"), (proj, "CLAUDE.md::$DATA"),
+                  (proj, "CLAUDE.md:s:$DATA"), (proj, ".claude/newfile::$DATA"), (proj, ".claude::$INDEX_ALLOCATION/newfile"),
+                  (proj, ".codex:s/x"), (proj, os.path.join(proj, "AGENTS.md") + "::$DATA"),
+                  (proj, "\\\\?\\" + os.path.join(proj, "agents.md") + "::$DATA"), (proj, "\\\\?\\" + proj + "\\.agents\\x:s"),
+                  (os.path.join(proj, "src"), "../AGENTS.md:s"))
+        for cwd, path in denied:
+            r = self.tool("Edit", {"file_path": path}, cwd=cwd)
+            self.assertEqual(r.returncode, 2, (cwd, path))
+            self.assertIn("control plane", r.stderr)
+            self.assert_codex_denied(self.codex("apply_patch", cwd, agent_id="a1", tool_input=self.patch("*** Update File: " + path)),
+                                     "control plane")
+        for cwd, path in ((proj, "src/a.py:s"), (proj, "src/a.py::$DATA"), (proj, "src/AGENTS.md::$DATA"), (proj, "docs/.claude::$DATA"),
+                          (proj, os.path.join(proj, "src", "a.py")), (proj, ".claudeignore:s")):  # not the control plane
+            self.assertEqual(self.tool("Edit", {"file_path": path}, cwd=cwd).returncode, 0, (cwd, path))
+            self.assert_allowed(self.codex("apply_patch", cwd, agent_id="a1", tool_input=self.patch("*** Update File: " + path)))
+
+    @unittest.skipUnless(os.name == "nt", "UNC and extended-length paths exist on Windows only")
+    def test_unc_extended_paths_are_judged_against_a_plain_unc_project(self):
+        # no real share: the git top is faked as an ordinary UNC path and realpath is the identity (a real one
+        # would go to the network)
+        top, bs = "\\\\server\\share\\repo", "\\"
+        ext = bs * 2 + "?" + bs + "UNC" + bs + "server" + bs + "share" + bs + "repo"
+        patch = lambda path: self.patch("*** Update File: " + path)  # noqa: E731
+        with mock.patch.object(role_guard.state, "_git", return_value=top), \
+                mock.patch.object(role_guard.os.path, "realpath", side_effect=os.path.normpath):
+            denied = (ext + "\\AGENTS.md", ext + "\\.claude\\newfile", ext + "\\sub\\..\\.codex\\x", top + "\\CLAUDE.md")
+            allowed = (ext + "\\src\\a.py", ext + "\\sub\\AGENTS.md", ext.replace("repo", "other") + "\\AGENTS.md",
+                       ext.replace("share", "other") + "\\AGENTS.md")
+            for cwd in (top, top + "\\sub", ext):
+                for path in denied + allowed:
+                    want = path in denied
+                    claude = {"cwd": cwd, "agent_id": "a", "tool_name": "Edit", "tool_input": {"file_path": path}}
+                    codex = {"cwd": cwd, "agent_id": "a", "tool_name": "apply_patch", "tool_input": patch(path)}
+                    for payload, host in ((claude, "claude"), (codex, "codex")):
+                        try:
+                            role_guard.on_pre_tool(payload, host)
+                            got = False
+                        except role_guard.Denied:
+                            got = True
+                        self.assertEqual(got, want, (cwd, path, host))
+
+    def test_a_path_the_system_cannot_resolve_is_still_judged_plainly(self):
+        # realpath failing must not turn a deny into an allow: the plain comparison stays
+        proj = os.path.join(self._tmp.name, "proj")
+        for error in (OSError("boom"), ValueError("embedded null byte")):
+            with mock.patch.object(role_guard.os.path, "realpath", side_effect=error):
+                self.assertEqual(role_guard.spellings(os.path.join(proj, "a")), {os.path.normpath(os.path.join(proj, "a"))})
+                self.assertEqual(role_guard.control_plane_path([".claude/x"], {"cwd": proj}), ".claude/x")
+                self.assertIsNone(role_guard.control_plane_path(["src/a.py"], {"cwd": proj}))
 
     def test_claude_worker_edit_tools_on_control_plane_denied(self):
         proj = self.project()
@@ -771,7 +966,149 @@ class AgyGuardTest(GuardCase):
         self.assert_ask(self.agy("pre_tool_exit_plan_mode", env=self.WORKER))
         self.assert_ask(self.agy("pre_tool_run_command", command=""))
         self.assert_ask(self.agy("pre_tool_run_command", toolCall={"name": "write_file", "args": {"TargetFile": "AGENTS.md"}},
-                                 env=self.WORKER))  # edit tools are not matched: control plane edits are not checked on agy
+                                 env=self.WORKER))  # an edit call without a Path has no path to judge
+
+    # ---- edit tools (write_file, edit_file): M7 U1 --------------------------------------
+
+    def edit(self, key, path, cid="c1", env=None, **changes):
+        """A write_file / edit_file PreToolUse payload (fixture) with this Path, through the real hook process."""
+        p = self.payload(key, cid, **changes)
+        p["toolCall"]["args"]["Path"] = path
+        return self.run_guard("PreToolUse", p, host="agy", env=env)
+
+    def edit_roles(self):
+        """Three ways to be a worker: (name, cid, env, label of the deny tail). Records are made where needed."""
+        self.agy("pre_invocation", cid="mk", lastUserInput="HARNESS ROLE: DELEGATE\nx")  # marker on the first call
+        self.agy("pre_invocation_subagent", cid="es")  # empty first input (an agy subagent)
+        return (("marker", "mk", None), ("launcher variable", "lv", self.WORKER), ("empty input", "es", None))
+
+    def test_worker_edit_tools_on_the_control_plane_are_denied(self):
+        for name, cid, env in self.edit_roles():
+            for key, path in (("pre_tool_write_file", self.work + "/.claude/x"), ("pre_tool_edit_file", self.work + "/AGENTS.md"),
+                              ("pre_tool_edit_file", self.work + "/.agents/hooks.json"), ("pre_tool_write_file", self.work + "/CLAUDE.md"),
+                              ("pre_tool_write_file", self.work + "/.codex/hooks.json")):
+                reason = self.assert_deny(self.edit(key, path, cid=cid, env=env), "workers may not edit the control plane (%s)" % path)
+                self.assertEqual("no user input" in reason, name == "empty input", (name, path))
+            # the decision follows Path only: the other arguments of the measured calls change nothing
+            args = {"Content": "x", "Overwrite": True, "Append": True, "ArtifactMetadata": {"a": 1}}
+            p = self.payload("pre_tool_write_file", cid)
+            p["toolCall"]["args"] = dict(args, Path=self.work + "/.claude/y")
+            self.assert_deny(self.run_guard("PreToolUse", p, host="agy", env=env), "control plane")
+
+    def test_worker_edit_path_spellings_on_the_control_plane(self):
+        paths = [".claude/x", "./AGENTS.md", "src/../CLAUDE.md", self.work + "/.Claude/x", self.work + "/./.claude/../.claude/x",
+                 self.work + "/src/../.CODEX/x"]  # relative paths are taken against cwd
+        if os.name == "nt":  # a backslash is a separator only here
+            paths += [self.work + "\\.agents\\x", self.work.replace("/", "\\") + "\\\\.CODEX/x"]
+        for path in paths:
+            self.assert_deny(self.edit("pre_tool_edit_file", path, env=self.WORKER), "control plane")
+
+    def test_worker_other_edits_ask(self):
+        for path in (self.work + "/src/a.py", "src/a.py", self.work + "/docs/AGENTS.md", self.work + "/.claudeignore",
+                     self.work + "/claude/x", self.work + "/CLAUDE.md.bak", "../outside/AGENTS.md",
+                     os.path.join(self._tmp.name, "elsewhere", ".claude", "x")):  # a folder outside this project
+            for key in ("pre_tool_write_file", "pre_tool_edit_file"):
+                self.assert_ask(self.edit(key, path, env=self.WORKER))
+
+    def test_orchestrator_edits_ask_even_on_the_control_plane(self):
+        self.agy("pre_invocation", cid="orch")
+        for key in ("pre_tool_write_file", "pre_tool_edit_file"):
+            for path in (self.work + "/.claude/x", self.work + "/AGENTS.md", self.work + "/src/a.py"):
+                self.assert_ask(self.edit(key, path, cid="orch"))
+        self.assertEqual(self.record("orch")["role"], "orchestrator")
+
+    def test_unresolved_role_edits_of_the_control_plane_are_denied(self):
+        os.makedirs(os.path.join(self.state, "sessions"))
+        for cid, body in (("bad", "{not json"), ("lost", json.dumps({"role": "unresolved", "host": "agy", "ts": 1}))):
+            with open(os.path.join(self.state, "sessions", cid + ".json"), "w", encoding="utf-8") as f:
+                f.write(body)
+            reason = self.assert_deny(self.edit("pre_tool_write_file", self.work + "/.codex/x", cid=cid), "control plane")
+            self.assertIn("role unresolved", reason, cid)
+            self.assert_ask(self.edit("pre_tool_write_file", self.work + "/src/a.py", cid=cid))
+        self.assert_deny(self.edit("pre_tool_edit_file", self.work + "/AGENTS.md", cid="nobody", conversationId=""), "role unresolved")
+
+    @unittest.skipUnless(os.name == "nt", "extended-length and device paths exist on Windows only")
+    def test_worker_edit_with_a_windows_prefixed_path_is_denied(self):
+        base = self.work.replace("/", "\\")
+        for prefix in ("\\\\?\\", "\\\\.\\"):
+            for rest in ("\\AGENTS.md", "\\.claude\\newfile", "\\.agents\\hooks.json", "\\.codex\\x"):
+                for key in ("pre_tool_write_file", "pre_tool_edit_file"):
+                    self.assert_deny(self.edit(key, prefix + base + rest, env=self.WORKER), "control plane")
+            self.assert_ask(self.edit("pre_tool_write_file", prefix + base + "\\src\\a.py", env=self.WORKER))
+        for rest in ("\\AGENTS.md:review", "\\AGENTS.md::$DATA", "\\CLAUDE.md::$DATA", "\\.claude::$INDEX_ALLOCATION\\newfile",
+                     "\\.agents\\x:s", "\\.codex\\x::$DATA"):  # NTFS streams, files that do not exist yet
+            for key in ("pre_tool_write_file", "pre_tool_edit_file"):
+                self.assert_deny(self.edit(key, base + rest, env=self.WORKER), "control plane")
+                self.assert_deny(self.edit(key, "\\\\?\\" + base + rest, env=self.WORKER), "control plane")
+        for rest in ("\\src\\a.py:s", "\\src\\a.py::$DATA", "\\docs\\AGENTS.md::$DATA"):
+            self.assert_ask(self.edit("pre_tool_write_file", base + rest, env=self.WORKER))
+        self.agy("pre_invocation", cid="orch")
+        self.assert_ask(self.edit("pre_tool_write_file", "\\\\?\\" + base + "\\AGENTS.md", cid="orch"))
+        self.assert_ask(self.edit("pre_tool_write_file", base + "\\AGENTS.md::$DATA", cid="orch"))
+
+    def test_edit_tools_are_not_edits_on_the_other_hosts(self):
+        for tool in ("write_file", "edit_file"):
+            for host in ("claude", "codex"):
+                payload = {"session_id": "g", "agent_id": "a1", "cwd": self.work, "tool_name": tool,
+                           "tool_input": {"Path": self.work + "/.claude/x", "file_path": ""}}
+                r = self.run_guard("PreToolUse", payload, host=host)
+                self.assertEqual((r.returncode, r.stdout), (0, ""), (tool, host))
+        # the Claude and Codex tool names keep counting on every host, agy included (they did before)
+        self.assertEqual(role_guard.edit_paths("write_file", {"Path": "a"}, "agy"), ["a"])
+        self.assertEqual(role_guard.edit_paths("write_file", {"Path": "a"}, "claude"), [])
+        self.assertEqual(role_guard.edit_paths("write_file", {"Path": "a"}), [])
+        self.assertEqual(role_guard.edit_paths("Edit", {"file_path": "b"}, "agy"), ["b"])
+        self.assertEqual(role_guard.edit_paths("Edit", {"file_path": "b"}, "codex"), ["b"])
+        self.assertEqual(role_guard.edit_paths("Edit", {"file_path": "b"}), ["b"])
+
+    def test_edit_calls_without_a_usable_path_are_not_judged(self):
+        for path in (7, None, "", ["AGENTS.md"], {"a": 1}, True):
+            for key in ("pre_tool_write_file", "pre_tool_edit_file"):
+                p = self.payload(key)
+                p["toolCall"]["args"]["Path"] = path
+                self.assert_ask(self.run_guard("PreToolUse", p, host="agy", env=self.WORKER))
+        p = self.payload("pre_tool_write_file")
+        del p["toolCall"]["args"]["Path"]
+        self.assert_ask(self.run_guard("PreToolUse", p, host="agy", env=self.WORKER))
+
+    def test_edit_decision_is_never_allow_and_errors_ask(self):
+        self.agy("pre_invocation", cid="w2", lastUserInput="HARNESS ROLE: DELEGATE\nx")
+        raw = json.dumps(dict(self.payload("pre_tool_write_file", "w2"), toolCall={
+            "name": "write_file", "id": "x", "args": {"Path": self.work + "/.claude/x", "Content": "x"}}))
+        code, out, err = self.in_process("PreToolUse", raw)
+        self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
+        # a guard bug while judging the path gives ask (M5 decision 1), never allow
+        with mock.patch.object(role_guard, "control_plane_path", side_effect=RuntimeError("boom")):
+            code, out, err = self.in_process("PreToolUse", raw)
+        self.assertEqual((code, json.loads(out)), (0, {"decision": "ask"}))
+        self.assertIn("RuntimeError: boom", err)
+        # a payload the hook cannot read
+        self.assert_ask(self.run_guard("PreToolUse", host="agy", raw="not json"))
+
+    def test_edit_in_a_worktree_judges_both_trees(self):
+        main, wt = os.path.join(self._tmp.name, "main"), os.path.join(self._tmp.name, "wt")
+        os.makedirs(main)
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", main]
+        subprocess.run(git + ["init", "-q"], check=True)
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "i"], check=True)
+        subprocess.run(git + ["worktree", "add", "-q", "-b", "wt", wt], check=True)
+        os.makedirs(os.path.join(wt, "sub"))
+        # the guard of a worktree worker is the main tree's (an absolute path): INSTALL_ROOT is the main tree
+        def judge(path):
+            p = role_guard.agy_internal(self.payload("pre_tool_edit_file", cwd=os.path.join(wt, "sub")))
+            p["tool_input"]["Path"] = path
+            try:
+                role_guard.on_pre_tool(p, "agy", worker=True)
+            except role_guard.Denied as d:
+                return str(d)
+            return None
+        with mock.patch.object(role_guard, "INSTALL_ROOT", main):
+            for path in (os.path.join(wt, ".agents", "hooks.json"), os.path.join(main, ".claude", "x"),
+                         os.path.join(wt, "AGENTS.md"), "../.claude/x"):  # the last one: from wt/sub up to wt
+                self.assertIn("control plane", judge(path) or "", path)
+            for path in (os.path.join(wt, "src", "a.py"), os.path.join(wt, "sub", "AGENTS.md"), "AGENTS.md",
+                         os.path.join(main, "src", "a.py")):  # sub/AGENTS.md is not the root file
+                self.assertIsNone(judge(path), path)
 
     def test_pre_tool_use_without_a_record_decides_and_records(self):
         # PreInvocation hook failed or never ran: the subagent's first sign is a PreToolUse with an empty input

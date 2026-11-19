@@ -1,5 +1,5 @@
 {
-  "_note": "agy 1.5.10 hook payloads. _source says whether the shape was measured or rebuilt from the written record of an experiment. Placeholders: <workspace>, <home>, <cid> are replaced by the tests.",
+  "_note": "agy 1.5.10 hook payloads (the write_file and edit_file entries: agy 1.5.11). _source says whether the shape was measured or rebuilt from the written record of an experiment. Placeholders: <workspace>, <home>, <cid> are replaced by the tests.",
   "session_start": {
     "_source": "measured (headless agy 1.5.10; personal paths replaced by placeholders)",
     "payload": {
@@ -92,6 +92,42 @@
         "args": {"Model": "flash", "Prompt": "touch g5_sub", "Role": "worker", "TypeName": "default"},
         "id": "call_2",
         "name": "invoke_subagent"
+      },
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_tool_write_file": {
+    "_source": "reconstructed from experiments.md U6 I7 (agy 1.5.11, Windows: write_file has Path, an absolute path, and Content) and home test G3/G4 (model self-report: Overwrite, Append and ArtifactMetadata also exist; the value shape of ArtifactMetadata is a guess); the frame is the measured run_command payload",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreToolUse",
+      "lastUserInput": "Reply with exactly: OK",
+      "modelName": "gemini-3.8-flash-low",
+      "toolCall": {
+        "args": {"Path": "<workspace>/src/a.py", "Content": "x\n", "Overwrite": true, "Append": false, "ArtifactMetadata": {}},
+        "id": "call_4",
+        "name": "write_file"
+      },
+      "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
+      "workspacePaths": ["<workspace>"]
+    }
+  },
+  "pre_tool_edit_file": {
+    "_source": "reconstructed from experiments.md U6 I7 (agy 1.5.11, Windows: edit_file has Path, an absolute path, Target and Replacement) and home test G3/G4 (model self-report: ArtifactMetadata also exists; its value shape is a guess); the frame is the measured run_command payload",
+    "payload": {
+      "artifactDirectoryPath": "<home>/.gemini/antigravity-cli/brain/<cid>",
+      "conversationId": "<cid>",
+      "cwd": "<workspace>",
+      "hookEventName": "PreToolUse",
+      "lastUserInput": "Reply with exactly: OK",
+      "modelName": "gemini-3.8-flash-low",
+      "toolCall": {
+        "args": {"Path": "<workspace>/src/a.py", "Target": "old", "Replacement": "new", "ArtifactMetadata": {}},
+        "id": "call_5",
+        "name": "edit_file"
       },
       "transcriptPath": "<home>/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript_full.jsonl",
       "workspacePaths": ["<workspace>"]

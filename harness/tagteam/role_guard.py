@@ -9,6 +9,7 @@ Codex CLI 0.169.0 ignores exit 2 from PreToolUse hooks, so a Codex deny is JSON 
 """
 import datetime
 import json
+import ntpath
 import os
 import re
 import sys
@@ -32,6 +33,9 @@ DELEGATE_TOOLS = {"Agent", START_SESSION} | SPAWN_TOOLS
 # (the other names come from agy's changelog).
 AGY_SHELL_TOOLS = {"run_command"}
 AGY_DELEGATE_TOOLS = {"invoke_subagent", "define_subagent", "run_workflow", "swarm"}
+# agy edit tools and the argument that holds the absolute path [measured: agy 1.5.11, Windows, headless;
+# the other arguments (Overwrite, Append, ArtifactMetadata, Content, Target, Replacement) are not judged]
+AGY_EDIT_TOOLS = {"write_file": "Path", "edit_file": "Path"}
 EDIT_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
 PATCH_TOOLS = {"apply_patch"}
 PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): *(.+?)\s*$", re.M)
@@ -341,7 +345,7 @@ def on_pre_tool(payload, host, worker=None, why=None):
 
     # [role] Workers may not edit the control plane (plain edit tools only; shell writes are not seen).
     if worker:
-        hit = control_plane_path(edit_paths(tool, tool_input), payload)
+        hit = control_plane_path(edit_paths(tool, tool_input, host), payload)
         if hit:
             block("workers may not edit the control plane (%s)" % hit)
 
@@ -365,9 +369,12 @@ def custom_agents(payload):
     return names
 
 
-def edit_paths(tool, tool_input):
-    if tool in EDIT_TOOLS:
-        path = tool_input.get(EDIT_TOOLS[tool])
+def edit_paths(tool, tool_input, host=None):
+    """The paths an edit tool call writes. The Claude and Codex tool names count on every host; the agy names
+    (write_file, edit_file) only on host agy."""
+    keys = dict(EDIT_TOOLS, **AGY_EDIT_TOOLS) if host == "agy" else EDIT_TOOLS
+    if tool in keys:
+        path = tool_input.get(keys[tool])
         return [path] if isinstance(path, str) and path else []
     if tool in PATCH_TOOLS:
         text = tool_input.get("command", tool_input.get("patch", tool_input.get("input", "")))
@@ -377,24 +384,71 @@ def edit_paths(tool, tool_input):
     return []
 
 
+def plain_windows_path(path):
+    r"""A Windows extended-length or device path without its prefix: \\?\D:\x and \\.\D:\x -> D:\x,
+    \\?\UNC\srv\share\x -> \\srv\share\x. Any other path comes back unchanged. relpath takes the prefixed
+    and the plain spelling of one folder for two drives, and realpath keeps a prefix it was given.
+    The prefix also hides a name that ends in a dot or a space, which Windows would drop from a plain path
+    (\\?\D:\repo\AGENTS.md. is a different file); after stripping, such a path is judged as AGENTS.md. That
+    is a wider judgment by design: nobody names files like that in normal work."""
+    p = path.replace("/", "\\")
+    if p[:4] in ("\\\\?\\", "\\\\.\\"):
+        rest = p[4:]
+        if rest[:4].upper() == "UNC\\":
+            return "\\\\" + rest[4:]
+        if len(rest) >= 2 and rest[1] == ":" and rest[0].isalpha():
+            return rest
+    return path
+
+
+def without_streams(path):
+    """A Windows path without NTFS stream suffixes: name:stream, name:stream:$TYPE and name::$DATA are all
+    the file `name` (and `.claude::$INDEX_ALLOCATION` is the folder `.claude`). Only the part after the drive
+    or share is cut, so the colon of `D:` is not taken for a stream."""
+    drive, tail = ntpath.splitdrive(path)
+    return drive + "\\".join(part.split(":", 1)[0] for part in tail.split("\\"))
+
+
+def spellings(path):
+    """The ways one path can be written: normalised, with links, junctions and short names resolved
+    (realpath does not need the file to exist: it resolves the part that does), and on Windows also without
+    an extended-length or device prefix (plain_windows_path) and without stream suffixes (without_streams).
+    A path the system cannot resolve keeps its normalised form only, so a strange path is still judged."""
+    forms = {os.path.normpath(path)}
+    try:
+        forms.add(os.path.normpath(os.path.realpath(path)))
+    except (OSError, ValueError):
+        pass
+    if os.name == "nt":  # on other systems such names are ordinary file names
+        for form in list(forms):
+            other = without_streams(plain_windows_path(form))
+            if other != form:
+                forms |= spellings(other)
+    return forms
+
+
 def control_plane_path(paths, payload):
-    """The first path inside the control plane of the project root (git top of cwd, or cwd) or the install root."""
+    """The first path inside the control plane of the project root (git top of cwd, or cwd) or the install root.
+
+    Every path and every root is compared in both spellings (spellings()): a project opened through a link
+    (macOS /var -> /private/var) has a git top and a payload cwd that name one folder differently. Any pair
+    that lands in the control plane counts, so this only ever finds more than a plain comparison."""
     if not paths:
         return None
     cwd = payload.get("cwd") or os.getcwd()
-    roots = {os.path.normpath(state._git(cwd, "rev-parse", "--show-toplevel") or cwd), os.path.normpath(INSTALL_ROOT)}
+    roots = spellings(state._git(cwd, "rev-parse", "--show-toplevel") or cwd) | spellings(INSTALL_ROOT)
     for path in paths:
-        full = os.path.normpath(path if os.path.isabs(path) else os.path.join(cwd, path))
-        for root in roots:
-            try:
-                rel = os.path.relpath(full, root)
-            except ValueError:  # another drive (Windows)
-                continue
-            parts = rel.replace("\\", "/").lower().split("/")
-            if parts[0] == ".." or parts[0] == ".":
-                continue
-            if parts[0] in CONTROL_DIRS or (len(parts) == 1 and parts[0] in CONTROL_FILES):
-                return path
+        for full in spellings(path if os.path.isabs(path) else os.path.join(cwd, path)):
+            for root in roots:
+                try:
+                    rel = os.path.relpath(full, root)
+                except ValueError:  # another drive (Windows)
+                    continue
+                parts = rel.replace("\\", "/").lower().split("/")
+                if parts[0] == ".." or parts[0] == ".":
+                    continue
+                if parts[0] in CONTROL_DIRS or (len(parts) == 1 and parts[0] in CONTROL_FILES):
+                    return path
     return None
 
 
