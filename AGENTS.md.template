@@ -131,9 +131,8 @@ runs when they share no files. Record which units a review covers.
   through an escalation request (`hosts.md`); if it is not approved, report the unit as
   verified but not committed.
 - Push follows `Push mode` in Project policy:
-  - `solo` (default): the orchestrator pushes verified commits to the existing
-    upstream and reports.
-  - `team`: commit only; ask the user before each push.
+  - `team` (default, also when the line is missing): commit only; ask the user before each push.
+  - `solo`: the orchestrator pushes verified commits to the existing upstream and reports.
 - Releases and tags only when the user asks.
 - Ask the user before force push, history rewrite, deleting a branch or remote,
   or adding a remote. These cannot be undone from a local clone.
@@ -173,5 +172,5 @@ it can. Untagged rules are harness structure.
 - Verification commands: TODO (exact commands and what counts as passing).
 - Conventions: TODO (paths to existing project guidance).
 - Protected scope: TODO (files or data workers must not touch; extra reviews required).
-- Push mode: solo (change to `team` when several people push to this repository).
+- Push mode: team (change to `solo` to let the orchestrator push verified commits itself).
 - Model overrides: `.claude/tagteam/models.local.json` (per machine; see the `.example`).
