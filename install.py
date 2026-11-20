@@ -33,8 +33,6 @@ except ImportError:  # 3.9 and 3.10 (Apple's /usr/bin/python3): trust_levels() r
     tomllib = None
 
 POLICY_MARK = "## Project policy"
-VENDORS = ("claude", "openai", "google")
-TIERS = ("none", "free", "pro", "max")
 
 
 class Report:
@@ -1040,19 +1038,6 @@ def ensure_claude_md(rep, src, target):
         rep.add("kept", "CLAUDE.md")
 
 
-def ask_tiers():
-    plans = {}
-    for v in VENDORS:
-        while True:
-            ans = input(f"Plan tier for {v} ({'/'.join(TIERS)}) [pro]: ").strip().lower()
-            if not ans:  # Enter keeps the default (an unset vendor counts as pro)
-                break
-            if ans in TIERS:
-                plans[v] = ans
-                break
-    return plans
-
-
 LOCAL_IGNORES = (".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", ".claude/tagteam/install.local.json",
                  HOOKS_REL.as_posix(), AGY_HOOKS_REL)
 STATE_IGNORE = ".tagteam/"
@@ -1191,7 +1176,7 @@ def install_codex_hooks(rep, hooks, target):
               "preview the fix with: python install.py %s --repair-hooks" % (err or f"{len(drift)} difference(s)", target))
 
 
-def install(target, source, interactive):
+def install(target, source):
     rep = Report()
     h = source / "harness"
     settings = plan_claude_settings(source, target)  # read, checked and merged before the first write
@@ -1215,10 +1200,7 @@ def install(target, source, interactive):
     if not (target / local).exists():
         example = next((p for p in (h / "tagteam" / "models.local.json.example",
                                     source / "models.local.json.example") if p.is_file()), None)
-        if interactive:
-            data = (json.dumps({"plans": ask_tiers()}, indent=2) + "\n").encode("utf-8")
-            put(rep, target, local, data)
-        elif example:
+        if example:  # a plans block in an existing file stays; the installer writes none and asks nothing
             put(rep, target, local, example.read_bytes())
     ensure_gitignore(rep, target)
     write_claude_settings(rep, settings, target)  # last: state.py is in place, .tagteam/ is ignored, a failure stops nothing else
@@ -2387,6 +2369,16 @@ class Scheduler:
         dirs = [os.path.dirname(f) for f in files] + [os.path.dirname(r) for r in runtimes if r]             + [os.path.dirname(self.argv[0])] + SYSTEM_PATH.split(":")
         return ":".join(dict.fromkeys(d for d in dirs if d))
 
+    def is_registered(self):
+        """Whether the weekly check is registered now (a query that changes nothing). Raises CronReadError on linux when the
+        crontab cannot be read."""
+        if self.plat == "windows":
+            return self.runner(["schtasks", "/Query", "/TN", self.name])[0] == 0
+        if self.plat == "macos":
+            return self.runner(["launchctl", "print", f"{self._gui()}/net.tagteam.{self.name}"])[0] == 0
+        old, keep = self._cron()
+        return len(keep) != len(old)
+
     def log_path(self):
         state = installed_state_dir(self.target)
         return state / "model-update.log" if state else None
@@ -2461,20 +2453,21 @@ class Scheduler:
             log.parent.mkdir(parents=True, exist_ok=True)  # the shell opens the log before the job could create its folder
         return self.run(["crontab", "-"], "\n".join(self._cron()[1] + [line]) + "\n")[0]
 
-    def unschedule(self):
+    def unschedule(self, was_registered=False):
         try:
             rc = getattr(self, "_del_" + self.plat)()
         except CronReadError as e:
             print("error: %s" % e, file=sys.stderr)
             return 1
-        print(("removed " if rc == 0 else "not registered (nothing to remove): ") + self.name)
+        print(("removed " if rc == 0 else "removal FAILED, still registered: " if was_registered
+               else "not registered (nothing to remove): ") + self.name)
         state = installed_state_dir(self.target)
         for fn in PROPOSAL_FILES if state else ():
             if (state / fn).exists():
                 print(("  [dry-run] would delete " if self.dry else "  deleted ") + str(state / fn))
                 if not self.dry:
                     (state / fn).unlink()
-        return 0
+        return int(was_registered and rc != 0)
 
     def _del_windows(self):
         return self.run(["schtasks", "/Delete", "/TN", self.name, "/F"])[0]
@@ -2494,7 +2487,84 @@ class Scheduler:
         return self.run(["crontab", "-"], "\n".join(keep) + "\n" if keep else "")[0]
 
 
-def main(argv=None, runner=run_cmd, plat=None):
+MODEL_CHECK_LINE = re.compile(r"[-*][ \t]*Model[ \t]+list[ \t]+check[ \t]*:[ \t]*(\S+)", re.I)
+HEADING = re.compile(r" {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*")
+FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+SKIP_SCHEDULER_ENV = "TAGTEAM_SKIP_SCHEDULER"  # set (to anything): install and --update leave the scheduler alone (CI, tests)
+
+
+def policy_lines(text):
+    """The lines of the `## Project policy` section of an AGENTS.md: from that heading to the next heading of the same or a
+    higher level; fenced code blocks (examples, quotations) neither count nor end it."""
+    lines, fence, level = [], None, None
+    for line in text.splitlines():
+        fenced = FENCE.match(line)
+        if fence:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}[ \t]*", line):
+                fence = None
+            continue
+        if fenced:
+            fence = fenced.group(1)
+            continue
+        heading = HEADING.fullmatch(line)
+        if heading and level is None and heading.group(1) == "##" and heading.group(2) == "Project policy":
+            level = len(heading.group(1))
+        elif heading and level is not None and len(heading.group(1)) <= level:
+            break
+        elif level is not None:
+            lines.append(line)
+    return lines
+
+
+def model_check_mode(target):
+    """('weekly' or 'off', message or None) from the `Model list check:` line of the Project policy section of the project's
+    AGENTS.md. Weekly when the line or the file is missing, the file cannot be read, or the value is not weekly or off."""
+    try:
+        text = (target / "AGENTS.md").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "weekly", None
+    except (OSError, UnicodeDecodeError) as exc:
+        return "weekly", f"note: AGENTS.md cannot be read ({type(exc).__name__}); the model list check follows its default, weekly"
+    found = next((m for m in (MODEL_CHECK_LINE.match(line.lstrip()) for line in policy_lines(text)) if m), None)
+    if not found:
+        return "weekly", None
+    word = found.group(1).strip("`.,;:()*").lower()
+    if word in ("weekly", "off"):
+        return word, None
+    return "weekly", f"warning: AGENTS.md: unknown Model list check value {found.group(1)[:30]!r} (use weekly or off); using weekly"
+
+
+def apply_model_check(target, plat, runner):
+    """After an install or --update: register the weekly model-list check when the project's policy says weekly and it is
+    not registered, remove it when the policy says off and it is. Nothing changes when it already is as the policy says.
+    A failure is a warning: the install has succeeded."""
+    if os.environ.get(SKIP_SCHEDULER_ENV):
+        print(f"note: the weekly model-list check was left alone ({SKIP_SCHEDULER_ENV} is set)")
+        return
+    mode, message = model_check_mode(target)
+    if message:
+        print(message, file=sys.stderr if message.startswith("warning") else sys.stdout)
+    if not (target / COLLECTOR_REL).is_file():
+        return
+    try:
+        sched = Scheduler(target, plat, runner)
+        registered = sched.is_registered()
+        if mode == "weekly" and not registered and sched.schedule() != 0:
+            print("warning: the weekly model-list check could not be scheduled; install.py --schedule retries it, "
+                  "and `Model list check: off` in AGENTS.md stops these attempts", file=sys.stderr)
+        elif mode == "off" and registered:
+            failed = sched.unschedule(was_registered=True) != 0
+            if sched.is_registered():
+                print(f"warning: the weekly model-list check {sched.name} is STILL registered (it could not be removed: "
+                      f"permission?); remove it by hand, or run install.py {target} --unschedule", file=sys.stderr)
+            elif failed:
+                print(f"warning: removal of the weekly model-list check {sched.name} failed; "
+                      "registration could not be confirmed; check the scheduler manually", file=sys.stderr)
+    except (CronReadError, OSError, subprocess.SubprocessError) as exc:
+        print(f"warning: the weekly model-list check was not changed ({type(exc).__name__}: {exc})", file=sys.stderr)
+
+
+def main(argv=None, runner=None, plat=None):
     ap = argparse.ArgumentParser(description="Install, update or check tagteam in a project.")
     ap.add_argument("target")
     ap.add_argument("--update", action="store_true", help="re-apply files, preserving local content")
@@ -2507,7 +2577,7 @@ def main(argv=None, runner=run_cmd, plat=None):
     ap.add_argument("--unschedule", action="store_true", help="remove the weekly check and its proposal files")
     ap.add_argument("--dry-run", action="store_true", help="with --schedule/--unschedule: print, change nothing")
     ap.add_argument("--source", default=str(Path(__file__).resolve().parent))
-    ap.add_argument("--yes", action="store_true", help="non-interactive")
+    ap.add_argument("--yes", action="store_true", help="with --repair-hooks: write (the installer asks nothing)")
     a = ap.parse_args(argv)
     if a.dry_run and not (a.schedule or a.unschedule):
         ap.error("--dry-run needs --schedule or --unschedule")
@@ -2518,6 +2588,7 @@ def main(argv=None, runner=run_cmd, plat=None):
     if a.repair_hooks and (a.check or a.schedule or a.unschedule or a.update):
         ap.error("--repair-hooks stands alone (add --yes to write)")
     target, source = Path(a.target).resolve(), Path(a.source).resolve()
+    runner = runner or run_cmd  # looked up now, so that a test can replace it
     sched = Scheduler(target, plat, runner, a.dry_run)
     if a.check:
         return check(target, source, a.host, a.live)
@@ -2528,11 +2599,11 @@ def main(argv=None, runner=run_cmd, plat=None):
     if not (source / "harness").is_dir():
         print(f"error: no harness/ directory under source {source}", file=sys.stderr)
         return 1
-    interactive = sys.stdin.isatty() and not a.yes
-    if not (a.schedule and not a.update and (target / COLLECTOR_REL).is_file()) and not a.dry_run:
+    installed = not (a.schedule and not a.update and (target / COLLECTOR_REL).is_file()) and not a.dry_run
+    if installed:
         target.mkdir(parents=True, exist_ok=True)
         try:
-            rep = install(target, source, interactive)
+            rep = install(target, source)
         except ClaudeSettingsError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -2541,8 +2612,8 @@ def main(argv=None, runner=run_cmd, plat=None):
         migrate_state(target)
         ensure_bench(target)
         ensure_available(target)
-    if not a.schedule and interactive and not a.update:
-        a.schedule = input("Register a weekly model-list check (scheduled task, no LLM)? [y/N]: ").strip().lower() == "y"
+    if installed and not a.schedule:
+        apply_model_check(target, plat, runner)
     if a.schedule:
         if not a.dry_run and not (target / COLLECTOR_REL).is_file():
             print(f"error: {COLLECTOR_REL} is not installed; cannot schedule", file=sys.stderr)

@@ -181,4 +181,5 @@ it can. Untagged rules are harness structure.
 - Conventions: TODO (paths to existing project guidance).
 - Protected scope: TODO (files or data workers must not touch; extra reviews required).
 - Push mode: team (change to `solo` to let the orchestrator push verified commits itself).
+- Model list check: weekly (set to `off` to keep this machine from scheduling it).
 - Model overrides: `.claude/tagteam/models.local.json` (per machine; see the `.example`).

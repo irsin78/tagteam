@@ -25,6 +25,56 @@ sys.path.insert(0, str(INSTALL.parent))
 import install  # noqa: E402
 
 REAL_PROBE = install.probe_cli  # the tests replace install.probe_cli with a fake; one test needs the real one
+REAL_APPLY = install.apply_model_check  # the weekly-check step of install; the tests below the policy class opt in to it
+_guards = []
+REAL_POPEN = subprocess.Popen
+
+
+def guarded_popen(argv, *args, **kwargs):
+    executable = kwargs.get("executable") or (argv[0] if isinstance(argv, (list, tuple)) else argv)
+    if Path(executable).stem.lower() in ("schtasks", "launchctl", "crontab"):
+        raise AssertionError("real scheduler command forbidden in tests")
+    return REAL_POPEN(argv, *args, **kwargs)
+
+
+# Guard inside the child too: parent mocks are not inherited by a Python subprocess.
+SCRIPT_ENTRY = '''import runpy, subprocess, sys
+from pathlib import Path
+real_popen = subprocess.Popen
+def guarded_popen(argv, *args, **kwargs):
+    executable = kwargs.get("executable") or (argv[0] if isinstance(argv, (list, tuple)) else argv)
+    if Path(executable).stem.lower() in ("schtasks", "launchctl", "crontab"):
+        raise AssertionError("real scheduler command forbidden in tests")
+    return real_popen(argv, *args, **kwargs)
+subprocess.Popen = guarded_popen
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+'''
+
+
+def run_script(script, *args):
+    return subprocess.run([sys.executable, "-c", SCRIPT_ENTRY, str(script), *map(str, args)],
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                          env=dict(os.environ, **{install.SKIP_SCHEDULER_ENV: "1"}), timeout=120)
+
+
+def setUpModule():
+    """No test may register, query or remove a real scheduled task (this machine has real ones): main() runs no scheduler
+    step unless a test restores REAL_APPLY and hands main its own runner; the default command runner refuses; and a process
+    started by a test (the installer as a script) inherits TAGTEAM_SKIP_SCHEDULER."""
+    for guard in (mock.patch.object(install, "apply_model_check", lambda *a, **k: None),
+                  mock.patch.object(install, "run_cmd", side_effect=AssertionError("real command runner forbidden in tests")),
+                  mock.patch.object(subprocess, "Popen", guarded_popen),
+                  mock.patch.dict(os.environ, {install.SKIP_SCHEDULER_ENV: "1"})):  # inherited by every subprocess a test starts
+        guard.start()
+        _guards.append(guard)
+
+
+def tearDownModule():
+    while _guards:
+        _guards.pop().stop()
+
+
 
 STUB = '''import json, os, sys
 event = sys.argv[1]
@@ -93,7 +143,7 @@ def build_source(root, guard=STUB):
         "tagteam/state.py": REAL_STATE.read_text(encoding="utf-8"),
         "tagteam/models.json": "{}",
         "tagteam/models_collect.py": FAKE_COLLECT,
-        "tagteam/models.local.json.example": '{"plans": {}}',
+        "tagteam/models.local.json.example": '{"models": {}, "roles": {}, "tasks": {}}',
         "codex/hooks.json": json.dumps(HOOKS_TEMPLATE),
         "codex/agents/b.toml": "x = 1",
         "agy/hooks.json": REAL_AGY_HOOKS.read_text(encoding="utf-8"),
@@ -1566,7 +1616,8 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(avail_log.read_text().splitlines(), ["--write-available --timeout 30"])
         local = json.loads((self.dst / ".claude/tagteam/models.local.json").read_text(encoding="utf-8"))
         self.assertEqual(local["available"], {"openai": {"ids": ["m1"]}})
-        self.assertEqual(local["plans"], {})  # other keys kept
+        self.assertEqual(local["models"], {})  # other keys kept
+        self.assertNotIn("plans", local)  # the installer writes no plans
         self.assertIn("available model lists written", out)
         self.run_install("--update")  # lists exist: not asked again
         self.assertEqual(len(avail_log.read_text().splitlines()), 1)
@@ -1599,7 +1650,8 @@ class InstallTests(unittest.TestCase):
         os.environ["TAGTEAM_AA_API_KEY"] = "k-123"
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(install.main([str(self.dst), "--check"]), 0)
-            install.main([str(self.dst), "--source", str(self.src), "--schedule", "--dry-run"])
+            self.assertEqual(install.main([str(self.dst), "--source", str(self.src), "--schedule", "--dry-run"],
+                                          runner=lambda argv, input_text=None: (1, "no crontab")), 0)
         self.assertFalse(self.bench.exists() or self.calls.exists())
 
     def test_check_passes_with_stub(self):
@@ -1808,10 +1860,28 @@ class InstallTests(unittest.TestCase):
     def test_check_fails_when_guard_missing(self):
         self.assertEqual(self.run_main("--check")[0], 1)
 
+    def test_no_test_can_reach_the_real_scheduler(self):
+        self.assertEqual(os.environ.get(install.SKIP_SCHEDULER_ENV), "1")  # what every subprocess of a test inherits
+        with self.assertRaisesRegex(AssertionError, "real command runner forbidden"):
+            install.run_cmd(["schtasks", "/Query"])
+        self.assertIsNone(install.apply_model_check(self.dst, "windows", None))
+        script = self.dst / "try-scheduler.py"
+        script.write_text("import os, subprocess, sys\nos.environ.pop('TAGTEAM_SKIP_SCHEDULER', None)\n"
+                          "subprocess.run([sys.argv[1], '/Query'])\n", encoding="utf-8")
+        for executable in ("schtasks", "launchctl", "crontab"):
+            with self.subTest(executable=executable):
+                with self.assertRaisesRegex(AssertionError, "real scheduler command forbidden"):
+                    subprocess.run([executable, "/Query"])
+                child = run_script(script, executable)
+                self.assertNotEqual(child.returncode, 0)
+                self.assertIn("real scheduler command forbidden", child.stderr)
+
     def test_cli_runs_as_script(self):
-        p = subprocess.run([sys.executable, str(INSTALL), str(self.dst), "--source", str(self.src),
-                            "--yes"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
-        self.assertEqual(p.returncode, 0, p.stderr)
+        for policy in ("weekly", "off"):
+            (self.dst / "AGENTS.md").write_text(f"## Project policy\n- Model list check: {policy}\n", encoding="utf-8")
+            p = run_script(INSTALL, self.dst, "--source", self.src, "--yes")
+            self.assertIn("left alone", p.stdout)
+            self.assertEqual(p.returncode, 0, p.stderr)
 
     # ---- M7 U3: Codex warnings (P1), .codex/hooks.json ignored and never untracked (P5), MAC19, P4, R3 ----------
 
@@ -3091,6 +3161,184 @@ class InstallRecordTests(unittest.TestCase):
             code, out, err = self.run_main("--yes", "--update")
         self.assertIn("cannot be checked", err)
         self.assertFalse(self.local.exists())
+
+
+class ModelCheckPolicyTests(unittest.TestCase):
+    """The installer asks nothing; the `Model list check:` line of the project's AGENTS.md decides about the weekly check."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name).resolve()
+        self.src = build_source(base / "src")
+        self.dst = base / "proj"
+        self.dst.mkdir()
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("TAGTEAM_AA_API_KEY", "TAGTEAM_CONFIG_DIR", "TAGTEAM_STATE_DIR", install.SKIP_SCHEDULER_ENV):
+            os.environ.pop(k, None)  # (the module sets the last one; this class tests the step, with a pretend scheduler)
+        for patch in (mock.patch.object(install, "apply_model_check", REAL_APPLY),
+                      mock.patch.object(install, "probe_cli", lambda argv, path: (0, ""))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.registered, self.calls, self.create_rc, self.delete_rc = False, [], 0, 0
+
+    def runner(self, argv, input_text=None):  # a pretend Windows scheduler: the only scheduler these tests may reach
+        self.calls.append(argv[:2])
+        if argv[:2] == ["schtasks", "/Query"]:
+            return (0 if self.registered else 1), ""
+        if argv[:2] == ["schtasks", "/Create"]:
+            self.registered = self.registered or self.create_rc == 0
+            return self.create_rc, "denied" if self.create_rc else ""
+        if argv[:2] == ["schtasks", "/Delete"]:
+            self.registered = self.registered and self.delete_rc != 0
+            return self.delete_rc, "ERROR: Access is denied." if self.delete_rc else ""
+        return 0, ""
+
+    def policy(self, line):
+        (self.dst / "AGENTS.md").write_text(f"# mine\n\n## Project policy\n\n{line}\n", encoding="utf-8")
+
+    def run_main(self, *extra, tty=False):
+        out, err = io.StringIO(), io.StringIO()
+        stdin = mock.Mock(isatty=lambda: tty)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(install.sys, "stdin", stdin), \
+                mock.patch("builtins.input", side_effect=AssertionError("the installer must not ask")):
+            code = install.main([str(self.dst), "--source", str(self.src), *extra], self.runner, "windows")
+        return code, out.getvalue(), err.getvalue()
+
+    def kinds(self):
+        return [c[1] for c in self.calls]
+
+    def test_nothing_is_asked_even_at_a_terminal_and_no_plans_are_written(self):
+        code, out, err = self.run_main(tty=True)
+        self.assertEqual(code, 0, err)
+        local = json.loads((self.dst / ".claude/tagteam/models.local.json").read_text(encoding="utf-8"))
+        self.assertNotIn("plans", local)
+        code, out, err = self.run_main("--update", tty=True)
+        self.assertEqual(code, 0, err)
+
+    def test_an_existing_plans_block_is_kept(self):
+        self.run_main()
+        path = self.dst / ".claude/tagteam/models.local.json"
+        path.write_text(json.dumps({"plans": {"google": "free"}}), encoding="utf-8")
+        self.run_main("--update")
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"plans": {"google": "free"}, "available": {"openai": {"ids": ["m1"]}}})
+
+    def test_weekly_is_the_default_and_registers_once(self):
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.kinds(), ["/Query", "/Create"])
+        self.assertIn("scheduled tagteam-models-", out)
+        self.calls.clear()
+        self.run_main("--update")
+        self.assertEqual(self.kinds(), ["/Query"])  # already registered: no change
+
+    def test_off_unregisters_and_keeps_it_off(self):
+        self.registered = True
+        self.policy("- MODEL LIST CHECK: Off (this machine does not schedule it)")  # case does not matter
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.kinds(), ["/Query", "/Delete", "/Query"])  # the last one confirms the removal
+        self.assertFalse(self.registered)
+        self.calls.clear()
+        self.run_main("--update")
+        self.assertEqual(self.kinds(), ["/Query"])
+
+    def test_only_the_project_policy_section_counts_and_code_blocks_do_not(self):
+        text = ("# Rules\n\n- Model list check: off\n\n## Project policy\n\n- Push mode: team\n```\n## Not a heading\n"
+                "- Model list check: off\n```\n### Detail\n{line}\n## Examples\n\n- Model list check: off\n")
+        for line, want in (("- Model list check: weekly", "weekly"), ("- no line here", "weekly"),
+                           ("- Model   list \t check :   Off", "off"), ("  * MODEL LIST CHECK: off", "off")):
+            (self.dst / "AGENTS.md").write_text(text.format(line=line), encoding="utf-8")
+            self.assertEqual(install.model_check_mode(self.dst), (want, None), line)
+        (self.dst / "AGENTS.md").write_text("## Project policy\n~~~\n- Model list check: off\n```\n- still inside\n~~~\n"
+                                            "- Model list check: weekly\n", encoding="utf-8")
+        self.assertEqual(install.model_check_mode(self.dst), ("weekly", None))
+        for text in ("Example: ## Project policy\n- Model list check: off\n",
+                     "### Project policy\n- Model list check: off\n",
+                     "```md\n## Project policy\n- Model list check: off\n```\n",
+                     "## Project policy\n````\n```\n- Model list check: off\n````\n",
+                     "## Project policy\n```\n```python\n- Model list check: off\n```\n"):
+            (self.dst / "AGENTS.md").write_text(text, encoding="utf-8")
+            self.assertEqual(install.model_check_mode(self.dst), ("weekly", None), text)
+        self.policy("- Model   list   check: off")  # as the installer reads it
+        self.registered = True
+        self.run_main()
+        self.assertEqual(self.kinds(), ["/Query", "/Delete", "/Query"])
+
+    def test_a_removal_that_fails_is_a_warning_that_says_the_task_is_still_registered(self):
+        self.registered, self.delete_rc = True, 1
+        self.policy("- Model list check: off")
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertIn("removal FAILED, still registered", out)
+        self.assertNotIn("nothing to remove", out)
+        self.assertIn("is STILL registered", err)
+        self.assertTrue(self.registered)
+        self.calls.clear()
+        with mock.patch.object(install.Scheduler, "is_registered", side_effect=[True, False]):
+            code, out, err = self.run_main("--update")
+        self.assertEqual(code, 0)
+        self.assertIn("removal of the weekly model-list check", err)
+        self.assertIn("failed", err)
+
+    def test_the_skip_flag_leaves_the_scheduler_alone(self):
+        with mock.patch.dict(os.environ, {install.SKIP_SCHEDULER_ENV: "1"}):
+            code, out, err = self.run_main()
+        self.assertEqual(code, 0, err)
+        self.assertIn("left alone", out)
+        self.assertEqual(self.calls, [])
+
+    def test_a_value_that_is_not_weekly_or_off_is_a_warning_and_means_weekly(self):
+        self.policy("- Model list check: sometimes")
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertIn("unknown Model list check value 'sometimes'", err)
+        self.assertEqual(self.kinds(), ["/Query", "/Create"])
+
+    def test_an_unreadable_agents_md_means_the_default_with_a_note(self):
+        (self.dst / "AGENTS.md").write_bytes(b"\xff\xfe## Project policy\n")
+        self.assertEqual(install.model_check_mode(self.dst)[0], "weekly")
+        self.assertIn("cannot be read (UnicodeDecodeError)", install.model_check_mode(self.dst)[1])
+        (self.dst / "AGENTS.md").unlink()
+        (self.dst / "AGENTS.md").mkdir()
+        self.assertIn("cannot be read", install.model_check_mode(self.dst)[1])
+        (self.dst / "AGENTS.md").rmdir()
+        self.assertEqual(install.model_check_mode(self.dst), ("weekly", None))  # no file: no note
+        for text, want in (("- Model list check: off\n", "weekly"),  # above the Project policy heading: not policy
+                           ("## Project policy\n- model list check: `off`.\n", "off"), ("## Project policy\n* Model list check: weekly\n", "weekly")):
+            (self.dst / "AGENTS.md").write_text(text, encoding="utf-8")
+            self.assertEqual(install.model_check_mode(self.dst)[0], want, text)
+
+    def test_a_failure_to_schedule_is_a_warning_and_the_install_goes_on(self):
+        self.create_rc = 1
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertIn("scheduling FAILED", out)
+        self.assertIn("the weekly model-list check could not be scheduled", err)
+        self.assertTrue((self.dst / ".claude/tagteam/role_guard.py").is_file())
+        with mock.patch.object(install.Scheduler, "is_registered", side_effect=OSError("no schtasks")):
+            code, out, err = self.run_main("--update")
+        self.assertEqual(code, 0)
+        self.assertIn("the weekly model-list check was not changed (OSError: no schtasks)", err)
+
+    def test_explicit_commands_stay_and_the_policy_is_not_applied_twice(self):
+        self.policy("- Model list check: off")
+        code, out, err = self.run_main("--schedule")  # explicit: schedules although the policy says off
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.kinds(), ["/Create"])
+        self.calls.clear()
+        self.assertEqual(self.run_main("--unschedule")[0], 0)
+        self.assertEqual(self.kinds(), ["/Delete"])
+
+    def test_dry_run_stays_a_preview(self):
+        self.run_main("--update")  # installed, weekly registered by the policy
+        self.calls.clear()
+        code, out, err = self.run_main("--schedule", "--dry-run")
+        self.assertEqual(code, 0, err)
+        self.assertIn("[dry-run]", out)
+        self.assertEqual(self.calls, [])
 
 
 OWN_HOOKS = {
