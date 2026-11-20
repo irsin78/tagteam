@@ -1533,7 +1533,8 @@ class InstallTests(unittest.TestCase):
         self.assertEqual((self.dst / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\nextra\n")
 
     def test_gitignore_lists_local_files_and_the_state_folder_in_every_project(self):
-        local = [".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", ".codex/hooks.json", ".agents/hooks.json"]
+        local = [".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", ".claude/tagteam/install.local.json",
+                 ".codex/hooks.json", ".agents/hooks.json"]
         self.run_install()
         text = (self.dst / ".gitignore").read_text(encoding="utf-8")
         for line in local + [".tagteam/"]:
@@ -2820,6 +2821,278 @@ class ScheduleTests(unittest.TestCase):
             self.assertIn(kw, text, kw)
 
 
+class InstallRecordTests(unittest.TestCase):
+    """install.json (tracked: which template) and install.local.json (ignored: this machine's checkout)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name).resolve()
+        self.src = build_source(self.base / "src")
+        self.dst = self.base / "proj"
+        self.dst.mkdir()
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("TAGTEAM_AA_API_KEY", "TAGTEAM_CONFIG_DIR", "TAGTEAM_STATE_DIR"):
+            os.environ.pop(k, None)
+        self.record, self.local = self.dst / install.RECORD_REL, self.dst / install.RECORD_LOCAL_REL
+
+    def git(self, *args, where=None):
+        out = subprocess.run(["git", "-C", str(where or self.src), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                              "-c", "commit.gpgsign=false", *args], check=True, capture_output=True, text=True)
+        return out.stdout.strip()
+
+    def make_repo(self, where=None):
+        where = where or self.src
+        self.git("init", "-q", where=where)
+        self.git("add", ".", where=where)
+        self.git("commit", "-q", "-m", "one", where=where)
+        return self.git("rev-parse", "HEAD", where=where)
+
+    def commit_again(self, where=None):
+        (where or self.src).joinpath("harness/skills/s1/SKILL.md").write_text("skill two", encoding="utf-8")
+        self.git("commit", "-q", "-am", "two", where=where)
+        return self.git("rev-parse", "HEAD", where=where)
+
+    def run_main(self, *argv, src=None):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = install.main([str(self.dst), "--source", str(src or self.src), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def rec(self, path=None):
+        return json.loads((path or self.record).read_text(encoding="utf-8"))
+
+    def test_the_record_holds_the_template_commit_and_this_machines_checkout(self):
+        first = self.make_repo()
+        code, out, err = self.run_main("--yes")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.rec(), {"template": {"commit": first, "tag": None, "describe": self.git("describe", "--always"),
+                                                   "dirty": False}})
+        self.assertEqual(self.rec(self.local), {"checkout": self.src.as_posix()})  # outside the project: absolute, with /
+        self.assertRegex(out, r"created\s+\.claude/tagteam/install\.json")
+        self.assertRegex(out, r"created\s+\.claude/tagteam/install\.local\.json")
+        ignored = (self.dst / ".gitignore").read_text(encoding="utf-8").split()
+        self.assertIn(install.RECORD_LOCAL_REL, ignored)
+        self.assertNotIn(install.RECORD_REL, ignored)  # install.json is committed
+        self.assertNotIn("\\\\", self.local.read_text(encoding="utf-8"))
+
+    def test_an_exact_tag_is_recorded_and_otherwise_null(self):
+        self.make_repo()
+        self.git("tag", "v1")
+        self.run_main("--yes")
+        self.assertEqual((self.rec()["template"]["tag"], self.rec()["template"]["describe"]), ("v1", "v1"))
+        self.commit_again()
+        self.run_main("--yes", "--update")
+        self.assertIsNone(self.rec()["template"]["tag"])
+        self.assertRegex(self.rec()["template"]["describe"], r"^v1-1-g[0-9a-f]+$")
+
+    def test_updates_keep_the_files_until_the_checkout_moves(self):
+        first = self.make_repo()
+        self.run_main("--yes")
+        before = (self.record.read_bytes(), self.local.read_bytes())
+        for _ in range(2):
+            code, out, err = self.run_main("--yes", "--update")
+            self.assertRegex(out, r"kept\s+\.claude/tagteam/install\.json")
+            self.assertRegex(out, r"kept\s+\.claude/tagteam/install\.local\.json")
+            self.assertEqual((self.record.read_bytes(), self.local.read_bytes()), before)
+        second = self.commit_again()
+        code, out, err = self.run_main("--yes", "--update")
+        self.assertEqual(self.rec()["template"]["commit"], second)
+        self.assertRegex(out, r"updated\s+\.claude/tagteam/install\.json")
+        self.assertRegex(out, r"kept\s+\.claude/tagteam/install\.local\.json")
+        self.assertNotIn("not newer", err)
+        self.git("reset", "-q", "--hard", first)  # the checkout went back
+        code, out, err = self.run_main("--yes", "--update")
+        self.assertEqual(code, 0)
+        self.assertIn("is not newer than the recorded", err)
+        self.assertEqual(self.rec()["template"]["commit"], first)
+
+    def test_a_template_that_is_not_a_git_checkout_gets_a_record_without_a_commit(self):
+        code, out, err = self.run_main("--yes")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.rec(), {"template": {"commit": None, "tag": None, "describe": None, "dirty": False}})
+        self.assertIn("not a git checkout", err)
+        self.make_repo()
+        with mock.patch.object(install, "git_says", return_value=(None, "", "")):  # git cannot be run at all
+            code, out, err = self.run_main("--yes", "--update")
+        self.assertEqual((code, self.rec()["template"]["commit"]), (0, None))
+
+    def test_uncommitted_changes_in_the_checkout_are_flagged(self):
+        self.make_repo()
+        (self.src / "harness/skills/s1/SKILL.md").write_text("edited", encoding="utf-8")
+        code, out, err = self.run_main("--yes")
+        self.assertTrue(self.rec()["template"]["dirty"])
+        self.assertTrue(self.rec()["template"]["describe"].endswith("-dirty"))
+        self.assertIn("uncommitted changes", err)
+
+    def test_a_checkout_inside_the_project_is_recorded_as_a_path_from_the_project(self):
+        inside = build_source(self.dst / "vendor/tagteam")
+        (inside / "install.py").write_text("# the installer", encoding="utf-8")
+        self.make_repo(inside)
+        code, out, err = self.run_main("--yes", src=inside)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.rec(self.local), {"checkout": "vendor/tagteam"})
+        self.assertNotIn(str(self.base), self.record.read_text(encoding="utf-8") + self.local.read_text(encoding="utf-8"))
+        code, out, err = self.run_main("--check", src=inside)
+        self.assertNotIn("holds no install.py", out)
+
+    def test_a_linked_record_file_is_refused_and_nothing_is_written(self):
+        (self.dst / ".claude/tagteam").mkdir(parents=True)
+        real = self.dst / "elsewhere.json"
+        real.write_text("{}", encoding="utf-8")
+        try:
+            os.link(real, self.record)
+        except OSError:
+            self.skipTest("cannot create hard links here")
+        before = {p.relative_to(self.dst).as_posix() for p in self.dst.rglob("*")}
+        code, out, err = self.run_main("--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("hard links; tagteam does not replace it; nothing was written", err)
+        self.assertEqual({p.relative_to(self.dst).as_posix() for p in self.dst.rglob("*")}, before)
+        self.assertEqual(real.read_text(encoding="utf-8"), "{}")
+
+    def check(self, *extra, src=None):
+        return self.run_main("--check", *extra, src=src)
+
+    def test_check_says_which_version_is_installed_and_how_far_the_checkout_is_ahead(self):
+        first = self.make_repo()
+        self.run_main("--yes")
+        code, out, err = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"note\s+installed [0-9a-f]{7} / checkout [0-9a-f]{7}\n")
+        self.commit_again()
+        out = self.check()[1]
+        self.assertRegex(out, r"installed [0-9a-f]{7} / checkout [0-9a-f]{7} \(1 commits newer\)")
+        self.assertIn(first[:7], out)
+
+    def test_check_warns_about_a_missing_record_and_a_checkout_that_moved_and_fails_on_a_broken_one(self):
+        self.make_repo()
+        self.run_main("--yes")
+        self.local.unlink()
+        out = self.check()[1]
+        self.assertIn("WARN     .claude/tagteam/install.local.json is missing; run install.py", out)
+        self.record.unlink()
+        out = self.check()[1]
+        self.assertIn("WARN     .claude/tagteam/install.json is missing; run install.py", out)
+        self.assertNotIn("installed ", out.split("check:")[0].replace("installed 0", ""))
+        self.local.write_text(json.dumps({"checkout": "nowhere/tagteam"}), encoding="utf-8")
+        out = self.check()[1]
+        self.assertRegex(out, r"WARN     .*install\.local\.json: checkout 'nowhere/tagteam' holds no install\.py")
+        other = build_source(self.base / "other")
+        (other / "install.py").write_text("# another checkout", encoding="utf-8")
+        self.local.write_text(json.dumps({"checkout": other.as_posix()}), encoding="utf-8")
+        self.assertRegex(self.check()[1], r"note\s+\.claude/tagteam/install\.local\.json names .*other; this check runs from")
+        self.record.write_text("{broken", encoding="utf-8")
+        code, out, err = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("ERROR    .claude/tagteam/install.json is not usable (JSONDecodeError); run install.py", out)
+        self.record.write_text('{"template": []}', encoding="utf-8")
+        self.assertEqual(self.check()[0], 1)
+
+    def test_check_rejects_an_install_json_without_the_required_fields(self):
+        self.make_repo()
+        self.run_main("--yes")
+        good = self.rec()["template"]
+        sha = "a" * 40
+        cases = [("null", {"template": None}, "template is not an object"), ("empty", {"template": {}}, "template.commit is missing"),
+                 ("no dirty", {"template": {k: v for k, v in good.items() if k != "dirty"}}, "template.dirty is missing"),
+                 ("short commit", {"template": dict(good, commit="abc")}, "template.commit has a wrong type or value"),
+                 ("commit number", {"template": dict(good, commit=5)}, "template.commit has a wrong type or value"),
+                 ("tag number", {"template": dict(good, tag=1)}, "template.tag has a wrong type or value"),
+                 ("dirty text", {"template": dict(good, dirty="no")}, "template.dirty has a wrong type or value"),
+                 ("no template", {"other": 1}, "is not usable (KeyError)"), ("a list", [], "is not usable (TypeError)")]
+        for name, data, why in cases:
+            with self.subTest(name):
+                self.record.write_text(json.dumps(data), encoding="utf-8")
+                code, out, err = self.check()
+                self.assertEqual(code, 1, out)
+                self.assertIn(why, out)
+                self.assertNotIn("installed None", out)
+        self.record.write_text(json.dumps({"template": dict(good, commit=sha, describe="x", tag=None)}), encoding="utf-8")
+        self.assertEqual(self.check()[0], 0)  # a well-formed record that this checkout does not know is not an error
+        self.record.write_text(json.dumps({"template": {"commit": None, "tag": None, "describe": None, "dirty": False}}), encoding="utf-8")
+        code, out, err = self.check()  # the documented record of a template that is not a git checkout
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"installed unknown / checkout")
+
+    def test_check_warns_about_an_unusable_install_local_json(self):
+        self.make_repo()
+        self.run_main("--yes")
+        for text in ('{"checkout": 3}', '{"checkout": ""}', "{}", "[1]", "{broken"):
+            self.local.write_text(text, encoding="utf-8")
+            code, out, err = self.check()
+            self.assertEqual(code, 0, out)
+            self.assertRegex(out, r"WARN     \.claude/tagteam/install\.local\.json (is not usable|cannot be read)", text)
+
+    def test_an_install_record_path_that_is_not_a_regular_file_stops_the_install_before_any_write(self):
+        (self.dst / ".claude/tagteam").mkdir(parents=True)
+        for kind in ("directory", "fifo"):
+            with self.subTest(kind):
+                if kind == "directory":
+                    self.record.mkdir()
+                else:
+                    self.record.rmdir()
+                    if not hasattr(os, "mkfifo"):
+                        self.skipTest("no FIFOs here")
+                    os.mkfifo(self.record)
+                before = {p.relative_to(self.dst).as_posix() for p in self.dst.rglob("*")}
+                code, out, err = self.run_main("--yes")
+                self.assertEqual(code, 1)
+                self.assertIn("is not a regular file; tagteam does not replace it; nothing was written", err)
+                self.assertEqual({p.relative_to(self.dst).as_posix() for p in self.dst.rglob("*")}, before)
+        if hasattr(os, "mkfifo"):  # --check must not wait on it either
+            self.assertIn("cannot be read (not a regular file)", self.check()[1])
+
+    def test_check_does_not_choke_on_a_directory_where_a_record_belongs(self):
+        (self.dst / ".claude/tagteam/install.json").mkdir(parents=True)
+        code, out, err = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("ERROR    .claude/tagteam/install.json cannot be read (not a regular file)", out)
+
+    def git_project(self):
+        self.git("init", "-q", where=self.dst)
+
+    def test_a_negated_ignore_rule_for_the_local_record_is_repaired(self):
+        self.make_repo()
+        self.git_project()
+        rule = install.RECORD_LOCAL_REL
+        (self.dst / ".gitignore").write_text(f"{rule}\n!{rule}\n", encoding="utf-8")
+        code, out, err = self.run_main("--yes")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(subprocess.run(["git", "-C", str(self.dst), "check-ignore", "-q", rule]).returncode, 0)
+        self.assertEqual((self.dst / ".gitignore").read_text(encoding="utf-8").splitlines()[-1], rule)
+
+    def test_a_rule_of_higher_precedence_is_reported(self):
+        self.make_repo()
+        self.git_project()
+        (self.dst / ".claude/tagteam").mkdir(parents=True)
+        (self.dst / ".claude/tagteam/.gitignore").write_text("!install.local.json\n", encoding="utf-8")
+        code, out, err = self.run_main("--yes")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"git still does not ignore {install.RECORD_LOCAL_REL}", err)
+
+    def test_a_tracked_local_record_is_left_alone_and_the_other_record_is_still_written(self):
+        self.make_repo()
+        self.git_project()
+        self.local.parent.mkdir(parents=True)
+        self.local.write_text('{"checkout": "committed/by/mistake"}\n', encoding="utf-8")
+        self.git("add", "-f", install.RECORD_LOCAL_REL, where=self.dst)
+        self.git("commit", "-q", "-m", "oops", where=self.dst)
+        code, out, err = self.run_main("--yes")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"{install.RECORD_LOCAL_REL} is tracked by git", err)
+        self.assertEqual(self.local.read_text(encoding="utf-8"), '{"checkout": "committed/by/mistake"}\n')
+        self.assertEqual(self.rec()["template"]["commit"], self.git("rev-parse", "HEAD"))
+        self.assertNotRegex(out, r"(created|updated|kept)\s+\.claude/tagteam/install\.local\.json")
+        with mock.patch.object(install, "git_tracking", return_value="unknown"):  # git cannot say: the same
+            self.local.unlink()
+            code, out, err = self.run_main("--yes", "--update")
+        self.assertIn("cannot be checked", err)
+        self.assertFalse(self.local.exists())
+
+
 OWN_HOOKS = {
     "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "./scripts/block-rm.sh --strict", "timeout": 5}]}],
     "PostToolUse": [{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "prettier --write"}]}],
@@ -3029,6 +3302,8 @@ class ClaudeSettingsMergeTests(unittest.TestCase):
         real, calls = install.file_link_problem, []
 
         def later_a_link(target, rel):
+            if rel != install.SETTINGS_REL:
+                return real(target, rel)
             calls.append(rel)
             return real(target, rel) if len(calls) == 1 else "is a link or resolves elsewhere"
         with mock.patch.object(install, "file_link_problem", later_a_link):

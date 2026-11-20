@@ -65,7 +65,7 @@ PRIORITY = [("exhausted", 3), ("git_head_moved", 7), ("control_plane_changed", 1
 # Setting files are also written by the host ("always allow") and the weekly model collector: a change only warns.
 CONTROL_HOOK_FILES = (".agents/hooks.json", ".codex/hooks.json")
 CONTROL_SETTING_FILES = (".claude/settings.local.json", ".claude/tagteam/models.local.json",
-                         ".claude/tagteam/bench.local.json")
+                         ".claude/tagteam/bench.local.json", ".claude/tagteam/install.local.json")
 TRUST_WARNING = re.compile(r"^.*Untrusted project-local configuration is disabled.*$", re.M)
 WINDOWS_SANDBOX = "unelevated"  # codex windows.sandbox default; models.local.json codex.windows_sandbox overrides it
 # The values Codex accepts: codex-cli 0.169.0 rejects others at start with

@@ -870,6 +870,144 @@ def write_claude_settings(rep, plan, target):
         rep.add("updated", SETTINGS_REL)
 
 
+# ---- the install record: which template this project has, and where this machine's checkout is -------------------
+
+RECORD_REL = ".claude/tagteam/install.json"  # tracked: the template commit (the same for everyone)
+RECORD_LOCAL_REL = ".claude/tagteam/install.local.json"  # git-ignored: this machine's checkout folder
+NO_VERSION = {"commit": None, "tag": None, "describe": None, "dirty": False}
+
+
+def template_version(source):
+    """{"commit", "tag" (exact tag or None), "describe", "dirty"} of the template checkout; NO_VERSION when git cannot tell
+    (not a work tree, git missing). Local git calls only."""
+    rc, commit, _ = git_says(source, "rev-parse", "HEAD")
+    if rc != 0 or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        return dict(NO_VERSION)
+    tag = git_says(source, "describe", "--tags", "--exact-match")
+    describe = git_says(source, "describe", "--tags", "--always", "--dirty")
+    status = git_says(source, "status", "--porcelain", "--", ".")
+    return {"commit": commit, "tag": tag[1] if tag[0] == 0 and tag[1] else None,
+            "describe": describe[1] if describe[0] == 0 and describe[1] else commit[:7], "dirty": status[0] == 0 and bool(status[1])}
+
+
+def read_record(target, rel, key):
+    """(value of key, None) from a record file, or (None, why): why is 'missing' or the reason it cannot be used. Only a
+    regular file of bounded size is read (a FIFO would block); a value that is null is a value."""
+    text, why = read_user_text(target / rel)
+    if why:
+        return None, "missing" if why == "not found" else f"cannot be read ({why})"
+    try:
+        return json.loads(text.lstrip("\ufeff"))[key], None
+    except (ValueError, KeyError, TypeError, RecursionError) as exc:
+        return None, f"is not usable ({type(exc).__name__})"
+
+
+def record_template_problem(template):
+    """Why the "template" value of install.json is not usable, or None. A null commit (a template that is not a git
+    checkout) is allowed; a missing or wrong-typed field is not."""
+    if not isinstance(template, dict):
+        return "template is not an object"
+    optional_text = lambda v: v is None or isinstance(v, str)  # noqa: E731
+    checks = {"commit": lambda v: v is None or (isinstance(v, str) and re.fullmatch(r"[0-9a-f]{40}", v) is not None),
+              "tag": optional_text, "describe": optional_text, "dirty": lambda v: isinstance(v, bool)}
+    for key, ok in checks.items():
+        if key not in template:
+            return f"template.{key} is missing"
+        if not ok(template[key]):
+            return f"template.{key} has a wrong type or value"
+    return None
+
+
+def plan_install_record(source, target):
+    """{record path: bytes} for install.json and install.local.json, decided before anything is written (git is asked here).
+    Warns on stderr when the template is not newer than the recorded one or has uncommitted changes, and leaves out
+    install.local.json when git tracks it (or cannot say). Raises ClaudeSettingsError when a record path is a link (or in a
+    linked folder), has several hard links or is not a regular file."""
+    for rel in (RECORD_REL, RECORD_LOCAL_REL):
+        problem = file_link_problem(target, rel)
+        if not problem and os.path.lexists(target / rel) and not stat.S_ISREG(os.lstat(target / rel).st_mode):
+            problem = "is not a regular file"
+        if problem:
+            raise ClaudeSettingsError(f"{rel}: {problem}; tagteam does not replace it; nothing was written")
+    info = template_version(source)
+    if info["commit"] is None:
+        print("warning: the template is not a git checkout (or git cannot be run): the install record has no commit, and "
+              "tagteam-update cannot compare versions", file=sys.stderr)
+    else:
+        old, why = read_record(target, RECORD_REL, "template")
+        if not why and not record_template_problem(old) and old["commit"] not in (None, info["commit"]) \
+                and git_says(source, "merge-base", "--is-ancestor", old["commit"], "HEAD")[0] == 1:  # 128: not in this repository
+            print(f"warning: installing {info['describe']}, which is not newer than the recorded {str(old['describe'])[:60]}",
+                  file=sys.stderr)
+        if info["dirty"]:
+            print("warning: installing from a checkout with uncommitted changes", file=sys.stderr)
+    try:  # inside the project: a path from it (the project moves with its checkout); else the absolute path, with /
+        where = source.relative_to(target).as_posix()
+    except ValueError:
+        where = source.as_posix()
+    plan = {RECORD_REL: dump_settings({"template": info}), RECORD_LOCAL_REL: dump_settings({"checkout": where})}
+    tracking = git_tracking(target, RECORD_LOCAL_REL)
+    if tracking in ("tracked", "unknown"):  # a machine path in a tracked file would be committed: leave that file alone
+        why = "is tracked by git" if tracking == "tracked" else "cannot be checked (git is missing, timed out or cannot read the index)"
+        print(f"warning: {RECORD_LOCAL_REL} {why}; tagteam writes this machine's path into it, so it was not written "
+              "(tagteam-update cannot find the checkout without it)", file=sys.stderr)
+        del plan[RECORD_LOCAL_REL]
+    return plan
+
+
+def write_install_record(rep, plan, target):
+    """Write the records of plan_install_record: created, updated (atomically) or kept."""
+    for rel, data in plan.items():
+        path = target / rel
+        try:
+            if not os.path.lexists(path):
+                create_new_file(path, data)
+                rep.add("created", rel)
+            elif same_but_line_endings(path.read_bytes(), data):
+                rep.add("kept", rel)
+            else:
+                replace_file(path, data)
+                rep.add("updated", rel)
+        except OSError as exc:  # FileExistsError: it appeared meanwhile
+            raise ClaudeSettingsError(f"{rel}: could not be written ({type(exc).__name__}: {exc}); other files may already be "
+                                      "updated: fix this and re-run --update")
+
+
+def install_record_checks(target, source):
+    """(errors, warnings, notes) about the install record: a broken or incomplete install.json is an error; a missing
+    record, an unusable install.local.json or a checkout path that holds no install.py a warning (a fresh clone has no
+    local file); the installed and the running checkout version, in one note line."""
+    errors, warnings, notes = [], [], []
+    fix = f"; run install.py {target} --update"
+    template, why = read_record(target, RECORD_REL, "template")
+    problem = why or (f"is not usable ({record_template_problem(template)})" if record_template_problem(template) else None)
+    if why == "missing":
+        warnings.append(f"{RECORD_REL} is missing{fix}")
+    elif problem:
+        errors.append(f"{RECORD_REL} {problem}{fix}")
+    template = None if problem else template
+    checkout, why = read_record(target, RECORD_LOCAL_REL, "checkout")
+    if why == "missing":
+        warnings.append(f"{RECORD_LOCAL_REL} is missing{fix}")
+    elif why or not (isinstance(checkout, str) and checkout):
+        warnings.append(f"{RECORD_LOCAL_REL} {why or 'is not usable (checkout is not a path)'}{fix}")
+    else:
+        folder = Path(os.path.join(target, checkout))  # an absolute checkout wins
+        if not (folder / "install.py").is_file():
+            warnings.append(f"{RECORD_LOCAL_REL}: checkout {checkout[:80]!r} holds no install.py (the tagteam checkout moved?){fix}")
+        elif os.path.normcase(os.path.realpath(folder)) != os.path.normcase(os.path.realpath(source)):
+            notes.append(f"{RECORD_LOCAL_REL} names {folder}; this check runs from {source}")
+    if template is not None:
+        here = template_version(source)
+        newer = ""
+        if template["commit"] and here["commit"]:
+            rc, count, _ = git_says(source, "rev-list", "--count", f"{template['commit']}..HEAD")
+            newer = f" ({count} commits newer)" if rc == 0 and count not in ("", "0") else ""
+        notes.append(f"installed {(template['describe'] or (template['commit'] or '')[:7] or 'unknown')[:60]} / checkout "
+                     f"{here['describe'] or 'unknown (not a git checkout)'}{newer}")
+    return errors, warnings, notes
+
+
 def merge_agents_md(rep, src, target):
     rel = Path("AGENTS.md")
     text = src.read_text(encoding="utf-8")
@@ -915,7 +1053,8 @@ def ask_tiers():
     return plans
 
 
-LOCAL_IGNORES = (".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", HOOKS_REL.as_posix(), AGY_HOOKS_REL)
+LOCAL_IGNORES = (".claude/tagteam/models.local.json", ".claude/tagteam/bench.local.json", ".claude/tagteam/install.local.json",
+                 HOOKS_REL.as_posix(), AGY_HOOKS_REL)
 STATE_IGNORE = ".tagteam/"
 BENCH_REL = Path(".claude/tagteam/bench.local.json")
 SKILL_ROOTS = (".claude/skills", ".agents/skills")  # Claude Code reads the first, Codex the second
@@ -954,23 +1093,24 @@ def ensure_gitignore(rep, target):
     else:
         add_ignores(rep, target, LOCAL_IGNORES)
         add_ignores(rep, root, (STATE_IGNORE,))
-    ensure_agy_ignored(rep, target)
+    for rel in (AGY_HOOKS_REL, RECORD_LOCAL_REL):
+        ensure_ignored(rep, target, rel)
 
 
-def ensure_agy_ignored(rep, target):
-    """Make git ignore .agents/hooks.json in fact. A rule that is listed but undone by a later one (`!.agents/hooks.json`)
-    is added once more at the end; a tracked file is left alone; when the rule is already last and git still does not
-    ignore the file, a rule of higher precedence (.agents/.gitignore, the global excludes) wins and only a warning helps."""
+def ensure_ignored(rep, target, rel):
+    """Make git ignore the machine-local file rel in fact. A rule that is listed but undone by a later one (`!rel`) is added
+    once more at the end; a tracked file is left alone; when the rule is already last and git still does not ignore the
+    file, a rule of higher precedence (a deeper .gitignore, the global excludes) wins and only a warning helps."""
     gi = target / ".gitignore"
-    ignored = lambda: git_says(target, "check-ignore", "-q", AGY_HOOKS_REL)[0] != 1  # noqa: E731 - 128 = no repository: leave it
-    if ignored() or not gi.is_file() or git_tracking(target, AGY_HOOKS_REL) != "untracked":
+    ignored = lambda: git_says(target, "check-ignore", "-q", rel)[0] != 1  # noqa: E731 - 128 = no repository: leave it
+    if ignored() or not gi.is_file() or git_tracking(target, rel) != "untracked":
         return
     old = gi.read_text(encoding="utf-8")
-    mentions = [ln.strip() for ln in old.splitlines() if ln.strip().lstrip("!") == AGY_HOOKS_REL]
-    if not mentions or mentions[-1] != AGY_HOOKS_REL:  # no rule, or a negation comes last
-        put(rep, target, Path(".gitignore"), (old + ("" if old.endswith("\n") else "\n") + AGY_HOOKS_REL + "\n").encode("utf-8"))
+    mentions = [ln.strip() for ln in old.splitlines() if ln.strip().lstrip("!") == rel]
+    if not mentions or mentions[-1] != rel:  # no rule, or a negation comes last
+        put(rep, target, Path(".gitignore"), (old + ("" if old.endswith("\n") else "\n") + rel + "\n").encode("utf-8"))
     if not ignored():
-        print(f"warning: git still does not ignore {AGY_HOOKS_REL}: a rule of higher precedence (.agents/.gitignore, "
+        print(f"warning: git still does not ignore {rel}: a rule of higher precedence (a .gitignore in a folder below, "
               "a global excludes file) overrides .gitignore; fix it there", file=sys.stderr)
 
 
@@ -1055,6 +1195,7 @@ def install(target, source, interactive):
     rep = Report()
     h = source / "harness"
     settings = plan_claude_settings(source, target)  # read, checked and merged before the first write
+    record = plan_install_record(source, target)
     copy_tree(rep, h / "claude" / "agents", target, ".claude/agents", "*.md")
     linked = agents_link_problem(target)
     if linked:  # checked before the first write: skills and hooks both live below .agents
@@ -1081,6 +1222,7 @@ def install(target, source, interactive):
             put(rep, target, local, example.read_bytes())
     ensure_gitignore(rep, target)
     write_claude_settings(rep, settings, target)  # last: state.py is in place, .tagteam/ is ignored, a failure stops nothing else
+    write_install_record(rep, record, target)
     return rep
 
 
@@ -1558,7 +1700,8 @@ def static_checks(target, source, host):
             warnings.append(f"old state folder {path} still exists; run install.py --update to move it to .tagteam/")
     else:
         warnings.append("state folder: not computed (no usable installed state.py)")
-    return errors, warnings, notes
+    bad, shaky, info = install_record_checks(target, source)
+    return errors + bad, warnings + shaky, notes + info
 
 
 def load_agy_hooks(target):
