@@ -13,9 +13,12 @@ How to open, follow up, watch and stop workers on each host: [hosts.md](hosts.md
 - Name the host (`claude-desktop`, `claude`, `codex` or `agy`) and pass it to the router as `--host`.
 - Run `install.py <project> --check --host <host>` (the installer knows `claude`, `codex` and `agy`: on `claude-desktop`
   pass `--host claude` to it, and `claude-desktop` to the router) from the tagteam checkout (an installed project has no
-  `install.py`; use the checkout's path if you know it). If you do not know where the checkout is, skip the check,
-  say so to the user and record it in status.md. Parts it could not check are reported as unverified; say so to
-  the user instead of assuming they work.
+  `install.py`). The checkout is the `checkout` in `.claude/tagteam/install.local.json` (a relative path is from the
+  project; a linked worktree has no such file, so read the main work tree's). If the file is missing or the path has
+  no `install.py`, ask the user once; if they do not know it, skip the check, say so and record it in status.md.
+  Parts it could not check are reported as unverified; say so to the user instead of assuming they work. If
+  `.claude/tagteam/install.json` is older than the checkout (the check says so, or the session-start line does),
+  suggest the skill `tagteam-update` to the user; do not run it unasked.
 - Codex: tell the user in one line that commits, branches, worktrees and `run.py` workers (other vendors,
   reviews) each ask for approval of an escalated command, and roughly how many the mission needs
   (hosts.md, Codex notes 9). A commit refused after verification leaves the unit verified but not

@@ -124,6 +124,13 @@ builds on the unit, and the Tier 0 batch and the full test suite at cut points (
 other work builds on a result, and before a merge). Run the next unit while a review
 runs when they share no files. Record which units a review covers.
 
+Exactly one commit needs no cross-vendor review: the commit of a complete `tagteam-update` run, made alone, containing
+only files the installer wrote (and the submodule pointer, if the checkout is a submodule of the project), after
+`install.py --check --host <host>` for every host the project uses exited 0 with no ERROR or FAILED line and with
+the `handler` and `hook commands` lines of that host `ok`, none `unverified` (`--live` is not required; WARN lines are
+shown to the user and copied into the commit message). A commit that mixes in anything else, a partial or failed update,
+an update whose handler or hook-command check is unverified and every hand edit are reviewed as usual, in full.
+
 ## 5. Commit, push, release
 
 - Only the orchestrator commits, per verified unit, staging explicit paths, and
@@ -159,7 +166,8 @@ Rules tagged `[fix: ...]` are model-compensation rules; list them with
 measured host limit; list them with `grep -rn "\[host:" AGENTS.md .claude .codex .agents`.
 A tag's "re-test after ... update" names the host; when to re-test is this rule. After a host update
 run the tagteam checkout's `install.py <project> --check --host <host> --live` (`--host claude` for
-Claude Code desktop; no known checkout: cycle SKILL.md section 0). Re-test that host's tagged rules
+Claude Code desktop; the checkout is the one recorded in `.claude/tagteam/install.local.json`, see cycle SKILL.md
+section 0). Re-test that host's tagged rules
 when the check fails or reports the host unverified, the release notes mention hooks, sandbox or
 permissions, or a week has passed since the tag's `measured` date; a re-test updates that date even
 when nothing changed. A host that cannot run (usage limit) is recorded in status.md and re-tested when
