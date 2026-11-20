@@ -3,7 +3,7 @@
 
 Options, exit codes, records and the git check's limits: `run.py --help` and docs/manual.md (section 7). Kept here:
 - The git check is an accident check, not a security boundary.
-- A run's records are <state dir>/runs/<id>/; started.json is written before the CLI starts and report.txt last,
+- A run's records are <state dir>/runs/<id>/; started.json is written first (before anything touches the checkout) and report.txt last,
   so --status and --wait can tell a finished, a running and a dead run apart. A usage-limit sign goes to
   <state dir>/exhausted.json (route.py reads it).
 - After a run: the git check, a control-plane check (.claude/, .codex/, .agents/, AGENTS.md, CLAUDE.md and the
@@ -78,9 +78,10 @@ DEFAULT_TIMEOUT = 1800
 # [host: agy 1.5.10 Windows and Linux, measured 2026-11-18 / re-test after an agy update]
 WAIT_DEFAULT, WAIT_MAX = 8, 9
 EXIT_NO_REPORT, EXIT_RUNNING = 6, 9  # --status / --wait: the run ended without a report / is still running
+EXIT_UNKNOWN = 13  # --running: something could not be read or asked, so a run may be going
 PID_GRACE = 120  # seconds past a run's timeout before a live pid is taken for a reused one
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a name under runs/: no separator, no ".."
-PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE, ERROR_ACCESS_DENIED = 0x1000, 259, 5
+PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER = 0x1000, 259, 5, 87
 
 
 def windows_sandbox(config_dir):
@@ -655,10 +656,11 @@ def copy_agy_hooks(cwd):
 
 # ---- --status and --wait ----------------------------------------------------------------------
 
-def pid_alive(pid):
-    """True while a process with this pid exists. Nothing is sent to it. On Windows os.kill(pid, 0) is not a
-    liveness check (0 is CTRL_C_EVENT and any other value terminates the process), so ctypes asks instead; a
-    process that exited with code 259 (STILL_ACTIVE) looks alive."""
+def pid_state(pid):
+    """True while a process with this pid exists, False when it does not, None when the system cannot say (an
+    error that is neither). Nothing is sent to it. On Windows os.kill(pid, 0) is not a liveness check (0 is
+    CTRL_C_EVENT and any other value terminates the process), so ctypes asks instead; a process that exited with
+    code 259 (STILL_ACTIVE) looks alive."""
     if not isinstance(pid, int) or pid <= 0:
         return False
     if not _is_windows():
@@ -666,8 +668,10 @@ def pid_alive(pid):
             os.kill(pid, 0)
         except PermissionError:
             return True
-        except OSError:
+        except ProcessLookupError:
             return False
+        except OSError:
+            return None
         return True
     import ctypes
     from ctypes import wintypes
@@ -678,12 +682,22 @@ def pid_alive(pid):
     k32.CloseHandle.argtypes = [wintypes.HANDLE]
     handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
-        return ctypes.get_last_error() == ERROR_ACCESS_DENIED  # it exists, but its exit code is not ours to read
+        error = ctypes.get_last_error()
+        if error == ERROR_ACCESS_DENIED:
+            return True  # it exists, but its exit code is not ours to read
+        return False if error == ERROR_INVALID_PARAMETER else None  # no such process / anything else: unknown
     try:
         code = wintypes.DWORD()
-        return bool(k32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == STILL_ACTIVE
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return None
+        return code.value == STILL_ACTIVE
     finally:
         k32.CloseHandle(handle)
+
+
+def pid_alive(pid):
+    """pid_state() as a plain yes/no: only a process known to exist counts."""
+    return pid_state(pid) is True
 
 
 def run_alive(started):
@@ -716,6 +730,77 @@ def run_report(run_id, run_dir):
             secs = 0
         return "RUN %s running secs=%d run_dir=%s\n" % (run_id, secs, run_dir), EXIT_RUNNING
     return "RUN %s ended without a report\n" % run_id, EXIT_NO_REPORT
+
+
+def _stat(path):
+    """os.stat result, None when the path is not there; any other error propagates (the caller says `unknown`)."""
+    try:
+        return os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def inspect_run(run_dir):
+    """('running', started), ('unknown', reason) or None for a run that has finished or died. Fail closed: what
+    cannot be read or asked is `unknown`, never taken for dead. Only a finished report or a pid known to be gone
+    ends a run; elapsed time does not (setup and checks run outside the CLI timeout), so a reused pid blocks."""
+    try:
+        report = _stat(os.path.join(run_dir, "report.txt"))
+        if report is not None and report.st_size > 0:
+            return None
+        try:
+            with open(os.path.join(run_dir, "started.json"), "rb") as fh:
+                raw = fh.read()
+        except (FileNotFoundError, NotADirectoryError):
+            return None  # never registered (the launcher registers first thing): nothing was started
+    except OSError as exc:
+        return "unknown", "cannot read the run's records (%s)" % exc.__class__.__name__
+    started = parse_json(raw.decode("utf-8", errors="replace"))
+    if started is None or not isinstance(started.get("pid"), int) or started["pid"] <= 0:
+        return "unknown", "started.json has no usable pid"
+    state = pid_state(started["pid"])
+    if state is None:
+        return "unknown", "cannot tell whether pid %d is alive" % started["pid"]
+    return ("running", started) if state else None
+
+
+def list_running():
+    """--running: one line per run that is going or may be going. Exit EXIT_RUNNING when one is going, else
+    EXIT_UNKNOWN when one could not be judged (or the runs folder could not be listed), else 0 and `no running runs`."""
+    runs = os.path.join(statelib.state_dir(os.getcwd()), "runs")
+    try:
+        names = sorted(os.listdir(runs))
+    except (FileNotFoundError, NotADirectoryError):
+        names = []
+    except OSError as exc:
+        sys.stdout.write("RUNS unknown cannot list %s (%s)\n" % (runs, exc.__class__.__name__))
+        return EXIT_UNKNOWN
+    going = unknown = 0
+    for name in names:
+        run_dir = os.path.join(runs, name)
+        if not RUN_ID.fullmatch(name) or not os.path.isdir(run_dir):
+            continue
+        found = inspect_run(run_dir)
+        if found is None:
+            continue
+        kind, info = found
+        if kind == "unknown":
+            unknown += 1
+            sys.stdout.write("RUN %s unknown %s run_dir=%s\n" % (name, info, run_dir))
+            continue
+        going += 1
+        try:
+            secs = max(0, int((utc_now() - parse_iso(info["started"])).total_seconds()))
+        except (KeyError, TypeError, ValueError):
+            secs = 0
+        word = lambda key: re.sub(r"\s+", "_", str(info.get(key) or "?"))  # noqa: E731  (one token per field)
+        sys.stdout.write("RUN %s running vendor=%s model=%s secs=%d pid=%d run_dir=%s\n"
+                         % (name, word("vendor"), word("model"), secs, info["pid"], run_dir))
+    if going or unknown:
+        sys.stdout.write("if no run is active, check the listed runs/<id> (a reused pid or a damaged record blocks)\n")
+        return EXIT_RUNNING if going else EXIT_UNKNOWN
+    sys.stdout.write("no running runs\n")
+    return 0
 
 
 def wait_for(run_id, run_dir, secs):
@@ -772,11 +857,18 @@ def parse_args(argv):
                       "`running` (exit %d), or `ended without a report` (exit %d); no other option but --wait"
                       % (EXIT_RUNNING, EXIT_NO_REPORT))
     look.add_argument("--wait", metavar="ID", help="like --status, but wait for the report up to --secs seconds")
+    look.add_argument("--running", action="store_true", help="list the runs of this state folder that are still "
+                      "going, one per line (id, vendor, model, seconds, pid); exit %d if one is going, %d if something could "
+                      "not be read or asked so a run may be going, else 0 and `no running runs`; reads files "
+                      "only, no other option" % (EXIT_RUNNING, EXIT_UNKNOWN))
     p.add_argument("--secs", type=int, default=None,
                    help="with --wait: seconds to wait, default %d, at most %d" % (WAIT_DEFAULT, WAIT_MAX))
     args = p.parse_args(argv)
     given = [o for o in RUN_ONLY if getattr(args, o) != p.get_default(o)]
-    if args.status is None and args.wait is None:
+    if args.running:
+        if given or args.secs is not None:
+            p.error("--running takes no other option")
+    elif args.status is None and args.wait is None:
         missing = [o for o in ("vendor", "model", "effort", "prompt_file") if getattr(args, o) is None]
         if missing:
             p.error("the following arguments are required: " + ", ".join("--" + o.replace("_", "-") for o in missing))
@@ -807,6 +899,8 @@ def main(argv):
     args = parse_args(argv)
     if os.environ.get("HARNESS_DELEGATE_RUN") == "1":
         return fail("refused: this process is already a launcher worker (no re-delegation)")
+    if args.running:
+        return list_running()
     if args.status is not None or args.wait is not None:
         return lookup(args)
     config_dir = os.environ.get("TAGTEAM_CONFIG_DIR") or HERE
@@ -858,6 +952,10 @@ def main(argv):
     run_id = "%s-%s-%s" % (start.astimezone().strftime("%Y%m%d-%H%M%S"), args.vendor, secrets.token_hex(2))
     run_dir = os.path.join(state, "runs", run_id)
     os.makedirs(run_dir, exist_ok=True)
+    # the registration first: --running must see this launcher before it touches the checkout (hooks copy, CLI)
+    write_atomic(os.path.join(run_dir, "started.json"), json.dumps(
+        {"pid": os.getpid(), "started": iso(start), "vendor": args.vendor, "model": args.model, "effort": args.effort,
+         "timeout": args.timeout}, indent=2) + "\n")
     write_text(os.path.join(run_dir, "prompt.txt"), prompt)
     model_arg = vcfg.get("model_arg", "{model}").format(model=args.model, effort=args.effort)
     try:
@@ -871,9 +969,6 @@ def main(argv):
             for key in keys:
                 env.pop(key, None)
     hook_lines = copy_agy_hooks(cwd) if args.vendor == "google" else []  # before the first git snapshot
-    write_atomic(os.path.join(run_dir, "started.json"), json.dumps(
-        {"pid": os.getpid(), "started": iso(start), "vendor": args.vendor, "model": args.model, "effort": args.effort,
-         "timeout": args.timeout}, indent=2) + "\n")
     # the run id and log paths before the CLI starts, so a long run can be found and watched
     sys.stdout.write("RUN %s started run_dir=%s stdout=%s stderr=%s\n" % (
         run_id, run_dir, os.path.join(run_dir, "stdout.txt"), os.path.join(run_dir, "stderr.txt")))

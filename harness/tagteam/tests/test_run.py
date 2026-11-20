@@ -750,6 +750,168 @@ class StatusTests(RunTestBase):
         self.assertEqual((code, out), (2, ""))
         self.assertIn("no run 20261118-000000-claude-ffff under", err)
 
+    def test_running_lists_nothing_when_no_run_is_going(self):
+        self.assertEqual(self.cli("--running"), (0, "no running runs\n", ""))  # no runs folder yet
+        child = self.sleeper()
+        child.kill()
+        child.wait()
+        self.make_run("r-dead", pid=child.pid)
+        self.make_run("r-nostart", started=False)  # never registered: nothing was started
+        self.assertEqual(self.cli("--running"), (0, "no running runs\n", ""))
+
+    def test_running_lists_a_live_run_and_looks_only(self):
+        child = self.sleeper()
+        run_dir = self.make_run("r-live", pid=child.pid, ago=7)
+        code, out, err = self.cli("--running")
+        self.assertEqual((code, err), (9, ""))
+        m = re.fullmatch(r"RUN r-live running vendor=claude model=m secs=(\d+) pid=%d run_dir=%s\n"
+                         r"if no run is active, check the listed runs/<id> .*\n" % (child.pid, re.escape(run_dir)), out)
+        self.assertIn(int(m.group(1)), (7, 8, 9))
+        self.assertIsNone(child.poll())
+        self.assertFalse(os.path.exists(self.record))  # no CLI was started
+
+    def test_running_skips_what_is_known_to_be_over(self):
+        child = self.sleeper()
+        gone = self.sleeper()
+        gone.kill()
+        gone.wait()
+        live = self.make_run("r-live", pid=child.pid)
+        self.make_run("r-dead", pid=gone.pid)
+        done = self.make_run("r-done", pid=child.pid)  # a live pid, but the run has reported
+        run.write_atomic(os.path.join(done, "report.txt"), "RUN r-done vendor=claude status=ok\n")
+        os.makedirs(os.path.join(self.state, "runs", ".hidden"))  # not a run id
+        run.write_atomic(os.path.join(self.state, "runs", "stray.txt"), "x")
+        code, out, _ = self.cli("--running")
+        self.assertEqual((code, out.count("RUN ")), (9, 1), out)
+        self.assertIn("run_dir=%s" % live, out)
+
+    def test_a_live_launcher_counts_beyond_its_timeout_and_the_grace(self):
+        # setup and checks run outside the CLI timeout: elapsed time never proves a launcher dead
+        child = self.sleeper()
+        self.make_run("r-long", pid=child.pid, ago=run.PID_GRACE + 100, timeout=1)
+        self.make_run("r-old", pid=child.pid, ago=3000, timeout=1800)
+        code, out, _ = self.cli("--running")
+        self.assertEqual((code, out.count("RUN ")), (9, 2), out)
+
+    def test_running_with_a_record_that_has_no_start_time_still_counts(self):
+        child = self.sleeper()
+        os.makedirs(os.path.join(self.state, "runs", "r-bare"))
+        run.write_atomic(os.path.join(self.state, "runs", "r-bare", "started.json"), json.dumps({"pid": child.pid}))
+        code, out, _ = self.cli("--running")
+        self.assertEqual((code, out.split(" secs=")[0]), (9, "RUN r-bare running vendor=? model=?"))
+        self.assertEqual(self.cli("--status", "r-bare")[0], 9)
+
+    def test_the_launcher_registers_before_it_touches_the_checkout(self):
+        seen = []
+
+        def copy_hooks(cwd):  # the first step of a google run that changes the checkout
+            seen.append(self.cli("--running"))
+            return []
+
+        with mock.patch.object(run, "copy_agy_hooks", side_effect=copy_hooks):
+            self.go("google")
+        code, out, _ = seen[0]
+        self.assertEqual(code, 9, out)
+        self.assertRegex(out, r"RUN \S+-google-\S+ running vendor=google model=gemini-3\.8-flash secs=\d+ pid=%d " % os.getpid())
+        self.assertEqual(self.cli("--running")[0], 0)  # and it is gone once the run has reported
+
+    def test_running_says_unknown_for_what_it_cannot_judge(self):
+        child = self.sleeper()
+        runs = os.path.join(self.state, "runs")
+        for name, text in (("r-empty", ""), ("r-junk", "{not json"), ("r-list", "[1]"), ("r-nopid", '{"vendor": "x"}'),
+                           ("r-strpid", json.dumps({"pid": str(child.pid), "started": run.iso(run.utc_now())})),
+                           ("r-zero", '{"pid": 0}')):
+            with self.subTest(name):
+                os.makedirs(os.path.join(runs, name))
+                run.write_atomic(os.path.join(runs, name, "started.json"), text)
+                code, out, _ = self.cli("--running")
+                self.assertEqual(code, 13, out)
+                self.assertIn("RUN %s unknown started.json has no usable pid run_dir=" % name, out)
+                shutil.rmtree(os.path.join(runs, name))
+        os.makedirs(os.path.join(runs, "r-unreadable", "started.json"))  # opening a folder fails with an OSError
+        code, out, _ = self.cli("--running")
+        self.assertEqual(code, 13, out)
+        self.assertIn("RUN r-unreadable unknown cannot read the run's records (", out)
+        self.assertIn("check the listed runs/<id>", out)
+
+    def test_running_says_unknown_when_a_record_cannot_be_checked_for_a_report(self):
+        self.make_run("r-x", pid=4242)
+        with mock.patch.object(run, "_stat", side_effect=PermissionError()):
+            code, out, _ = self.cli("--running")
+        self.assertEqual(code, 13, out)
+        self.assertIn("RUN r-x unknown cannot read the run's records (PermissionError)", out)
+
+    def test_running_says_unknown_when_the_runs_folder_cannot_be_listed(self):
+        self.make_run("r-x", pid=None)
+        real = os.listdir
+        with mock.patch.object(run.os, "listdir", side_effect=lambda d: (_ for _ in ()).throw(PermissionError())
+                               if d.endswith("runs") else real(d)):
+            code, out, _ = self.cli("--running")
+        self.assertEqual(code, 13, out)
+        self.assertRegex(out, r"RUNS unknown cannot list .*runs \(PermissionError\)")
+
+    def test_a_live_run_wins_over_an_unknown_one_in_the_exit_code(self):
+        child = self.sleeper()
+        self.make_run("r-live", pid=child.pid)
+        os.makedirs(os.path.join(self.state, "runs", "r-bad"))
+        run.write_atomic(os.path.join(self.state, "runs", "r-bad", "started.json"), "{")
+        code, out, _ = self.cli("--running")
+        self.assertEqual(code, 9, out)
+        self.assertEqual((out.count("running vendor="), out.count(" unknown ")), (1, 1))
+
+    def test_running_takes_fake_pids_through_the_posix_check(self):
+        for name, pid in (("r-a", 4242), ("r-b", 4343), ("r-c", 4444)):
+            self.make_run(name, pid=pid)
+
+        def fake_kill(pid, sig):
+            if pid == 4343:
+                raise ProcessLookupError()
+            if pid == 4444:
+                raise OSError(22, "invalid")
+
+        with mock.patch.object(run, "_is_windows", return_value=False), \
+                mock.patch.object(run.os, "kill", side_effect=fake_kill) as kill:
+            code, out, _ = self.cli("--running")
+        self.assertEqual(code, 9, out)  # the live one wins
+        self.assertIn("RUN r-a running", out)
+        self.assertNotIn("r-b ", out)  # gone: not listed
+        self.assertIn("RUN r-c unknown cannot tell whether pid 4444 is alive", out)
+        self.assertEqual(sorted(c[0][0] for c in kill.call_args_list), [4242, 4343, 4444])
+        self.assertTrue(all(c[0][1] == 0 for c in kill.call_args_list))  # signal 0 only
+
+    def test_running_takes_fake_pids_through_the_windows_check(self):
+        import ctypes
+        for name, pid in (("r-a", 4242), ("r-b", 4343), ("r-c", 4444), ("r-d", 4545)):
+            self.make_run(name, pid=pid)
+        k32 = mock.Mock()
+        # no handle: the last error says whether the process exists (5 = not ours to read, 87 = no such process)
+        errors = {4242: run.ERROR_ACCESS_DENIED, 4343: 87, 4444: 1}
+        handles = {4545: 7}  # a handle, but the exit code cannot be read
+
+        def open_process(access, inherit, pid):
+            k32.last = pid
+            return handles.get(pid, 0)
+
+        k32.OpenProcess.side_effect = open_process
+        k32.GetExitCodeProcess.return_value = 0
+        with mock.patch.object(run, "_is_windows", return_value=True), \
+                mock.patch.object(run.os, "kill", side_effect=AssertionError("os.kill must not be used on Windows")), \
+                mock.patch.object(ctypes, "WinDLL", create=True, return_value=k32), \
+                mock.patch.object(ctypes, "get_last_error", create=True, side_effect=lambda: errors[k32.last]):
+            code, out, _ = self.cli("--running")
+        self.assertEqual(code, 9, out)
+        self.assertIn("RUN r-a running", out)
+        self.assertNotIn("r-b ", out)
+        self.assertIn("RUN r-c unknown cannot tell whether pid 4444 is alive", out)
+        self.assertIn("RUN r-d unknown cannot tell whether pid 4545 is alive", out)
+        k32.CloseHandle.assert_called_once()
+
+    def test_running_takes_no_other_option(self):
+        for argv in (["--running", "--status", "r"], ["--running", "--wait", "r"], ["--running", "--secs", "3"],
+                     ["--running", "--vendor", "claude"], ["--running", "--read-only"], ["--running", "--timeout", "5"]):
+            with self.subTest(argv):
+                self.assertEqual(self.cli(*argv)[:2], (2, ""))
+
     def test_usage_errors(self):
         self.make_run("r-u", pid=None)
         full = ["--vendor", "claude", "--model", "m", "--effort", "low", "--prompt-file", "p"]
