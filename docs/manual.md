@@ -11,7 +11,7 @@ are in the project you installed into. Commands are written `python3`; on Window
 
 | Section | Answers |
 |---|---|
-| [1. Install and update](#1-install-and-update) | What is overwritten? What else does the installer do? 1.1 is it working? 1.2 Codex hook trust, repair after a move; 1.3 agy hooks and their recovery |
+| [1. Install and update](#1-install-and-update) | What is overwritten? What else does the installer do? 1.1 is it working? 1.2 Codex hook trust, repair after a move; 1.3 agy hooks and their recovery; 1.4 updating with the skill |
 | [2. Where things live](#2-where-things-live) | Which file holds what; which are committed; the state folder |
 | [3. Running a mission](#3-running-a-mission) | How a mission runs; when sessions open and what to do if the host refuses (3.1); worker definitions (3.2); Codex as orchestrator (3.3); agy as orchestrator (3.4) |
 | [4. Verification and review](#4-verification-and-review) | Who reviews; how a review is made read-only |
@@ -39,8 +39,8 @@ Supported CLIs (each optional except that you need one orchestrator):
 | Antigravity CLI (`agy`, Gemini models) | yes, interactive only, with the built-in Orchestrator model (section 3.4) | launcher only | headless `agy -p` is a worker, not an orchestrator |
 
 **Warning: install and update overwrite harness-owned files, in a plain run as well.** Customizations in the files marked
-"overwritten" below are lost, and the `hooks` and `subagentPromptCacheTtl` keys of an existing `.claude/settings.json` are
-replaced. Commit or back up the project first. Put per-machine changes in `.claude/tagteam/models.local.json` (section 5.2);
+"overwritten" below are lost. In an existing `.claude/settings.json` only tagteam's own hook handlers are replaced
+(next paragraph). Commit or back up the project first. Put per-machine changes in `.claude/tagteam/models.local.json` (section 5.2);
 edit `models.json` only in a copy of the repository you maintain yourself.
 
 A plain run creates the project folder if needed, copies the files and prints one line per file as `created`, `updated` or
@@ -49,7 +49,7 @@ installs from another copy of the repository.
 
 | Source | Goes to | On update |
 |---|---|---|
-| `harness/claude/settings.json` | `.claude/settings.json` | only the `hooks` and `subagentPromptCacheTtl` keys are replaced; other keys stay |
+| `harness/claude/settings.json` | `.claude/settings.json` | tagteam's own hook handlers are replaced; your other hooks and keys stay; `subagentPromptCacheTtl` is set only when missing (a different value of yours is kept and reported) |
 | `harness/claude/agents` | `.claude/agents` | overwritten |
 | `harness/skills` | `.claude/skills` and `.agents/skills` | overwritten (Codex reads `.agents/skills`) |
 | `harness/tagteam/*` (not `tests/`) | `.claude/tagteam/` | overwritten, `models.json` included; files with `.local.` in the name are not copied (the example file only seeds `models.local.json`) |
@@ -62,6 +62,25 @@ installs from another copy of the repository.
 Also kept as they are: `models.local.json`, `bench.local.json`, the machine-local `.codex/hooks.json`, and every key of
 `.agents/hooks.json` except `tagteam`.
 
+**Your hooks in `.claude/settings.json`.** Install and `--update` take out only the handlers whose command is a call of
+`.claude/tagteam/role_guard.py` (as the template and earlier templates write it, also in an event the template no longer uses
+or inside a group shared with your hooks), and put the template's handlers back in the place of the first one removed. Your
+other handlers, groups, events and keys keep their content and order, and a handler that only mentions the guard is yours.
+A second `--update` changes nothing. When the file changes, the original is copied byte for byte to
+`.tagteam/backups/settings.json.<UTC time>` first (next to the file when the state folder cannot be used) and the path
+is printed; backups are never deleted, remove old ones yourself. If other hooks run on an event tagteam uses, the installer lists
+them (event, file, kind, matcher, program name; never the full command) in a `note:` and does not judge them. Claude Code runs
+hooks of one event in parallel and a deny wins, and tagteam's guard only denies, so your hooks cannot allow what it denies.
+Limit: a hook of yours that rewrites tool input (`updatedInput`) is checked by tagteam on the input before the rewrite
+(not confirmed against Claude Code). Settings in `.claude/settings.local.json` are read for the note and never changed.
+
+The installer stops with exit code 1 and writes **no file at all** when `.claude/settings.json` cannot be read, is not valid
+JSON, is not an object, has `hooks` that is not an object, an event that is not a list, a group or handler that is not an
+object, is nested too deeply, is read-only, or is a link (symlink or junction) or has several hard links (a replacement would
+turn it into a plain file or cut the link): the message names the reason and ends `nothing was written`. Fix the file, or
+make it a plain file, and run again. `.claude/tagteam/install.json` and `install.local.json` are refused the same way when
+they are links.
+
 **The `AGENTS.md` marker rule.** The installer looks for the exact text `## Project policy`. Present: that line and
 everything below it is kept, everything above is replaced by the template. Absent: the whole old file is kept, unchanged,
 under a new `## Project policy` heading after the template body (`kept (moved under Project policy)`). Either way, review
@@ -73,7 +92,8 @@ Other things the installer does:
 |---|---|
 | `models.local.json` | If missing: in a terminal it asks the plan for each vendor (`none`, `free`, `pro`, `max`; Enter keeps `pro`; `none` removes that vendor from routing). With `--yes` or without a terminal it copies `models.local.json.example`. Check and edit the result (section 5.2). |
 | Benchmark and available models | If `TAGTEAM_AA_API_KEY` is set and `bench.local.json` does not exist, runs `models_collect.py --write-bench` once (15 second timeout); if a vendor with a plan other than `none` has no `available` list, runs `--write-available` once. A failure prints a warning; the install continues. |
-| `.gitignore` | Adds `.claude/tagteam/models.local.json`, `.claude/tagteam/bench.local.json`, `.codex/hooks.json`, `.agents/hooks.json` and `.tagteam/`. |
+| install record | Writes `.claude/tagteam/install.json` (committed: the template's `commit`, exact `tag` or null, `describe`, `dirty`) and `.claude/tagteam/install.local.json` (git-ignored: `checkout`, the folder that holds `install.py`; relative to the project when the checkout lies inside it, else an absolute path with `/`). The remote URL is never recorded. A template that is not a git checkout records a null commit and a warning. Installing a commit that is not newer than the recorded one, or from a checkout with uncommitted changes, prints a warning and continues. |
+| `.gitignore` | Adds `.claude/tagteam/models.local.json`, `.claude/tagteam/bench.local.json`, `.claude/tagteam/install.local.json`, `.codex/hooks.json`, `.agents/hooks.json` and `.tagteam/`. |
 | Line endings | A file whose content differs from the new one only in `\r\n` versus `\n` (a clone with `core.autocrlf=true`) is reported `kept` and not rewritten, so `--update` makes no change that git shows. Only valid UTF-8 text without a NUL byte is compared this way; any other file is compared exactly. |
 | State folder | Moves records of an old `<git common dir>/tagteam/` into `.tagteam/` once (section 2). |
 | Weekly check | In a terminal, a plain install (not `--update`) asks whether to register it (section 8.2). |
@@ -85,7 +105,11 @@ Other things the installer does:
 Needs a finished install. `--host` (default `claude`) picks the host to check. What was not run is reported `unverified`;
 a failure ends with `check: FAILED` (exit code 1), otherwise `check: ok`.
 
-- **static**: the tools on PATH (a missing CLI is a warning), the interpreter the host's hooks call (`python3` or `python`
+- **static**: the tools on PATH (a missing CLI is a warning), the tagteam hook handlers of `.claude/settings.json` against the
+  template (a missing or changed handler is an error; a duplicate, a handler of an event the template no longer uses or one
+  sharing a group with your hooks is a warning; the fix is `--update`), the install record (a missing record or an
+  `install.py`-less checkout path is a warning, an unusable `install.json` an error) and one note
+  `installed <version> / checkout <version>[ (N commits newer)]`, the interpreter the host's hooks call (`python3` or `python`
   for Claude; `python3`, on Windows `python`, for Codex; a missing one is an error, one found only through your shell
   PATH a warning), the installed files, the state folder (path, `.gitignore`, an old folder left over), and for Codex the
   drift of `.codex/hooks.json` and three warnings about your own Codex setup (section 1.2). Your Codex files are only read.
@@ -115,6 +139,33 @@ a failure ends with `check: FAILED` (exit code 1), otherwise `check: ok`.
 interpreter on PATH, the `tagteam` key equal to the template's (after the paths are filled in), the guard files present,
 and the file git-ignored (not ignored: a warning; tracked: an error). `--check --host agy` prints `live (agy): unverified`
 unless `--live` is given.
+
+### 1.4 Updating tagteam
+
+An installed project records where it came from, and the skill `tagteam-update` updates it from that checkout. It runs only
+when you ask for it (Claude Code: `/tagteam-update`; Codex and agy: ask in words), never in a worker and never by itself.
+
+1. It stops if a worker is running: `run.py --running` (section 7) must exit 0, and the orchestrator asks you once whether
+   another session works in the project or the checkout (sessions and subagents leave no file to look at).
+2. It stops unless the harness paths of the project (`.claude`, `.codex`, `.agents`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`), the index and the
+   checkout are clean.
+3. It fetches the checkout, shows the commits and changed files between the installed commit and the upstream branch, and
+   moves the checkout by fast-forward only; a checkout with local commits or a diverged branch stops it. No tag is used.
+4. It runs `install.py <project> --update --yes` and then `--check` for every host the project uses. Any error stops it with nothing
+   committed (the output names the backups; section 9).
+5. It commits only the files the installer wrote (plus the submodule pointer if the checkout is a submodule of the project),
+   by explicit path, as `tagteam: update to <version>`, with the WARN lines of the check in the message. Push mode in `## Project policy` decides
+   whether it pushes (`solo`) or asks (`team`).
+
+That commit needs no cross-vendor review when every checked host passes without `unverified` handler or hook-command lines
+(exact rule: AGENTS.md section 4); otherwise it is reviewed as usual. A new session picks up the updated harness; the session
+that ran the update keeps the old text. Nothing updates by itself: the session-start line `tagteam update available (...)`
+only tells the orchestrator that the checkout, as it is on this machine, has commits the project lacks (no network is used,
+so commits that exist only on the remote are not seen).
+
+A project installed before the install record existed has no record and no skill. Update it once by hand from the checkout,
+with `python3 <checkout>/install.py <project dir> --update`; that run already keeps your own hooks (section 1) and writes
+the record, and later updates can use the skill.
 
 ### 1.2 Moving a project
 
@@ -209,8 +260,10 @@ inside, and the orchestrator cannot write its mission records either. From a ter
 | `AGENTS.md` | rules; `## Project policy` is yours | yes |
 | `.claude/settings.json`, `.codex/hooks.json`, `.agents/hooks.json` | hook wiring | settings yes; both `hooks.json` files are machine-local by design (absolute guard path; git-ignored) |
 | `.claude/agents`, `.codex/agents` | worker definitions with fixed model and effort | yes |
-| `.claude/skills`, `.agents/skills` (`cycle`, `model-update`) | orchestrator procedures, the same copy for each host | yes |
+| `.claude/skills`, `.agents/skills` (`cycle`, `model-update`, `tagteam-update`) | orchestrator procedures, the same copy for each host | yes |
 | `.claude/tagteam/models.json` | vendors, roles, models, grades, defaults | yes |
+| `.claude/tagteam/install.json` | the template version this project was installed from (section 1) | yes |
+| `.claude/tagteam/install.local.json` | this machine's tagteam checkout folder | no |
 | `.claude/tagteam/models.local.json` | plans, hidden models, available lists, role overrides | no |
 | `.claude/tagteam/bench.local.json` | benchmark values from Artificial Analysis | no |
 | state folder | records below | no |
@@ -231,6 +284,7 @@ cannot keep the first role, so it denies git commit/push and delegation even for
 | `agents.jsonl` | hook (Codex `SubagentStart`) | the model each Codex subagent really runs on |
 | `agy-models.jsonl` | hook (agy PreInvocation) | one line `{ts, cid, model}` each time an agy conversation's model changes: which half of the Orchestrator model did what |
 | `model-update.log` | the scheduled job (macOS, Linux) | output of the weekly collector run |
+| `backups/settings.json.<time>` | `install.py` | the original `.claude/settings.json`, copied before the installer changed it (section 1); never deleted |
 | `exhausted.json` | `run.py`, `route.py` | vendors temporarily unusable, with `until` |
 | `runs/<id>/` | `run.py` | one launcher run (section 7) |
 | `model-update.json` | `models_collect.py` | pending proposal (section 8) |
@@ -598,6 +652,14 @@ the name after `RUN` in the first line, and the lookup works from any folder of 
 - `run.py --wait ID [--secs N]` does the same, but waits up to N seconds (default 8, at most 9) for the report, looking once
   a second. The limit is below the ten seconds after which agy moves a command to the background, so a call returns inside
   one wait; repeat it while it exits 9. [host: agy 1.5.10, measured 2026-11-18 / re-test after an agy update]
+- `run.py --running` lists the launcher runs that may still be going, one line each
+  (`RUN <id> running vendor=<v> model=<m> secs=<n> pid=<pid> run_dir=<dir>`), and exits 9 if there is one, else 0 with
+  `no running runs`. It reads files only (no CLI is started) and takes no other option. It fails closed, because the
+  `tagteam-update` skill uses it as a stop sign: a run counts until its report exists or its pid is known to be gone,
+  however long it has run, so a reused pid keeps blocking; a run whose `started.json` is unreadable, has no usable pid,
+  or whose pid cannot be asked, or a `runs/` folder that cannot be listed, prints `RUN <id> unknown <reason>` (or `RUNS unknown ...`)
+  and exits 13 (9 wins if both occur). If nothing is going, check the listed `runs/<id>` and remove a damaged record by hand.
+  A launcher registers `started.json` before it touches the checkout; sessions and subagents are not launcher runs and are not listed.
 - A bad or unknown id, or another option together with `--status`, exits 2. Whether the process is alive is asked of the
   operating system (on Windows through the Windows API: `os.kill` is not a liveness check there). A pid that the system
   reused for another program after the launcher died looks like a running worker until the run's timeout plus two minutes
@@ -614,10 +676,11 @@ the name after `RUN` in the first line, and the lookup works from any folder of 
 | 6 | `no_output` | the CLI exited cleanly with an empty answer (the report names any tools the CLI denied in headless mode); also `--status`/`--wait` on a run that ended without a report |
 | 7 | `git_head_moved` | git HEAD or branch moved during the run |
 | 8 | `wrote_files` | a read-only run changed the work tree |
-| 9 | (`running`) | `--status`/`--wait` only: the run has not reported yet |
+| 9 | (`running`) | `--status`/`--wait`: the run has not reported yet; `--running`: a run may still be going |
 | 10 | `control_plane_changed` | a write run changed the control plane (below) |
 | 11 | `hooks_not_run` | a Codex worker's hooks wrote no role record (below) |
 | 12 | `refused` | the CLI exited cleanly and the answer's first line starts with `REFUSED:` (the worker's refusal, AGENTS.md section 2) |
+| 13 | (`unknown`) | `--running` only: a record, process or folder could not be judged, so a run may be going |
 
 When several apply, 3 wins, then 7, 10, 11, 12, 5, 4, 8, 1, 6.
 
@@ -699,6 +762,9 @@ registered), so a failing run leaves a trace: without it cron mails the output, 
 | Launcher `hooks_not_run` (11) | a Codex worker's hooks wrote no role record: usually the project or its hooks are not trusted; or the hooks ran and could not write it (state folder) | run `codex` once in the project, trust it, then the hooks (`/hooks`, section 1.2); `install.py <project dir> --check --host codex --live`; review what the worker changed |
 | Automatic turn cannot open a session | host limit | open it on your next turn, or reuse a pool session by message |
 | `tagteam: python3/python not found on PATH; tool calls are blocked ...` | no working Python for the Claude hooks | install Python 3.9+ (`python3`, on Windows `python`); a Windows Store stub does not count |
+| `install.py` ends `.claude/settings.json: ... nothing was written` (exit 1) | the file is unreadable, not valid JSON, not the expected shape, read-only, or a link or hard-linked file | fix the file as the message says (a link: replace it with a plain copy); run again; nothing else was changed |
+| `.claude/settings.json` lost a hook of yours, or got one you did not expect | the installer took out a handler it took for tagteam's (a command that is exactly a guard call), or another tool edited the file | the `backup` line of the run names the original in `.tagteam/backups/`; copy your handler back and report a wrong match; `git diff .claude/settings.json` shows the change |
+| `tagteam-update` stops: `run.py --running` exits 9 or 13 | a launcher run is going, or a record or pid cannot be judged | wait for the run, or read the listed `runs/<id>`; a damaged or stale record that blocks forever is removed by hand (section 7) |
 | `--check` reports `FAILED` | hook missing or changed, or no interpreter | read the line; `install.py <project dir> --update` (Codex: `--repair-hooks`, section 1.2), then `--check` again |
 | Codex ignores a worker's `git commit` | hooks not trusted, or `python3` missing | `/hooks` in Codex (section 1.2); `--check --host codex` |
 

@@ -13,15 +13,16 @@ What it adds to a project:
 - A launcher that runs another vendor's CLI as a worker and checks which model really answered.
 - One hook that enforces the rules text cannot enforce: workers do not commit, push or open sessions, and a session is
   never opened without model and effort.
-- Two skills: `cycle` (how the orchestrator runs a mission) and `model-update` (how a changed model list is applied).
+- Three skills: `cycle` (how the orchestrator runs a mission), `model-update` (how a changed model list is applied) and
+  `tagteam-update` (how an installed project is updated from its tagteam checkout, when you ask).
 
 It does not ship a service, a UI or a message relay (scope and known gaps: [docs/design.md](docs/design.md)).
 
 ## Before you install: warnings
 
 - **Install and update overwrite harness-owned files**, in a plain run as well: `.claude/agents`, `.claude/skills`,
-  `.claude/tagteam/` (including `models.json`) and `.codex/agents`; they also replace the `hooks` and
-  `subagentPromptCacheTtl` keys in `.claude/settings.json`. Customizations there are lost. **Commit or back up your project
+  `.claude/tagteam/` (including `models.json`) and `.codex/agents`; in `.claude/settings.json` they replace only tagteam's
+  own hook handlers (your other hooks stay; the original is backed up first). Customizations in the overwritten files are lost. **Commit or back up your project
   first.** Put per-machine changes in `.claude/tagteam/models.local.json`.
 - Kept as they are: `models.local.json`, `bench.local.json`, the machine-local `.codex/hooks.json`, other keys of
   `settings.json`, and your `AGENTS.md` from the heading `## Project policy` down. An existing `AGENTS.md` without that
@@ -69,7 +70,7 @@ A weekly check of the vendors' model lists is optional: `python3 install.py <pro
 | `install.py` | (not installed) | install, update, check, schedule |
 | `AGENTS.md.template`, `CLAUDE.md.template` | `AGENTS.md`, `CLAUDE.md` | the instruction file and a one-line import of it |
 | `harness/claude/` | `.claude/` | hook settings, worker agent definitions |
-| `harness/skills/` | `.claude/skills/` | the `cycle` and `model-update` procedures |
+| `harness/skills/` | `.claude/skills/` | the `cycle`, `model-update` and `tagteam-update` procedures |
 | `harness/codex/` | `.codex/` | hook settings, worker agent definitions |
 | `harness/agy/` | `.agents/hooks.json` | hook wiring for `agy`: only the `tagteam` key is written, per machine and git-ignored |
 | `harness/tagteam/` | `.claude/tagteam/` | `route.py`, `run.py`, `role_guard.py`, `models_collect.py`, `models.json` |

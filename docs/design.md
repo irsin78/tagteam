@@ -79,9 +79,9 @@ computes.
 | Launcher | `harness/tagteam/run.py` | one worker through another vendor's CLI, model check, exhaustion detection, git check |
 | Collector | `harness/tagteam/models_collect.py` | model lists, benchmark values, proposal file |
 | Data | `harness/tagteam/models.json` | vendors, roles, models, grades, defaults, and an `orchestrators` block for a model that can only orchestrate (agy's built-in one): the router compares it as a stated model and effort, and the launcher never starts it |
-| Skills | `harness/skills/` | `cycle` (its `hosts.md` holds the per-host worker handling), `model-update`; installed to `.claude/skills` and `.agents/skills` |
+| Skills | `harness/skills/` | `cycle` (its `hosts.md` holds the per-host worker handling), `model-update`, `tagteam-update` (user-invoked); installed to `.claude/skills` and `.agents/skills` |
 | Worker definitions | `harness/claude/agents`, `harness/codex/agents` | fixed model and effort, limited tools |
-| Installer | `install.py` | install, update, check, repair Codex hooks, schedule (not installed) |
+| Installer | `install.py` | install, update (merges only tagteam's Claude hooks, records the install source and version), check, repair Codex hooks, schedule (not installed) |
 ## 5. Enforcement
 
 Every row is an accident check. The right-hand column is what it does not stop.
@@ -173,6 +173,15 @@ Windows and Linux; measured 2026-11-18 and 2026-11-19 / re-test after a host upd
   the commands look like this. Codex hooks name `python3` (`python` on Windows) directly and do
   not run without it; `--check` says so. The agy commands name one interpreter, chosen when the machine-local file is
   written (`python` on Windows, else `python3` when it exists), and `--check --host agy` looks for it on PATH.
+- **Project hooks stay.** The installer owns tagteam's hook handlers, not the hook file: it removes the handlers that are
+  exact guard calls and puts the template's back, so a project's own hooks survive an update (manual section 1). Claude Code runs
+  the hooks of one event in parallel and a deny wins; the guard only denies, so a project hook can neither lift its deny nor be
+  lifted by it. A project hook that rewrites tool input is the one case where the guard may judge a different command than
+  runs (section 10).
+- **Updates are the user's act.** `tagteam-update` moves the checkout by fast-forward, installs, checks and commits, and runs
+  only on request and never while `run.py --running` finds a run. Its commit is exempt from cross-vendor review only when
+  the installer's own check passed on every host the project uses (AGENTS.md section 4). The session-start notice compares
+  local commits only.
 - **One state folder, outside `.git`**, because Codex sandboxes cannot write there. **One table for host handling**:
   `AGENTS.md` and `cycle` name only host-neutral steps; how each host does them is in `hosts.md` beside the skill.
 
@@ -268,6 +277,8 @@ collector carry the notice.
 | The hook does not know the vendor of a reviewer | independence depends on the orchestrator using the router | accepted |
 | Codex: commits, branches, worktrees, `run.py` launches and test runs in the sandbox need the user's approval (`codex exec --approve-for-me` approves them automatically, which is not the user's approval); whether a finishing subagent starts an orchestrator turn is unconfirmed | more interaction than on Claude Code; the orchestrator waits for its subagents in the same turn | accepted; [hosts.md](../harness/skills/cycle/hosts.md#codex-notes) |
 | `start_session` is the Claude Code desktop app's session tool | the session pool needs it; elsewhere, native subagents and the launcher remain | accepted |
+| A project hook that rewrites tool input (`updatedInput`) next to the Claude guard | the guard may judge the command before the rewrite (parallel hooks; not confirmed against Claude Code) | open; the installer lists other hooks on tagteam's events |
+| `tagteam-update` and `run.py --running` see launcher runs only | a session or subagent working in the project or the checkout is not found | the orchestrator lists its own pool and asks the user once |
 | Hook recovery needs git | a broken hook is repaired outside Claude Code | see manual section 9.1 |
 
 Windows measurements: [platform/windows.md](platform/windows.md).
