@@ -12,6 +12,7 @@ import json
 import ntpath
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -220,6 +221,12 @@ def session_start_lines(payload, host):
         if note:
             lines.append(note)
         try:
+            note = update_notice()
+        except Exception:  # fail open
+            note = None
+        if note:
+            lines.append(note)
+        try:
             lines.extend(task_notice())
         except Exception:  # fail open
             pass
@@ -254,6 +261,38 @@ def model_update_notice(payload):
         return None
     return ("TAGTEAM: model update proposal (%d changes, %d CLI errors, collected %s); "
             "orchestrator: load skill model-update." % (changes, errors, prop["created"][:10]))
+
+
+UPDATE_GIT_TIMEOUT = 3  # seconds for the one git call of update_notice
+COMMIT_ID = re.compile(r"[0-9a-f]{7,64}")
+DESCRIBE = re.compile(r"[A-Za-z0-9._+-]{1,60}")  # install.json is a tracked file: only a plain word reaches the session
+
+
+def update_notice(folder=HERE):
+    """One line when the checkout recorded at install time has commits the installed template lacks. Local files
+    and one git call, no network. `folder` holds install.json (the installed commit) and install.local.json (the
+    checkout, relative to the project or absolute); the installer writes both. Silent (None) when either is missing
+    or unreadable, the commit is unknown to the checkout, the checkout is not ahead (same commit, behind or
+    diverged) or git fails or takes longer than UPDATE_GIT_TIMEOUT; update_notice's caller drops any exception."""
+    def read(name):
+        with open(os.path.join(folder, name), encoding="utf-8") as f:
+            return json.load(f)
+    template = read("install.json")["template"]
+    commit, checkout = template["commit"], read("install.local.json")["checkout"]
+    if not (isinstance(commit, str) and COMMIT_ID.fullmatch(commit) and isinstance(checkout, str) and checkout):
+        return None
+    checkout = os.path.normpath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(folder))), checkout))
+    if not os.path.isdir(checkout):
+        return None
+    out = subprocess.run(["git", "-C", checkout, "rev-list", "--left-right", "--count", commit + "...HEAD", "--"],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=UPDATE_GIT_TIMEOUT)
+    behind, ahead = (out.stdout.split() + ["", ""])[:2] if out.returncode == 0 else ("", "")
+    if behind != "0" or not ahead.isdigit() or int(ahead) == 0:  # only commits the installed one lacks, none the other way
+        return None
+    describe = template.get("describe")
+    describe = describe if isinstance(describe, str) and DESCRIBE.fullmatch(describe) else commit[:7]
+    return ("TAGTEAM: tagteam update available (checkout is %s commit%s ahead of installed %s); "
+            "orchestrator: load skill tagteam-update." % (ahead, "" if ahead == "1" else "s", describe))
 
 
 TASK_LINES = 10

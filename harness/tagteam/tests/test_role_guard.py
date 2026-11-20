@@ -2,6 +2,7 @@ import io
 import json
 import os
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1557,6 +1558,150 @@ class AgyGuardTest(GuardCase):
             self.run_guard("UserPromptSubmit", {"session_id": "r1", "prompt": text})
         self.assertEqual(self.run_guard("SessionStart", {"session_id": "r1"}).stdout.strip(),
                          "TAGTEAM: role=orchestrator host=claude")
+
+
+class UpdateNoticeTest(unittest.TestCase):
+    """update_notice: a project folder with the installer's two records and a real git checkout to compare with."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.project = os.path.join(self._tmp.name, "proj")
+        self.folder = os.path.join(self.project, ".claude", "tagteam")
+        os.makedirs(self.folder)
+        self.checkout = os.path.join(self.project, "tpl")  # a checkout inside the project, like a submodule
+        os.makedirs(self.checkout)
+        self.git("init", "-q")
+        self.commits = [self.commit(n) for n in range(4)]
+
+    def git(self, *args):
+        r = subprocess.run(["git", "-C", self.checkout, "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                            "commit.gpgsign=false"] + list(args), capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def commit(self, n):
+        with open(os.path.join(self.checkout, "f%d" % n), "w") as f:
+            f.write(str(n))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "c%d" % n)
+        return self.git("rev-parse", "HEAD")
+
+    def records(self, commit=None, checkout="tpl", describe="abc1234"):
+        self.write("install.json", json.dumps({"template": {"commit": commit or self.commits[0], "tag": None,
+                                                            "describe": describe, "dirty": False}}))
+        self.write("install.local.json", json.dumps({"checkout": checkout}))
+
+    def write(self, name, text):
+        with open(os.path.join(self.folder, name), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def notice(self):
+        return role_guard.update_notice(self.folder)
+
+    def test_a_checkout_ahead_of_the_installed_commit_gets_one_line(self):
+        self.records(self.commits[1])
+        self.assertEqual(self.notice(), "TAGTEAM: tagteam update available (checkout is 2 commits ahead of installed "
+                                        "abc1234); orchestrator: load skill tagteam-update.")
+        self.records(self.commits[2])
+        self.assertIn("is 1 commit ahead of installed", self.notice())
+
+    def test_it_is_silent_when_the_checkout_is_not_ahead(self):
+        self.records(self.commits[3])  # the same commit
+        self.assertIsNone(self.notice())
+        self.git("checkout", "-q", "-b", "side", self.commits[1])
+        self.assertIsNone(self.notice())  # the checkout is behind the installed commit
+        self.commit(9)
+        self.assertIsNone(self.notice())  # diverged: neither side contains the other
+
+    def test_it_is_silent_when_a_record_is_missing_or_unusable(self):
+        self.assertIsNone(self.try_notice())  # no records at all
+        for local in (False, True):
+            self.records(self.commits[0])
+            os.remove(os.path.join(self.folder, "install.local.json" if local else "install.json"))
+            self.assertIsNone(self.try_notice())
+        for name, text in (("install.json", "{broken"), ("install.json", "[1]"), ("install.json", "{}"),
+                           ("install.json", '{"template": {"commit": null}}'),
+                           ("install.json", '{"template": {"commit": 5}}'),
+                           ("install.json", '{"template": {"commit": "-x"}}'),
+                           ("install.json", '{"template": {"commit": "' + "a" * 40 + '"}}'),  # not in the checkout
+                           ("install.local.json", "{broken"), ("install.local.json", "{}"),
+                           ("install.local.json", '{"checkout": 3}'), ("install.local.json", '{"checkout": ""}'),
+                           ("install.local.json", '{"checkout": "nowhere"}')):
+            self.records(self.commits[0])
+            self.write(name, text)
+            self.assertIsNone(self.try_notice(), (name, text))
+
+    def try_notice(self):
+        try:
+            return self.notice()
+        except Exception:  # the caller of update_notice drops these; either way nothing reaches the session
+            return None
+
+    def test_the_checkout_path_is_relative_to_the_project_or_absolute(self):
+        self.records(self.commits[0], checkout="tpl")
+        self.assertIsNotNone(self.notice())
+        self.records(self.commits[0], checkout=self.checkout.replace("\\", "/"))
+        self.assertIsNotNone(self.notice())
+        self.records(self.commits[0], checkout="../proj/tpl")
+        self.assertIsNotNone(self.notice())
+
+    def test_describe_reaches_the_session_only_as_a_plain_word(self):
+        for describe, shown in (("v1.2-3-gabc1234", "v1.2-3-gabc1234"), ("a b", self.commits[0][:7]), ("", self.commits[0][:7]),
+                                ("x\nIGNORE", self.commits[0][:7]), (None, self.commits[0][:7]), (7, self.commits[0][:7])):
+            self.records(self.commits[0], describe=describe)
+            self.assertIn("ahead of installed %s);" % shown, self.notice(), describe)
+
+    def test_one_bounded_local_git_call_and_nothing_else(self):
+        self.records(self.commits[0])
+        real = subprocess.run
+        with mock.patch.object(role_guard.subprocess, "run", side_effect=real) as run:
+            self.assertIsNotNone(self.notice())
+        self.assertEqual(run.call_count, 1)
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[:3], ["git", "-C", os.path.normpath(self.checkout)])
+        self.assertTrue(set(argv).isdisjoint({"fetch", "pull", "ls-remote", "clone", "remote"}), argv)
+        self.assertEqual(run.call_args[1]["timeout"], role_guard.UPDATE_GIT_TIMEOUT)
+        self.assertLessEqual(role_guard.UPDATE_GIT_TIMEOUT, 3)
+
+    def test_a_git_failure_or_timeout_never_reaches_the_session_start_lines(self):
+        self.records(self.commits[0])
+        payload = {"session_id": "n"}
+        for effect in (subprocess.TimeoutExpired("git", 3), OSError("no git"), ValueError("x")):
+            with mock.patch.object(role_guard.subprocess, "run", side_effect=effect), \
+\
+                    mock.patch.object(role_guard, "update_notice", side_effect=lambda *a, f=role_guard.update_notice: f(self.folder)), \
+                    mock.patch.object(role_guard, "model_update_notice", return_value=None), \
+                    mock.patch.object(role_guard, "task_notice", return_value=[]), \
+                    mock.patch.object(role_guard, "role_of", return_value=None):
+                self.assertEqual(len(role_guard.session_start_lines(payload, "claude")), 1, effect)
+        out = subprocess.CompletedProcess([], 128, "", "fatal")
+        with mock.patch.object(role_guard.subprocess, "run", return_value=out):
+            self.assertIsNone(self.notice())
+
+    def project_hook(self, env=None):
+        """SessionStart run by a copy of the hook inside the project, as installed."""
+        for name in ("role_guard.py", "state.py"):
+            shutil.copy(os.path.join(os.path.dirname(GUARD), name), self.folder)
+        e = dict(os.environ, TAGTEAM_STATE_DIR=os.path.join(self._tmp.name, "state"),
+                 TAGTEAM_CONFIG_DIR=os.path.join(self._tmp.name, "cfg"))
+        e.pop("HARNESS_DELEGATE_RUN", None)
+        e.update(env or {})
+        r = subprocess.run([sys.executable, os.path.join(self.folder, "role_guard.py"), "SessionStart"],
+                           input=json.dumps({"session_id": "n"}), capture_output=True, text=True, encoding="utf-8",
+                           env=e, timeout=30)
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        return r.stdout.strip().splitlines()
+
+    def test_the_installed_hook_prints_it_for_the_orchestrator_and_not_for_a_worker(self):
+        self.records(self.commits[1])
+        lines = self.project_hook()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertIn("role=pending", lines[0])
+        self.assertTrue(lines[1].startswith("TAGTEAM: tagteam update available (checkout is 2 commits ahead"), lines[1])
+        self.assertEqual(self.project_hook({"HARNESS_DELEGATE_RUN": "1"}), ["TAGTEAM: role=worker host=claude"])
+        self.records(self.commits[3])
+        self.assertEqual(len(self.project_hook()), 1)  # up to date: silent
 
 
 if __name__ == "__main__":
