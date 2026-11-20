@@ -44,7 +44,7 @@ Supported CLIs (each optional except that you need one orchestrator):
 edit `models.json` only in a copy of the repository you maintain yourself.
 
 A plain run creates the project folder if needed, copies the files and prints one line per file as `created`, `updated` or
-`kept`. `--update` runs the same copy (only the wording changes, and it skips the weekly-check question). `--source DIR`
+`kept`. `--update` runs the same copy (only the wording changes). The installer asks no questions. `--source DIR`
 installs from another copy of the repository.
 
 | Source | Goes to | On update |
@@ -91,13 +91,13 @@ Other things the installer does:
 
 | What | Behaviour |
 |---|---|
-| `models.local.json` | If missing: in a terminal it asks the plan for each vendor (`none`, `free`, `pro`, `max`; Enter keeps `pro`; `none` removes that vendor from routing). With `--yes` or without a terminal it copies `models.local.json.example`. Check and edit the result (section 5.2). |
+| `models.local.json` | If missing, copied from `models.local.json.example` (no plans in it). Plans are an optional override you write yourself (section 5.2); without one, a vendor is usable when its CLI is present and its `available` list is not empty, and agy's plan is inferred from that list (section 5.1). |
 | Benchmark and available models | If `TAGTEAM_AA_API_KEY` is set and `bench.local.json` does not exist, runs `models_collect.py --write-bench` once (15 second timeout); if a vendor with a plan other than `none` has no `available` list, runs `--write-available` once. A failure prints a warning; the install continues. |
 | install record | Writes `.claude/tagteam/install.json` (committed: the template's `commit`, exact `tag` or null, `describe`, `dirty`) and `.claude/tagteam/install.local.json` (git-ignored: `checkout`, the folder that holds `install.py`; relative to the project when the checkout lies inside it, else an absolute path with `/`). The remote URL is never recorded. A template that is not a git checkout records a null commit and a warning. Installing a different commit that is known not to descend from the recorded one, or from a checkout with uncommitted changes, prints a warning and continues; reinstalling the recorded commit does not. |
 | `.gitignore` | Adds `.claude/tagteam/models.local.json`, `.claude/tagteam/bench.local.json`, `.claude/tagteam/install.local.json`, `.codex/hooks.json`, `.agents/hooks.json` and `.tagteam/`. |
 | Line endings | A file whose content differs from the new one only in `\r\n` versus `\n` (a clone with `core.autocrlf=true`) is reported `kept` and not rewritten, so `--update` makes no change that git shows. Only valid UTF-8 text without a NUL byte is compared this way; any other file is compared exactly. |
 | State folder | Moves records of an old `<git common dir>/tagteam/` into `.tagteam/` once (section 2). |
-| Weekly check | In a terminal, a plain install (not `--update`) asks whether to register it (section 8.2). |
+| Weekly check | On by default. The line `Model list check: weekly\|off` in `## Project policy` of `AGENTS.md` decides (a missing line means `weekly`); install and `--update` apply it: `weekly` registers the check, `off` leaves it unregistered (section 8.2). |
 
 ### 1.1 Check
 
@@ -457,13 +457,13 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
 ### 5.1 How a choice is made
 
 1. **Vendor order.** From `hosts.<host>` in `models.json` (Claude host: claude, openai, google; Codex host: openai,
-   claude, google), with plan `free` vendors moved last. A role with its own `vendors` list in `models.json` (only
+   claude, google), with plan `free` vendors moved last (a named plan, or google's inferred one: section 5.2). A role with its own `vendors` list in `models.json` (only
    `translate`: google, openai, claude) uses that list instead: it wins over the host order and is not reordered for `free`
    plans. In both cases vendors with plan `none` are dropped, the author's vendor is dropped for a review, and vendors in
    `exhausted.json` and vendors whose CLI is missing are skipped. The first vendor that has a candidate wins.
 2. **Candidates.** Every registered model and effort of that vendor whose `grades` entry equals the role's grade and that
-   is usable: plan not `none`, not hidden by `models.<id>.enabled`, and listed in `available` (no list counts as offering
-   everything). A model marked `"candidate": true` in `models.json` is never a candidate here; only a `roles.<role>.model`
+   is usable: plan not `none`, not hidden by `models.<id>.enabled`, and listed in a fresh `available` list (no list, or a stale one, counts as offering
+   everything: section 5.2). A model marked `"candidate": true` in `models.json` is never a candidate here; only a `roles.<role>.model`
    pin can select it.
 3. **Pick order.** The first rule that matches any candidate decides: cost known and within `grading.caps` for the
    grade: highest index; no cost but an index: highest index; cost above the cap: lowest cost; nothing known: the first
@@ -482,7 +482,7 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
 
 | Key | Effect |
 |---|---|
-| `plans.<vendor>` | `none` removes the vendor; `free` moves it last; `pro`, `max` have no routing effect; a missing vendor counts as `pro` |
+| `plans.<vendor>` | optional. `none` removes the vendor; `free` moves it last; `pro` and `max` are the same and have no routing effect; a vendor with no entry is usable when its CLI is present and its `available` list is not empty (no list: assumed to offer everything). An entry always wins over the inference below |
 | `models.<id>.enabled` | `false` hides a model; `true` skips the `available` check for it |
 | `available.<vendor>.ids` | ids the vendor CLI really offers (`checked` records the date); written by `--write-available` |
 | `roles.<role>` | `model`, `effort`, `vendor`, `grade` to pin for a role |
@@ -494,6 +494,14 @@ check. Otherwise the router falls back to
 the normal choice and `reason` says why (`override_unusable`, `override_exhausted`, `override_same_vendor_as_author`,
 `cli_missing:<vendor>`). A `roles.<role>.effort` pin keeps limiting the candidates of that fallback. A pinned reviewer of
 another grade than the author's is allowed, with `override_grade_mismatch` in the notice (on `--host agy` not below grade A).
+
+**Plan inference.** For google only, with no `plans.google` entry: when the `available` list (from `agy models`) is known and
+holds no Pro-class id, google is treated as `free` (moved last) and the route's `reason` gets `plan_inferred_free:google` next to
+`plan_free_last:google`. Pro-class is read from `models.json`: the built-in orchestrator ids (`orchestrators`) and every effort of
+a model that reaches grade A at some effort. An empty or missing list infers nothing, and Claude and Codex are never inferred (only
+availability decides). A list whose `checked` date is older than 14 days, in the future or unreadable is unknown, not evidence: nothing is
+inferred and the vendor's models count as offered (as with no list), and the route's `reason` gets `available_stale:<vendor>`; the weekly
+check or `models_collect.py --write-available` refreshes it. Set `plans.google` to `pro` (or `max`) to turn the inference off for a machine that is mistaken for free.
 
 ### 5.3 Exhaustion
 
@@ -744,6 +752,9 @@ WARN; with `--dry-run` it only says what it would run). launchd and cron also wr
 in the state folder (the crontab line ends in `>> <state folder>/model-update.log 2>&1`; the folder is made when the job is
 registered), so a failing run leaves a trace: without it cron mails the output, and a server without a mail system loses it.
 
+The check is on by default: install and `--update` register it unless `## Project policy` in `AGENTS.md` has the line
+`Model list check: off` (`weekly` or no line registers it). `--schedule` and `--unschedule` still work by hand.
+
 ## 9. When something goes wrong
 
 | Symptom | Likely cause | Action |
@@ -755,7 +766,7 @@ registered), so a failing run leaves a trace: without it cron mails the output, 
 | agy: every `run_command` is blocked, with a message from the hook (or none) | the guard cannot start or answer (no Python, wrong guard path, moved project, timeout) | section 1.3: `install.py <project dir> --update`, `--check --host agy`; or delete the `"tagteam"` key |
 | `run.py --status`/`--wait` exits 9 | the run is still going | repeat `--wait`; read `runs/<id>/stderr.txt` if it never ends. `run.py` ends the worker itself when the `--timeout` given at launch has passed (default 1800 s); to stop it earlier, end the `run.py` process by hand and check that its CLI is gone |
 | `RUN <id> ended without a report` (exit 6) | the launcher died before it could report (killed, machine restarted) | read the files in `runs/<id>/`; check the work tree with `git status`; launch again with a fresh brief |
-| Router exit 3 or 4 | no vendor other than the author's can review at that grade (3), or no usable model (4) | start a review elsewhere or report it incomplete (3); check `plans`, `enabled`, `available`, `exhausted.json` (4) |
+| Router exit 3 or 4 | no vendor other than the author's can review at that grade (3), or no usable model (4) | start a review elsewhere or report it incomplete (3); check `plans`, `enabled`, `available`, `exhausted.json` (4); the result's `reason` names an inferred plan (`plan_inferred_free:google`) |
 | Notice says "Check orchestrator cap" | router was not told the orchestrator's model or effort | pass `--orchestrator-model` and `--orchestrator-effort` |
 | Launcher `model_mismatch` (4) | CLI used another model, or the model line was not found | read `runs/<id>/stderr.txt` and `cmd.json`; do not use the output as if it came from the requested model |
 | Launcher `exhausted` (3), `git_head_moved` (7), `wrote_files` (8) | usage limit; a worker committed; a read-only run wrote | wait for `until` or let the router use another vendor; read the `ERROR:` line and review the diff (section 7) |

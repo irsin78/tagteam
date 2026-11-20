@@ -232,6 +232,9 @@ give another grade.
 - A candidate is usable only if the plan allows the vendor, the model is not hidden, and the vendor CLI lists it. The
   `available` lists are written by the collector; a vendor with no list is assumed to offer everything, which keeps an
   install usable before its first collection.
+- Plans are an optional override, not an installer question: availability decides, and the router infers only what it can
+  read. agy's list without any Pro-class id (from `models.json`, not names in code) means the free tier, so google goes
+  last; Claude and Codex lists carry no such signal and are never inferred. A named plan always wins.
 - agy's built-in Orchestrator model has no effort and no grade of its own. The router compares it as a stated pair
   (`compare_as` in `orchestrators`, an assumption the notice repeats), and refuses an effort given with it.
 - On `--host agy` a review is raised to at least grade A: the execution half of that model may be weaker than the

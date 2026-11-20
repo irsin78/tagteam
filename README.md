@@ -61,7 +61,8 @@ its built-in orchestrator model ([manual section 3.4](docs/manual.md#34-agy-as-t
 `python3 install.py <project dir> --check --host <cli>` checks files and hook handling (not trust); the optional `--live`
 also runs the CLI once and uses tokens.
 
-A weekly check of the vendors' model lists is optional: `python3 install.py <project dir> --schedule`.
+A weekly check of the vendors' model lists is registered by install and `--update` unless the Project policy line
+`Model list check: off` says otherwise; `python3 install.py <project dir> --schedule` or `--unschedule` does it by hand.
 
 ## What is in this repository
 

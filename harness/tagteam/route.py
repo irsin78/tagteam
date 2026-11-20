@@ -32,6 +32,11 @@ EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 GRADES = {"C": 0, "B": 1, "A": 2, "S": 3}
 ROLES = ["design", "implement", "review", "read", "translate"]
 TS = "%Y-%m-%dT%H:%M:%SZ"
+# Vendors whose plan is inferred from their CLI's available list when models.local.json names none: a list without any
+# Pro-class model means the free tier (see Router.inferred_free). Claude and Codex are judged by availability alone.
+INFER_FREE = ("google",)
+PRO_GRADE = "A"  # a model that reaches this grade at some effort is Pro-class
+AVAILABLE_MAX_AGE = 14  # days: an `available` list checked longer ago (two missed weekly checks) or with no readable date is unknown
 HOSTS = ["claude-desktop", "claude", "codex", "agy"]
 
 
@@ -254,8 +259,44 @@ class Router:
                 return b["value"]
         return None
 
+    def pro_ids(self, vendor):
+        """CLI ids that only a paid plan offers, from models.json: the vendor's built-in orchestrator ids and every effort of a
+        registered model that reaches PRO_GRADE at some effort. No model names are written here."""
+        ids = {o for o, info in (self.m.get("orchestrators") or {}).items() if info.get("vendor") == vendor}
+        arg = self.m["vendors"][vendor]["model_arg"]
+        for mid, model in self.m["models"].items():
+            grades = model.get("grades") or {}
+            if model["vendor"] == vendor and any(GRADES.get(g, -1) >= GRADES[PRO_GRADE] for g in grades.values()):
+                ids |= {arg.format(model=mid, effort=e) for e in grades}
+        return ids
+
+    def available(self, vendor):
+        """(ids, stale): the CLI ids the vendor offers, from a fresh `available` list; (None, False) for no list, and
+        (None, True) for a list whose `checked` date is older than AVAILABLE_MAX_AGE days, in the future or unreadable. None means
+        unknown: every model of the vendor counts as offered and nothing is inferred from the list. One rule for both."""
+        entry = (self.local.get("available") or {}).get(vendor)
+        if not entry or not isinstance(entry, dict):
+            return None, False
+        try:
+            age = (now().date() - datetime.strptime(entry["checked"], "%Y-%m-%d").date()).days
+        except (KeyError, TypeError, ValueError):
+            return None, True
+        if not 0 <= age <= AVAILABLE_MAX_AGE or not isinstance(entry.get("ids", []), list):
+            return None, True
+        return entry.get("ids", []), False
+
+    def inferred_free(self, vendor):
+        """True when models.local.json gives this vendor no plan, it is one of INFER_FREE, its available list is fresh and
+        holds no Pro-class id."""
+        if vendor not in INFER_FREE or vendor in (self.local.get("plans") or {}):
+            return False
+        ids = self.available(vendor)[0]
+        return bool(ids) and not set(ids) & self.pro_ids(vendor)
+
     def plan(self, vendor):
-        return (self.local.get("plans") or {}).get(vendor, "pro")
+        """none | free | pro | max as models.local.json says (pro and max are treated alike); else `free` when inferred, else pro."""
+        named = (self.local.get("plans") or {}).get(vendor)
+        return named or ("free" if self.inferred_free(vendor) else "pro")
 
     def usable(self, mid, effort):
         model = self.m["models"][mid]
@@ -265,10 +306,8 @@ class Router:
         enabled = ((self.local.get("models") or {}).get(mid) or {}).get("enabled")
         if enabled is not None:
             return bool(enabled)
-        avail = (self.local.get("available") or {}).get(v)
-        if avail:
-            return self.m["vendors"][v]["model_arg"].format(model=mid, effort=effort) in avail.get("ids", [])
-        return True
+        ids = self.available(v)[0]
+        return True if ids is None else self.m["vendors"][v]["model_arg"].format(model=mid, effort=effort) in ids
 
     def model_effort(self, mid, spec, grade):
         """Effort for a user-pinned model: the user effort (clamped), else its lowest effort at the grade."""
@@ -320,10 +359,15 @@ class Router:
         pinned = [spec["user_vendor"]] if spec.get("user_vendor") else []
         explicit = spec.get("vendors")
         rest = list(explicit or self.m["hosts"][host])
+        for v in dict.fromkeys(pinned + rest):
+            if self.available(v)[1]:
+                reason.append("available_stale:" + v)
         if not explicit:
             free = [v for v in rest if self.plan(v) == "free" and v not in pinned]
             for v in free:
                 reason.append("plan_free_last:" + v)
+                if self.inferred_free(v):
+                    reason.append("plan_inferred_free:" + v)
             rest = [v for v in rest if v not in free] + free
         order = []
         for v in pinned + rest:

@@ -36,7 +36,13 @@ class RouteBase(unittest.TestCase):
         shutil.copytree(os.path.join(HARNESS, "claude", "agents"), os.path.join(self.root, ".claude", "agents"))
         shutil.copytree(os.path.join(HARNESS, "codex", "agents"), os.path.join(self.root, ".codex", "agents"))
 
-    def local(self, data):
+    def local(self, data, stamp=True):
+        """Write models.local.json. An `available` entry without a `checked` key gets today's date (a list is only evidence while
+        fresh); stamp=False writes the data as given."""
+        if stamp and isinstance(data.get("available"), dict):
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            data = dict(data, available={v: (dict(e, checked=today) if isinstance(e, dict) and e and "checked" not in e else e)
+                                         for v, e in data["available"].items()})
         with open(os.path.join(self.cfg, "models.local.json"), "w", encoding="utf-8") as f:
             json.dump(data, f)
 
@@ -199,6 +205,106 @@ class RouteTest(RouteBase):
         self.assertIn("plan_free_last:openai", r["reason"])
         self.local({"plans": {"google": "free"}})
         self.assertPick(self.route("translate"), "gemini-4-hydrogen", "medium", "run")
+
+    FLASH_ONLY = {"google": {"ids": ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high"]}}
+
+    def agy_implement(self, local):
+        self.local(local)
+        return self.route("implement", host="agy")[1]
+
+    def test_no_plans_means_availability_decides(self):
+        r = self.agy_implement({})  # nothing in models.local.json: every vendor with a CLI is usable, google first on agy
+        self.assertPick((0, r), "gemini-4-hydrogen", "medium")
+        self.assertNotIn("plan_inferred_free:google", r["reason"])
+        r = self.agy_implement({"plans": {}, "available": {"openai": {"ids": ["gpt-6.1-terra"]}}})  # an empty plans object is the same
+        self.assertPick((0, r), "gemini-4-hydrogen", "medium")
+        r = self.agy_implement({"available": {"google": {"ids": ["gemini-4-hydrogen-medium"]}}})  # a Pro-class id is offered
+        self.assertPick((0, r), "gemini-4-hydrogen", "medium")
+        self.assertNotIn("plan_free_last:google", r["reason"])
+
+    def test_pro_and_max_are_the_same_plan(self):
+        for plan in ("pro", "max"):
+            r = self.agy_implement({"plans": {"google": plan, "openai": plan}, "available": self.FLASH_ONLY})
+            self.assertPick((0, r), "gemini-3.8-flash", "medium")  # named: not inferred free, google stays first
+            self.assertNotIn("plan_free_last:google", r["reason"])
+
+    def test_google_is_inferred_free_when_its_list_has_no_pro_model(self):
+        r = self.agy_implement({"available": self.FLASH_ONLY})
+        self.assertPick((0, r), "gpt-6.1-sol", "medium")
+        self.assertIn("plan_free_last:google", r["reason"])
+        self.assertIn("plan_inferred_free:google", r["reason"])
+
+    def test_google_is_not_inferred_free_with_a_pro_model_or_orchestrator_id(self):
+        for ids in (["gemini-3.8-flash-high", "gemini-4-argon-high"], ["gemini-3.8-flash-high", "gemini-4-hydrogen-low"],
+                    ["gemini-3.8-flash-high", "gemini-pro-orchestrator-neon"], ["gemini-3.8-flash-high", "gemini-pro-orchestrator-g1-pro"]):
+            with self.subTest(ids):
+                r = self.agy_implement({"available": {"google": {"ids": ids}}})
+                self.assertNotIn("plan_free_last:google", r["reason"])
+                self.assertNotIn("plan_inferred_free:google", r["reason"])
+                self.assertEqual(r["vendor"], "google")
+
+    def test_no_inference_without_a_known_list_and_none_for_claude_or_codex(self):
+        for avail in ({}, {"google": {"ids": []}}, {"google": {}}, {"google": {"ids": "x"}},
+                      {"claude": {"ids": ["claude-sonnet-5-5"]}, "openai": {"ids": ["gpt-6.1-terra"]}}):
+            with self.subTest(avail):
+                r = self.agy_implement({"available": avail})
+                self.assertFalse([x for x in r["reason"] if x.startswith(("plan_free_last", "plan_inferred_free"))], r["reason"])
+        self.local({"available": {"openai": {"ids": ["gpt-6.1-terra-low"]}}})  # a small codex list is no plan signal
+        r = self.route("implement", host="codex")[1]
+        self.assertFalse([x for x in r["reason"] if x.startswith("plan_")], r["reason"])
+
+    def test_an_explicit_plan_wins_over_the_inference(self):
+        r = self.agy_implement({"plans": {"google": "pro"}, "available": self.FLASH_ONLY})
+        self.assertEqual(r["vendor"], "google")
+        self.assertNotIn("plan_inferred_free:google", r["reason"])
+        r = self.agy_implement({"plans": {"google": "free"}, "available": self.FLASH_ONLY})  # named free: last, not "inferred"
+        self.assertIn("plan_free_last:google", r["reason"])
+        self.assertNotIn("plan_inferred_free:google", r["reason"])
+
+    def days_ago(self, days):
+        return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def test_a_stale_or_undated_list_is_unknown_not_evidence(self):
+        flash = self.FLASH_ONLY["google"]["ids"]
+        r = self.agy_implement({"available": {"google": {"checked": self.days_ago(1), "ids": flash}}})  # fresh: free is inferred
+        self.assertIn("plan_inferred_free:google", r["reason"])
+        self.assertNotIn("available_stale:google", r["reason"])
+        self.assertPick((0, r), "gpt-6.1-sol", "medium")
+        for checked in (self.days_ago(15), "2020-01-01", None, "yesterday", 5, self.days_ago(-1), self.days_ago(-30)):
+            with self.subTest(checked):
+                self.local({"available": {"google": {"checked": checked, "ids": flash}}}, stamp=False)
+                code, r = self.route("implement", host="agy")  # stale Flash-only: nothing inferred, Hydrogen counts as offered
+                self.assertPick((code, r), "gemini-4-hydrogen", "medium")
+                self.assertIn("available_stale:google", r["reason"])
+                self.assertFalse([x for x in r["reason"] if x.startswith(("plan_free_last", "plan_inferred_free"))], r["reason"])
+        self.local({"available": {"google": {"checked": "2020-01-01", "ids": []}}}, stamp=False)  # stale empty: all offered
+        self.assertPick(self.route("implement", host="agy"), "gemini-4-hydrogen", "medium")
+        self.local({"available": {"google": {"ids": flash}}}, stamp=False)  # no date at all
+        code, r = self.route("implement", host="agy")
+        self.assertIn("available_stale:google", r["reason"])
+        self.assertPick((code, r), "gemini-4-hydrogen", "medium")
+
+    def test_a_fresh_empty_list_still_offers_nothing_and_a_missing_list_everything(self):
+        self.local({"available": {"google": {"checked": self.days_ago(0), "ids": []}}}, stamp=False)
+        r = self.route("implement", host="agy")[1]
+        self.assertNotEqual(r.get("vendor"), "google")
+        self.assertNotIn("available_stale:google", r["reason"])
+        r = self.agy_implement({})  # missing: as before, no stale reason
+        self.assertEqual(r["vendor"], "google")
+        self.assertNotIn("available_stale:google", r["reason"])
+
+    def test_a_stale_list_does_not_hide_a_pinned_model_either(self):
+        pin = {"roles": {"implement": {"model": "gemini-4-hydrogen", "effort": "medium"}}}
+        self.local(dict(pin, available={"google": {"checked": "2020-01-01", "ids": ["gemini-3.8-flash-low"]}}), stamp=False)
+        r = self.route("implement", host="agy")[1]
+        self.assertEqual(r["model"], "gemini-4-hydrogen")
+        self.assertNotIn("override_unusable", r["reason"])
+        self.local(dict(pin, available={"google": {"checked": self.days_ago(0), "ids": ["gemini-3.8-flash-low"]}}))
+        self.assertIn("override_unusable", self.route("implement", host="agy")[1]["reason"])  # a fresh list still rules
+
+    def test_none_excludes_a_vendor_even_with_a_pro_list(self):
+        r = self.agy_implement({"plans": {"google": "none"}, "available": {"google": {"ids": ["gemini-4-argon-high"]}}})
+        self.assertNotEqual(r["vendor"], "google")
 
     def test_over_cap_by_model_order_and_effort(self):
         # every A pair is over the cap of Sonnet high: still picked, launched through run.py
