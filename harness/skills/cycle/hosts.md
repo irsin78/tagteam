@@ -3,7 +3,7 @@
 Part of the skill `cycle` (installed as `.claude/skills/cycle/hosts.md` and `.agents/skills/cycle/hosts.md`).
 AGENTS.md and SKILL.md say what to do with a worker; this file says how on each host. The *host* is the
 CLI the orchestrator runs in. Rules tagged `[host: ...]` record a measured limit of one host version;
-re-test them after a host update. "Unconfirmed" marks behaviour that is not established yet: try it, and
+when to re-test them after a host update is in AGENTS.md section 6. "Unconfirmed" marks behaviour that is not established yet: try it, and
 record what happened in status.md.
 
 ## Launch kinds (`route.py --json`, field `launch`)

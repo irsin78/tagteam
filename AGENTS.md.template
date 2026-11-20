@@ -157,8 +157,14 @@ runs when they share no files. Record which units a review covers.
 
 Rules tagged `[fix: ...]` are model-compensation rules; list them with
 `grep -rn "\[fix:" AGENTS.md .claude .codex .agents`. Rules tagged `[host: ...]` record a
-measured host limit; list them with `grep -rn "\[host:" AGENTS.md .claude .codex .agents`
-and re-test them after a host update. Untagged rules are harness structure.
+measured host limit; list them with `grep -rn "\[host:" AGENTS.md .claude .codex .agents`.
+A tag's "re-test after ... update" names the host; when to re-test is this rule. After a host update
+run the tagteam checkout's `install.py <project> --check --host <host> --live` (`--host claude` for
+Claude Code desktop; no known checkout: cycle SKILL.md section 0). Re-test that host's tagged rules
+when the check fails or reports the host unverified, the release notes mention hooks, sandbox or
+permissions, or a week has passed since the tag's `measured` date; a re-test updates that date even
+when nothing changed. A host that cannot run (usage limit) is recorded in status.md and re-tested when
+it can. Untagged rules are harness structure.
 
 ## Project policy
 
