@@ -64,7 +64,8 @@ Also kept as they are: `models.local.json`, `bench.local.json`, the machine-loca
 
 **Your hooks in `.claude/settings.json`.** Install and `--update` take out only the handlers whose command is a call of
 `.claude/tagteam/role_guard.py` (as the template and earlier templates write it, also in an event the template no longer uses
-or inside a group shared with your hooks), and put the template's handlers back in the place of the first one removed. Your
+or inside a group shared with your hooks), and put the template's groups back where the first group they emptied was, or
+at the end of the event when no whole group was emptied. Your
 other handlers, groups, events and keys keep their content and order, and a handler that only mentions the guard is yours.
 A second `--update` changes nothing. When the file changes, the original is copied byte for byte to
 `.tagteam/backups/settings.json.<UTC time>` first (next to the file when the state folder cannot be used) and the path
@@ -92,7 +93,7 @@ Other things the installer does:
 |---|---|
 | `models.local.json` | If missing: in a terminal it asks the plan for each vendor (`none`, `free`, `pro`, `max`; Enter keeps `pro`; `none` removes that vendor from routing). With `--yes` or without a terminal it copies `models.local.json.example`. Check and edit the result (section 5.2). |
 | Benchmark and available models | If `TAGTEAM_AA_API_KEY` is set and `bench.local.json` does not exist, runs `models_collect.py --write-bench` once (15 second timeout); if a vendor with a plan other than `none` has no `available` list, runs `--write-available` once. A failure prints a warning; the install continues. |
-| install record | Writes `.claude/tagteam/install.json` (committed: the template's `commit`, exact `tag` or null, `describe`, `dirty`) and `.claude/tagteam/install.local.json` (git-ignored: `checkout`, the folder that holds `install.py`; relative to the project when the checkout lies inside it, else an absolute path with `/`). The remote URL is never recorded. A template that is not a git checkout records a null commit and a warning. Installing a commit that is not newer than the recorded one, or from a checkout with uncommitted changes, prints a warning and continues. |
+| install record | Writes `.claude/tagteam/install.json` (committed: the template's `commit`, exact `tag` or null, `describe`, `dirty`) and `.claude/tagteam/install.local.json` (git-ignored: `checkout`, the folder that holds `install.py`; relative to the project when the checkout lies inside it, else an absolute path with `/`). The remote URL is never recorded. A template that is not a git checkout records a null commit and a warning. Installing a different commit that is known not to descend from the recorded one, or from a checkout with uncommitted changes, prints a warning and continues; reinstalling the recorded commit does not. |
 | `.gitignore` | Adds `.claude/tagteam/models.local.json`, `.claude/tagteam/bench.local.json`, `.claude/tagteam/install.local.json`, `.codex/hooks.json`, `.agents/hooks.json` and `.tagteam/`. |
 | Line endings | A file whose content differs from the new one only in `\r\n` versus `\n` (a clone with `core.autocrlf=true`) is reported `kept` and not rewritten, so `--update` makes no change that git shows. Only valid UTF-8 text without a NUL byte is compared this way; any other file is compared exactly. |
 | State folder | Moves records of an old `<git common dir>/tagteam/` into `.tagteam/` once (section 2). |
@@ -395,7 +396,8 @@ Details per operation and the limits: [hosts.md](../harness/skills/cycle/hosts.m
 
 ## 4. Verification and review
 
-**Every change gets a review by another vendor; nothing skips it.** AGENTS.md section 4 sets how: Tier 0 units are
+**Every change gets a review by another vendor.** The one exception is the commit of a complete `tagteam-update` run
+whose checks passed (AGENTS.md section 4, section 1.4 here); everything else is reviewed. AGENTS.md section 4 sets how: Tier 0 units are
 reviewed together in one batch, a Tier 1 unit once, a Tier 2 unit twice (review, fixes, second review). Operationally:
 
 - Fill in `Verification commands` in `## Project policy` with the exact commands and what counts as passing. Workers run
