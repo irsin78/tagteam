@@ -30,13 +30,16 @@ STUB = '''import json, os, sys
 event = sys.argv[1]
 d = json.load(sys.stdin)
 state = os.path.join(os.environ["TAGTEAM_STATE_DIR"], d["session_id"] + ".json")
+if event == "SessionStart":
+    print("TAGTEAM: stub")
+    sys.exit(0)
 if event == "UserPromptSubmit":
     if not os.path.exists(state):
         worker = any(l.startswith("HARNESS ROLE: DELEGATE") for l in d.get("prompt", "").splitlines())
         open(state, "w").write("worker" if worker else "orchestrator")
     sys.exit(0)
 if event == "PreToolUse":
-    role = open(state).read() if os.path.exists(state) else "orchestrator"
+    role = "worker" if os.environ.get("HARNESS_DELEGATE_RUN") else open(state).read() if os.path.exists(state) else "orchestrator"
     ti = d.get("tool_input", {})
     if d["tool_name"].endswith("start_session") and not ti.get("model") and not ti.get("effort"):
         sys.stderr.write("deny"); sys.exit(2)
@@ -83,7 +86,7 @@ HOOKS_TEMPLATE = {"hooks": {
 def build_source(root, guard=STUB):
     h = root / "harness"
     files = {
-        "claude/settings.json": json.dumps({"hooks": {"PreToolUse": ["new"]}, "subagentPromptCacheTtl": "1h"}),
+        "claude/settings.json": REAL_SETTINGS.read_text(encoding="utf-8"),  # the stub guard answers all three events
         "claude/agents/a.md": "agent",
         "skills/s1/SKILL.md": "skill",
         "tagteam/role_guard.py": guard,
@@ -1481,7 +1484,8 @@ class InstallTests(unittest.TestCase):
         (self.dst / ".claude/tagteam/models.local.json").write_text('{"mine": 1, "available": {"google": {"ids": ["g"]}}}', encoding="utf-8")
         (self.dst / ".codex/hooks.json").write_text('{"trusted": true}', encoding="utf-8")
         (self.dst / ".claude/settings.json").write_text(json.dumps(
-            {"hooks": {"old": 1}, "permissions": {"allow": ["x"]}, "subagentPromptCacheTtl": "5m"}),
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./mine.sh"}]}]}, "permissions": {"allow": ["x"]},
+             "subagentPromptCacheTtl": "5m"}),
             encoding="utf-8")
         code, out = self.run_install("--update")
         self.assertEqual(code, 0)
@@ -1494,8 +1498,9 @@ class InstallTests(unittest.TestCase):
         self.assertEqual((self.dst / ".codex/hooks.json").read_text(), '{"trusted": true}')
         self.assertIn("kept", out)
         s = json.loads((self.dst / ".claude/settings.json").read_text(encoding="utf-8"))
-        self.assertEqual(s["hooks"], {"PreToolUse": ["new"]})
-        self.assertEqual(s["subagentPromptCacheTtl"], "1h")
+        self.assertEqual(s["hooks"]["Stop"], [{"hooks": [{"type": "command", "command": "./mine.sh"}]}])  # the project's own hook stays
+        self.assertEqual(list(s["hooks"]), ["Stop", "SessionStart", "UserPromptSubmit", "PreToolUse"])
+        self.assertEqual(s["subagentPromptCacheTtl"], "5m")  # the project's value stays
         self.assertEqual(s["permissions"], {"allow": ["x"]})
 
     def test_existing_agents_md_without_policy_marker_is_kept_under_policy(self):
@@ -1633,7 +1638,7 @@ class InstallTests(unittest.TestCase):
         for groups in data["hooks"].values():
             for g in groups:
                 for h in g["hooks"]:
-                    h["command"] = 'tagteam-no-such-python "${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py" ' \
+                    h["command"] = 'python9.99 "${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py" ' \
                                    + h["command"].rsplit(" ", 1)[1]
         path.write_text(json.dumps(data), encoding="utf-8")
         code, out, _ = self.run_main("--check")
@@ -1663,9 +1668,9 @@ class InstallTests(unittest.TestCase):
                               ("Bash2", False), ("(", False)):
             self.assertEqual(install.matcher_hits(matcher, "Bash"), hits, matcher)
         self.edit_settings(lambda d: d["hooks"]["PreToolUse"][0].update(matcher="Edit|Bash"))
-        self.assertEqual(self.run_main("--check")[0], 0)
+        self.assertIn("hook commands (claude): ok", self.run_main("--check")[1])  # (still drift from the template: exit 1)
 
-    def test_check_accepts_tagteam_hooks_split_over_groups_if_one_selects_bash(self):
+    def test_check_tests_every_split_tagteam_group_and_reports_the_split_as_drift(self):
         self.use_real_hooks()
         self.run_install()
         if not install.hook_shell():
@@ -1678,7 +1683,8 @@ class InstallTests(unittest.TestCase):
             d["hooks"]["PreToolUse"].append(other)
         self.edit_settings(split)
         code, out, _ = self.run_main("--check")
-        self.assertEqual(code, 0, out)
+        self.assertEqual(code, 1, out)  # the handler test passes; the split is drift from the template
+        self.assertIn("settings.json different: PreToolUse: matcher", out)
         self.assertIn("hook commands (claude): ok", out)
         self.assertEqual([m for m, _, _ in install.settings_guard_hooks(self.dst, "PreToolUse")], ["Bash", "Edit|Write"])
         # the Bash group is the one that counts: without it nothing guards shell commands
@@ -1709,7 +1715,7 @@ class InstallTests(unittest.TestCase):
             code, out, _ = self.run_main("--check")
         finally:
             os.chdir(here)
-        self.assertEqual(code, 0, out)
+        self.assertEqual(code, 1, out)  # these commands differ from the template (drift), but they run
         self.assertIn("hook commands (claude): ok", out)
 
     def test_check_runs_each_hook_within_its_own_timeout(self):
@@ -2316,18 +2322,18 @@ class InstallTests(unittest.TestCase):
         if not install.hook_shell():
             self.skipTest("no sh / Git Bash")
 
-        def start_hook(command):
-            self.edit_settings(lambda d: d["hooks"]["SessionStart"][0]["hooks"][0].update(command=command))
+        def start_hook(guard_source):
+            (self.dst / ".claude/tagteam/role_guard.py").write_text(guard_source, encoding="utf-8")
             code, out, _ = self.run_main("--check")
             self.assertEqual(code, 1, out)
             return out
-        out = start_hook("echo role_guard.py ran quietly")  # exit 0, but no TAGTEAM: line: the guard did not run
+        out = start_hook("import sys\nsys.exit(0)\n")  # exit 0, but no TAGTEAM: line: the guard did not run
         self.assertIn("hook command 'SessionStart': exit 0 as expected, but the output shows the guard did not run.", out)
         self.assertNotIn("expected exit 0, got 0", out)
-        out = start_hook('echo "role_guard.py: python3/python not found on PATH"; exit 0')
+        out = start_hook('print("role_guard.py: python3/python not found on PATH")\n')
         self.assertIn("exit 0 as expected, but the output shows the guard did not run (python3/python was not found by the command)", out)
         self.assertNotIn("expected exit 0, got 0", out)
-        out = start_hook("echo TAGTEAM: x; exit 3  # role_guard.py")  # a wrong exit code keeps its own message
+        out = start_hook("import sys\nprint('TAGTEAM: x')\nsys.exit(3)\n")  # a wrong exit code keeps its own message
         self.assertIn("hook command 'SessionStart': expected exit 0, got 3.", out)
         self.assertNotIn("as expected", out)
 
@@ -2812,6 +2818,544 @@ class ScheduleTests(unittest.TestCase):
         for kw in ("worker", "model-update.json", "route.py", "Artificial Analysis", "FrontierSWE", "candidate",
                    "probe", "--check", "[fix:", "Commit", "--mark-applied"):
             self.assertIn(kw, text, kw)
+
+
+OWN_HOOKS = {
+    "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "./scripts/block-rm.sh --strict", "timeout": 5}]}],
+    "PostToolUse": [{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "prettier --write"}]}],
+    "SessionStart": [{"hooks": [{"type": "command", "command": "direnv export json"}]},
+                     {"hooks": [{"type": "http", "url": "http://localhost:9/start"}]}],
+}
+OLD_GUARD = "python3 .claude/tagteam/role_guard.py {} --host claude"
+
+
+def old_hook(event, spelling=OLD_GUARD):
+    return {"type": "command", "command": spelling.format(event)}
+
+
+class ClaudeSettingsMergeTests(unittest.TestCase):
+    """install and --update replace only tagteam's own handlers in .claude/settings.json."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.src = build_source(base / "src")
+        shutil.copy(REAL_SETTINGS, self.src / "harness/claude/settings.json")
+        self.dst = base / "proj"
+        (self.dst / ".claude").mkdir(parents=True)
+        self.path = self.dst / ".claude/settings.json"
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("TAGTEAM_AA_API_KEY", "TAGTEAM_CONFIG_DIR", "TAGTEAM_STATE_DIR"):
+            os.environ.pop(k, None)
+
+    def write(self, obj, raw=None):
+        self.path.write_bytes(raw if raw is not None else json.dumps(obj, indent=2).encode("utf-8"))
+
+    def doc(self):
+        return json.loads(self.path.read_text(encoding="utf-8-sig"))
+
+    def run_install(self, *extra):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = install.main([str(self.dst), "--source", str(self.src), "--yes", *extra])
+        return code, out.getvalue(), err.getvalue()
+
+    def backups(self):
+        folder = self.dst / ".tagteam/backups"
+        return sorted(folder.iterdir()) if folder.is_dir() else []
+
+    def tree(self):
+        """Every file of the project (a link as its target), to prove that a refused install wrote nothing."""
+        seen = {}
+        for root, dirs, files in os.walk(self.dst):
+            for name in dirs + files:
+                p = Path(root, name)
+                seen[p.relative_to(self.dst).as_posix()] = (os.readlink(p) if p.is_symlink()
+                                                            else p.read_bytes() if p.is_file() else None)
+        return seen
+
+    def tagteam_count(self, hooks, event):
+        return sum(install.is_claude_tagteam_hook(h) for g in hooks[event] for h in g["hooks"])
+
+    def test_the_projects_own_hooks_stay_and_each_event_gets_one_tagteam_handler(self):
+        self.write({"permissions": {"allow": ["x"]}, "hooks": copy.deepcopy(OWN_HOOKS)})
+        code, out, err = self.run_install()
+        self.assertEqual(code, 0, err)
+        doc = self.doc()
+        self.assertEqual(doc["permissions"], {"allow": ["x"]})
+        self.assertEqual(doc["subagentPromptCacheTtl"], "1h")
+        hooks = doc["hooks"]
+        self.assertEqual(list(hooks), ["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit"])
+        self.assertEqual(hooks["PostToolUse"], OWN_HOOKS["PostToolUse"])
+        self.assertEqual(hooks["PreToolUse"][0], OWN_HOOKS["PreToolUse"][0])
+        self.assertEqual(hooks["SessionStart"][:2], OWN_HOOKS["SessionStart"])
+        for event in ("PreToolUse", "SessionStart", "UserPromptSubmit"):
+            self.assertEqual(self.tagteam_count(hooks, event), 1, event)
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual(self.backups()[0].parent.parent.name, ".tagteam")
+        self.assertRegex(out, r"backup\s+\.tagteam/backups/settings\.json\.\d{8}T\d{6}Z")
+        self.assertRegex(out, r"updated\s+\.claude/settings\.json")
+
+    def test_a_second_update_keeps_the_file_and_makes_no_backup(self):
+        original = json.dumps({"hooks": copy.deepcopy(OWN_HOOKS)}, indent=2).encode("utf-8")
+        self.write(None, original)
+        self.run_install()
+        first = self.path.read_bytes()
+        self.assertEqual(self.backups()[0].read_bytes(), original)
+        for _ in range(2):
+            code, out, err = self.run_install("--update")
+            self.assertEqual(code, 0, err)
+            self.assertRegex(out, r"kept\s+\.claude/settings\.json")
+            self.assertNotIn("backup", out)
+            self.assertEqual(self.path.read_bytes(), first)
+        self.assertEqual(len(self.backups()), 1)
+
+    def test_a_new_file_is_the_template_and_gets_no_backup(self):
+        code, out, err = self.run_install()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.doc(), json.loads(REAL_SETTINGS.read_text(encoding="utf-8")))
+        self.assertRegex(out, r"created\s+\.claude/settings\.json")
+        self.assertEqual(self.backups(), [])
+        self.assertRegex(self.run_install("--update")[1], r"kept\s+\.claude/settings\.json")
+
+    def test_old_template_handlers_are_replaced_wherever_they_sit(self):
+        project = {"type": "command", "command": "./mine.sh"}
+        self.write({"hooks": {
+            "PreToolUse": [{"matcher": "Bash", "hooks": [old_hook("PreToolUse"), project]},       # mixed with a project hook
+                           {"matcher": "Read", "hooks": [old_hook("PreToolUse")]},               # another matcher, tagteam only
+                           {"matcher": "Edit", "hooks": [{"type": "command", "command": "./edit.sh"}]}],
+            "SessionStart": [{"hooks": [old_hook("SessionStart", "python .claude\\tagteam\\role_guard.py {}")]}],
+            "Stop": [{"hooks": [old_hook("Stop")]}],                                              # an event the template does not use
+            "Notification": [{"hooks": [project, old_hook("Notification")]}],
+        }})
+        code, out, err = self.run_install()
+        self.assertEqual(code, 0, err)
+        hooks = self.doc()["hooks"]
+        self.assertNotIn("Stop", hooks)
+        self.assertEqual(hooks["Notification"], [{"hooks": [project]}])
+        self.assertEqual(hooks["PreToolUse"][0], {"matcher": "Bash", "hooks": [project]})
+        self.assertEqual(hooks["PreToolUse"][2], {"matcher": "Edit", "hooks": [{"type": "command", "command": "./edit.sh"}]})
+        self.assertEqual(len(hooks["PreToolUse"]), 3)  # the template group sits where the first removed group was
+        self.assertEqual(self.tagteam_count(hooks, "PreToolUse"), 1)
+        self.assertEqual(self.tagteam_count(hooks, "SessionStart"), 1)
+        self.assertEqual(hooks["PreToolUse"][1]["hooks"][0]["command"], json.loads(REAL_SETTINGS.read_text())["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
+        self.assertIn("hooks.PreToolUse[0]: removed a tagteam handler that shared a group with other hooks", out)
+        self.assertIn("hooks.Notification[0]", out)
+        self.assertEqual(install.claude_hook_drift(self.dst, self.src, hooks)[:2], ([], []))
+        self.assertRegex(self.run_install("--update")[1], r"kept\s+\.claude/settings.json")
+
+    def test_a_group_that_was_empty_before_is_the_projects_and_stays(self):
+        self.write({"hooks": {"PreToolUse": [{"matcher": "X", "hooks": []}, {"matcher": "Bash", "hooks": [old_hook("PreToolUse")]}]}})
+        self.run_install()
+        groups = self.doc()["hooks"]["PreToolUse"]
+        self.assertEqual(groups[0], {"matcher": "X", "hooks": []})
+        self.assertEqual(len(groups), 2)
+
+    def test_the_template_group_takes_the_place_of_the_one_it_replaces(self):
+        own = {"hooks": [{"type": "command", "command": "./own.sh"}]}
+        self.write({"hooks": {"SessionStart": [own], "UserPromptSubmit": [{"hooks": [old_hook("UserPromptSubmit")]}],
+                              "PreToolUse": [{"matcher": "Bash", "hooks": [old_hook("PreToolUse")]}],
+                              "PostToolUse": [own]}})
+        self.run_install()
+        self.assertEqual(list(self.doc()["hooks"]), ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"])
+        self.write({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [old_hook("PreToolUse")]}, own]}})
+        self.run_install()
+        groups = self.doc()["hooks"]["PreToolUse"]
+        self.assertEqual([g["hooks"][0]["command"] == "./own.sh" for g in groups], [False, True])  # in place, not at the end
+
+    def test_the_guard_is_recognised_by_its_invocation_not_by_a_mention(self):
+        yes = install.is_claude_tagteam_hook
+        template = json.loads(REAL_SETTINGS.read_text(encoding="utf-8"))["hooks"]
+        self.assertTrue(all(yes(h) for g in template.values() for gr in g for h in gr["hooks"]))
+        for command in ('python3 "${CLAUDE_PROJECT_DIR}/.claude/tagteam/role_guard.py" X', "python .claude\\tagteam\\role_guard.py X",
+                        'python3 "/abs/dir/.claude/tagteam/role_guard.py" PreToolUse --host claude',
+                        '"C:\\Python\\python.exe" "C:\\proj\\.claude\\tagteam\\role_guard.py" PreToolUse',
+                        "python ./.claude/tagteam/role_guard.py Stop"):
+            self.assertTrue(yes({"command": command}), command)
+        wrapper = template["PreToolUse"][0]["hooks"][0]["command"]
+        for command in ('./project-audit.sh; exec "$p" ".claude/tagteam/role_guard.py" PreToolUse',
+                        'my-python-wrapper ".claude/tagteam/role_guard.py" PreToolUse',
+                        'xpython ".claude/tagteam/role_guard.py" PreToolUse', "echo hi; " + wrapper,
+                        wrapper.replace("exit 2;", "exit 2; ./audit.sh;"), wrapper + "; ./after.sh", "./wrap-role_guard.py X", "python tools/role_guard.py X", "./protect.sh # .claude/tagteam/role_guard.py",
+                        "./protect.sh # .claude/tagteam/role_guard.py PreToolUse",
+                        "python tools/.claude/tagteam/role_guard.py.custom", "python tools/.claude/tagteam/role_guard.py PreToolUse",
+                        "./w.sh .claude/tagteam/role_guard.py X", "python .claude/tagteam/role_guard.py",
+                        'python ".claude/tagteam/role_guard.py X', "python .claude/tagteam/role_guard.py X Y"):
+            self.assertFalse(yes({"command": command}), command)
+        self.assertFalse(yes({"type": "http", "url": "http://x/.claude/tagteam/role_guard.py"}))
+        self.assertFalse(yes("python .claude/tagteam/role_guard.py X"))
+        shout = {"command": "python .CLAUDE/TAGTEAM/ROLE_GUARD.PY PreToolUse"}
+        with mock.patch.object(install, "is_windows", return_value=True):
+            self.assertTrue(yes(shout))  # Windows ignores case in paths
+        with mock.patch.object(install, "is_windows", return_value=False):
+            self.assertFalse(yes(shout))
+
+    def test_project_hooks_that_only_mention_the_guard_stay_and_are_listed(self):
+        mine = [{"type": "command", "command": c} for c in (
+            "./protect.sh # .claude/tagteam/role_guard.py", "python tools/.claude/tagteam/role_guard.py.custom",
+            "python tools/.claude/tagteam/role_guard.py PreToolUse", "./wrap-role_guard.py PreToolUse")]
+        self.write({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": mine + [old_hook("PreToolUse")]}]}})
+        code, out, err = self.run_install()
+        self.assertEqual(code, 0, err)
+        group = self.doc()["hooks"]["PreToolUse"][0]
+        self.assertEqual(group["hooks"], mine)
+        for i in range(4):
+            self.assertIn(f"hooks.PreToolUse[0].hooks[{i}] mentions the tagteam guard but is not a tagteam handler; check it", out)
+        self.assertEqual([m for m, _, _ in install.settings_guard_hooks(self.dst, "PreToolUse")],
+                         ["mcp__ccd_session__start_session|Bash|PowerShell|Agent|Edit|Write|MultiEdit|NotebookEdit"])
+
+    def test_a_windows_case_variant_is_replaced_not_duplicated(self):
+        self.write({"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "python .CLAUDE/TAGTEAM/ROLE_GUARD.PY PreToolUse"}]}]}})
+        with mock.patch.object(install, "is_windows", return_value=True):
+            self.assertEqual(self.run_install()[0], 0)
+            self.assertEqual(self.tagteam_count(self.doc()["hooks"], "PreToolUse"), 1)
+            self.assertEqual(len(self.doc()["hooks"]["PreToolUse"]), 1)
+
+    def test_a_read_only_settings_file_is_refused(self):
+        self.write({"permissions": {}})
+        before = self.tree()
+        os.chmod(self.path, 0o444)
+        self.addCleanup(os.chmod, self.path, 0o666)
+        code, out, err = self.run_install()
+        self.assertEqual((code, self.tree()), (1, before))
+        self.assertIn("is read-only", err)
+
+    def test_the_link_check_is_repeated_just_before_the_file_is_replaced(self):
+        original = json.dumps({"hooks": copy.deepcopy(OWN_HOOKS)}).encode("utf-8")
+        self.write(None, original)
+        real, calls = install.file_link_problem, []
+
+        def later_a_link(target, rel):
+            calls.append(rel)
+            return real(target, rel) if len(calls) == 1 else "is a link or resolves elsewhere"
+        with mock.patch.object(install, "file_link_problem", later_a_link):
+            code, out, err = self.run_install()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertIn("is a link or resolves elsewhere; it was not touched", err)
+        self.assertEqual(self.backups(), [])
+
+    BAD = [("not json", b"{ nope", "is not valid JSON"),
+           ("not utf-8", b'{"a": "\xff"}', "cannot be read"),
+           ("a list", b"[]", "is not a JSON object"),
+           ("hooks list", b'{"hooks": []}', "'hooks' is not an object"),
+           ("hooks null", b'{"hooks": null}', "'hooks' is not an object"),
+           ("event string", b'{"hooks": {"Stop": "x"}}', "hooks.Stop is not a list"),
+           ("group string", b'{"hooks": {"Stop": ["x"]}}', "hooks.Stop[0] is not a group object"),
+           ("group without hooks", b'{"hooks": {"Stop": [{"matcher": "x"}]}}', "hooks.Stop[0] is not a group object"),
+           ("group hooks object", b'{"hooks": {"Stop": [{"hooks": {}}]}}', "hooks.Stop[0] is not a group object"),
+           ("handler number", b'{"hooks": {"Other": [{"hooks": [1]}]}}', "hooks.Other[0].hooks[0] is not an object")]
+
+    def test_a_settings_file_that_cannot_be_merged_stops_the_install_and_writes_nothing(self):
+        for name, raw, why in self.BAD:
+            with self.subTest(name):
+                self.write(None, raw)
+                (self.dst / "AGENTS.md").write_text("mine\n", encoding="utf-8")
+                before = self.tree()
+                code, out, err = self.run_install("--update")
+                self.assertEqual(code, 1, err)
+                self.assertIn(why, err)
+                self.assertIn("nothing was written", err)
+                self.assertEqual(out, "")
+                self.assertEqual(self.tree(), before)  # not one file added or changed, no state folder, no backup
+
+    def test_a_broken_template_stops_the_install_too(self):
+        (self.src / "harness/claude/settings.json").write_text('{"hooks": {"PreToolUse": ["new"]}}', encoding="utf-8")
+        before = self.tree()
+        code, out, err = self.run_install()
+        self.assertEqual((code, self.tree()), (1, before))
+        self.assertIn("hooks.PreToolUse[0] is not a group object", err)
+
+    def test_a_linked_settings_file_is_refused(self):
+        real = self.dst / "dotfiles-settings.json"
+        real.write_text('{"permissions": {}}', encoding="utf-8")
+        made = 0
+        for kind in ("symlink", "hard link"):
+            with self.subTest(kind):
+                if self.path.exists() or self.path.is_symlink():
+                    self.path.unlink()
+                try:
+                    (os.symlink if kind == "symlink" else os.link)(real, self.path)
+                except (OSError, NotImplementedError):
+                    continue  # this platform or account cannot make that kind of link
+                made += 1
+                before = self.tree()
+                code, out, err = self.run_install()
+                self.assertEqual(code, 1, err)
+                self.assertRegex(err, r"link|hard links")
+                self.assertEqual(self.tree(), before)
+                self.assertEqual(real.read_text(encoding="utf-8"), '{"permissions": {}}')
+        if not made:
+            self.skipTest("cannot create links here")
+
+    def test_a_byte_order_mark_is_kept_and_a_crlf_file_with_the_same_content_is_kept(self):
+        self.write(None, b"\xef\xbb\xbf" + json.dumps({"hooks": copy.deepcopy(OWN_HOOKS)}).encode("utf-8"))
+        self.run_install()
+        merged = self.path.read_bytes()
+        self.assertTrue(merged.startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(self.tagteam_count(self.doc()["hooks"], "PreToolUse"), 1)
+        self.assertEqual(self.doc()["hooks"]["PostToolUse"], OWN_HOOKS["PostToolUse"])
+        self.path.write_bytes(merged.replace(b"\n", b"\r\n"))
+        code, out, err = self.run_install("--update")
+        self.assertRegex(out, r"kept\s+\.claude/settings.json")
+        self.assertEqual(self.path.read_bytes(), merged.replace(b"\n", b"\r\n"))
+        self.assertEqual(len(self.backups()), 1)
+
+    def test_the_backup_is_a_byte_exact_copy_and_names_do_not_collide(self):
+        original = b'{"hooks":{"Stop":[]},   "x":  1}\r\n'
+        self.write(None, original)
+        with mock.patch.object(install.time, "strftime", return_value="20260101T000000Z"):
+            self.run_install()
+            self.path.write_bytes(original)
+            self.run_install("--update")
+        self.assertEqual([b.name for b in self.backups()], ["settings.json.20260101T000000Z", "settings.json.20260101T000000Z-2"])
+        self.assertTrue(all(b.read_bytes() == original for b in self.backups()))
+
+    def test_when_the_state_folder_cannot_hold_the_backup_it_goes_next_to_the_file(self):
+        original = json.dumps({"hooks": {}}).encode("utf-8")
+        self.write(None, original)
+        blocker = self.dst / "blocker"
+        blocker.write_text("a file", encoding="utf-8")
+        with mock.patch.object(install, "installed_state_dir", return_value=blocker / "state"):
+            code, out, err = self.run_install()
+        self.assertEqual(code, 0, err)
+        self.assertIn("the state folder cannot hold the backup", err)
+        self.assertEqual((self.dst / ".claude/settings.json.bak").read_bytes(), original)
+        self.assertRegex(out, r"backup\s+\.claude/settings\.json\.bak")
+
+    def test_a_failed_replacement_is_an_error_with_the_backup_and_leaves_the_original(self):
+        original = json.dumps({"hooks": copy.deepcopy(OWN_HOOKS)}).encode("utf-8")
+        self.write(None, original)
+        real = install.replace_file
+
+        def refuse(path, data):
+            if path.name == "settings.json":
+                raise PermissionError("sharing violation")
+            return real(path, data)
+        with mock.patch.object(install, "replace_file", refuse):
+            code, out, err = self.run_install()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(self.backups()[0].read_bytes(), original)
+        self.assertIn("PermissionError", err)
+        self.assertIn(str(self.backups()[0]), err)
+        self.assertIn("re-run --update", err)
+        self.assertIn(".tagteam", (self.dst / ".gitignore").read_text(encoding="utf-8"))  # the backup is ignored even then
+
+    def test_a_missing_state_folder_is_a_warning_and_the_backup_goes_next_to_the_file(self):
+        self.write({"hooks": {}})
+        with mock.patch.object(install, "installed_state_dir", return_value=None):
+            code, out, err = self.run_install()
+        self.assertEqual(code, 0, err)
+        self.assertIn("no usable state folder", err)
+        self.assertTrue((self.dst / ".claude/settings.json.bak").is_file())
+
+    def test_a_lone_surrogate_is_a_refusal_not_a_traceback(self):
+        self.write(None, rb'{"note": "\ud800"}')
+        before = self.tree()
+        code, out, err = self.run_install()
+        self.assertEqual((code, self.tree()), (1, before))
+        self.assertIn("cannot be written as UTF-8", err)
+
+    def test_a_symlinked_settings_file_is_refused_where_symlinks_cannot_be_made(self):
+        self.write({"permissions": {}})
+        before = self.tree()
+        with mock.patch.object(Path, "is_symlink", lambda p: p.name == "settings.json"):
+            code, out, err = self.run_install()
+        self.assertEqual((code, self.tree()), (1, before))
+        self.assertIn("is a link or resolves elsewhere", err)
+
+    def test_a_file_changed_during_the_install_is_not_overwritten(self):
+        self.write({"hooks": copy.deepcopy(OWN_HOOKS)})
+        real = install.copy_tree
+        late = b'{"late": 1}'
+
+        def edit_then_copy(*a, **kw):
+            self.path.write_bytes(late)
+            return real(*a, **kw)
+        with mock.patch.object(install, "copy_tree", edit_then_copy):
+            code, out, err = self.run_install()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.path.read_bytes(), late)
+        self.assertIn("changed while tagteam was installing", err)
+
+    def test_other_hooks_are_listed_without_their_commands(self):
+        secret = {"type": "command", "command": 'API_TOKEN="s3cr3t value" ./hooks/check.sh --password hunter2'}
+        self.write({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [secret]}],
+                              "PostToolUse": [{"hooks": [{"type": "command", "command": "other-tool"}]}]}})
+        (self.dst / ".claude/settings.local.json").write_text(json.dumps({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "http", "url": "https://user:pw@hooks.example.com/x?token=abc"},
+                       {"type": "mcp_tool", "server": "srv", "tool": "t"}, {"type": "prompt", "prompt": "do secret things"}]}]}}),
+            encoding="utf-8")
+        code, out, err = self.run_install()
+        self.assertEqual(code, 0, err)
+        self.assertIn("note: other hooks run next to tagteam's on these events", out)
+        self.assertRegex(out, r'PreToolUse\s+\.claude/settings\.json\s+command\s+matcher "Bash"\s+check\.sh')
+        self.assertRegex(out, r"SessionStart\s+\.claude/settings\.local\.json\s+http\s+\(no matcher\)\s+hooks\.example\.com")
+        self.assertRegex(out, r"mcp_tool\s+\(no matcher\)\s+srv/t")
+        self.assertNotIn("other-tool", out)  # PostToolUse is not an event tagteam uses
+        self.assertIn("updatedInput", out)
+        for leak in ("s3cr3t", "hunter2", "pw@", "token=abc", "--password", "secret things"):
+            self.assertNotIn(leak, out + err)
+        out2 = self.run_install("--update")[1]  # the same notice every time
+        self.assertIn("check.sh", out2)
+
+    def test_no_notice_without_other_hooks(self):
+        self.write({"hooks": {"PostToolUse": copy.deepcopy(OWN_HOOKS["PostToolUse"])}})
+        self.assertNotIn("other hooks", self.run_install()[1])
+
+    def test_the_cache_ttl_is_added_only_when_the_project_has_none(self):
+        self.write({"subagentPromptCacheTtl": "5m"})
+        code, out, err = self.run_install()
+        self.assertEqual(self.doc()["subagentPromptCacheTtl"], "5m")
+        self.assertIn('subagentPromptCacheTtl is "5m" here and was kept', out)
+        self.write({"subagentPromptCacheTtl": "1h"})
+        self.assertNotIn("subagentPromptCacheTtl", self.run_install("--update")[1])
+        self.write({})
+        self.run_install("--update")
+        self.assertEqual(self.doc()["subagentPromptCacheTtl"], "1h")
+
+    def test_check_reports_a_missing_or_changed_handler_as_an_error_and_duplicates_as_warnings(self):
+        self.run_install()
+        template = json.loads(REAL_SETTINGS.read_text(encoding="utf-8"))["hooks"]
+        hooks = self.doc()["hooks"]
+        self.assertEqual(install.claude_hook_drift(self.dst, self.src, hooks), ([], [], []))
+        gone = copy.deepcopy(hooks)
+        gone["PreToolUse"] = []
+        errors, warnings, _ = install.claude_hook_drift(self.dst, self.src, gone)
+        self.assertEqual([e.split(";")[0] for e in errors], ["settings.json missing: PreToolUse: no tagteam hook"])
+        self.assertIn("--update", errors[0])
+        changed = copy.deepcopy(hooks)
+        changed["SessionStart"][0]["hooks"][0]["timeout"] = 99
+        errors, warnings, _ = install.claude_hook_drift(self.dst, self.src, changed)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("settings.json different: SessionStart: timeout: have 99, want 10", errors[0])
+        dup = copy.deepcopy(hooks)
+        dup["PreToolUse"].append(copy.deepcopy(template["PreToolUse"][0]))
+        dup["Stop"] = [{"hooks": [old_hook("Stop")]}]
+        dup["UserPromptSubmit"][0]["hooks"].append({"type": "command", "command": "./mine.sh"})
+        errors, warnings, _ = install.claude_hook_drift(self.dst, self.src, dup)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 3, warnings)
+        self.assertTrue(any("PreToolUse: duplicate tagteam hook" in w for w in warnings))
+        self.assertTrue(any("Stop: tagteam hook for an event the template does not use" in w for w in warnings))
+        self.assertTrue(any("UserPromptSubmit[0]: a tagteam hook shares a group with other hooks" in w for w in warnings))
+        no_template = install.claude_hook_drift(self.dst, self.src / "nowhere", hooks)
+        self.assertEqual((no_template[0], no_template[1]), ([], []))
+        self.assertIn("unverified", no_template[2][0])
+        self.assertIn("does not mention role_guard.py", install.claude_hook_drift(self.dst, self.src / "nowhere", {})[1][0])
+
+    def test_a_folder_that_is_a_link_is_refused_even_when_settings_json_is_missing(self):
+        elsewhere = self.dst.parent / "elsewhere"
+        elsewhere.mkdir()
+        (self.dst / ".claude").rmdir()
+        try:
+            if os.name == "nt":  # a junction needs no privilege
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(self.dst / ".claude"), str(elsewhere)], check=True, capture_output=True)
+            else:
+                os.symlink(elsewhere, self.dst / ".claude")
+        except (OSError, subprocess.SubprocessError):
+            self.skipTest("cannot create a directory link here")
+        before = self.tree()
+        code, out, err = self.run_install()
+        self.assertEqual((code, self.tree()), (1, before))
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertIn("is a link or resolves elsewhere", err)
+
+    def test_a_new_settings_file_is_created_without_replacing_one_that_appears_meanwhile(self):
+        real = install.copy_tree
+        late = b'{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./mine.sh"}]}]}}'
+
+        def appear_then_copy(*a, **kw):
+            self.path.write_bytes(late)
+            return real(*a, **kw)
+        with mock.patch.object(install, "copy_tree", appear_then_copy):
+            code, out, err = self.run_install()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.path.read_bytes(), late)
+        self.assertIn("appeared while tagteam was installing", err)
+        self.assertEqual([p.name for p in self.path.parent.iterdir() if p.name.endswith(".tmp")], [])
+        with mock.patch.object(install, "create_new_file", side_effect=PermissionError("denied")):
+            self.path.unlink()
+            code, out, err = self.run_install()
+        self.assertEqual(code, 1)
+        self.assertIn("could not be created (PermissionError", err)
+        self.assertFalse(self.path.exists())
+
+    def test_create_new_file_never_replaces_and_leaves_no_temporary_file(self):
+        target = self.dst / "sub/x.json"
+        install.create_new_file(target, b"one")
+        with self.assertRaises(FileExistsError):
+            install.create_new_file(target, b"two")
+        self.assertEqual(target.read_bytes(), b"one")
+        self.assertEqual([p.name for p in target.parent.iterdir()], ["x.json"])
+        other = self.dst / "sub/y.json"
+        with mock.patch.object(install.os, "link", side_effect=OSError("no hard links here")):  # e.g. FAT
+            install.create_new_file(other, b"three")
+            with self.assertRaises(FileExistsError):
+                install.create_new_file(other, b"four")
+        self.assertEqual(other.read_bytes(), b"three")
+        self.assertEqual(sorted(p.name for p in target.parent.iterdir()), ["x.json", "y.json"])
+        third = self.dst / "sub/z.json"
+
+        def appears_then_no_links(src, dst):  # another process wins the race, and this file system has no hard links
+            Path(dst).write_bytes(b"theirs")
+            raise OSError("no hard links here")
+        with mock.patch.object(install.os, "link", appears_then_no_links), self.assertRaises(FileExistsError):
+            install.create_new_file(third, b"mine")
+        self.assertEqual(third.read_bytes(), b"theirs")
+        self.assertEqual(sorted(p.name for p in target.parent.iterdir()), ["x.json", "y.json", "z.json"])
+
+    def test_json_nested_too_deeply_to_copy_is_a_refusal_not_a_traceback(self):
+        deep = b"[" * 600 + b"]" * 600
+        self.write(None, b'{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./x.sh", "extra": ' + deep + b"}]}]}}")
+        before = self.tree()
+        code, out, err = self.run_install()
+        self.assertEqual((code, self.tree()), (1, before))
+        self.assertIn("nested too deeply", err)
+
+    def test_the_notice_never_shows_assignment_values_or_unparseable_commands(self):
+        commands = ["$env:API_TOKEN='supersecret'; ./protect.ps1", "set API_TOKEN=supersecret and more && ./run.cmd",
+                    "export API_TOKEN=supersecret; ./sh-hook.sh", 'API_TOKEN="supersecret', "API_TOKEN=supersecret ./plain.sh"]
+        self.write({"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": c} for c in commands]}]}})
+        code, out, err = self.run_install()
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("supersecret", out + err)
+        self.assertNotIn("more", out.split("other hooks")[1])
+        for name in ("protect.ps1", "run.cmd", "sh-hook.sh", "plain.sh"):
+            self.assertIn(name, out)
+        self.assertEqual([install.hook_program(c) for c in commands], ["protect.ps1", "run.cmd", "sh-hook.sh", "", "plain.sh"])
+
+    def test_a_byte_order_mark_does_not_hide_the_installed_commands_from_check(self):
+        self.run_install()
+        self.path.write_bytes(b"\xef\xbb\xbf" + self.path.read_bytes())
+        self.assertEqual(len(install.settings_guard_hooks(self.dst, "PreToolUse")), 1)
+        self.assertEqual(install.claude_hook_drift(self.dst, self.src, self.doc()["hooks"])[:2], ([], []))
+
+    def test_check_exits_0_with_a_warning_for_a_duplicate_only(self):
+        self.run_install()
+        doc = self.doc()
+        doc["hooks"]["PreToolUse"].append(copy.deepcopy(doc["hooks"]["PreToolUse"][0]))
+        self.write(doc)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = install.main([str(self.dst), "--source", str(self.src), "--check"])
+        self.assertIn("WARN     settings.json: PreToolUse: duplicate tagteam hook", out.getvalue())
+        self.assertEqual(code, 0, out.getvalue())
+
+    def test_check_fails_for_a_file_with_the_handler_removed(self):
+        self.run_install()
+        doc = self.doc()
+        del doc["hooks"]["PreToolUse"]
+        self.write(doc)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = install.main([str(self.dst), "--source", str(self.src), "--check"])
+        self.assertEqual(code, 1)
+        self.assertIn("ERROR    settings.json missing: PreToolUse: no tagteam hook", out.getvalue())
 
 
 if __name__ == "__main__":

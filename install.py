@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -32,7 +33,6 @@ except ImportError:  # 3.9 and 3.10 (Apple's /usr/bin/python3): trust_levels() r
     tomllib = None
 
 POLICY_MARK = "## Project policy"
-HOOK_KEYS = ("hooks", "subagentPromptCacheTtl")
 VENDORS = ("claude", "openai", "google")
 TIERS = ("none", "free", "pro", "max")
 
@@ -40,15 +40,18 @@ TIERS = ("none", "free", "pro", "max")
 class Report:
     def __init__(self):
         self.items = []
+        self.notes = []  # lines printed after the file list
 
     def add(self, state, path):
         self.items.append((state, str(path).replace("\\", "/")))
 
     def print(self):
-        for state in ("created", "updated", "kept"):
+        for state in ("created", "backup", "updated", "kept"):
             for s, p in self.items:
                 if s.split(" ")[0] == state:
                     print(f"  {s:8} {p}")
+        for line in self.notes:
+            print(line)
 
 
 def same_but_line_endings(old, new):
@@ -216,6 +219,19 @@ def guard_path_problem(target):
     return None
 
 
+def file_link_problem(target, rel):
+    """Why target/rel must not be replaced (it, or a folder above it, is a link, a junction or resolves elsewhere; or it has
+    several hard links: a swap would turn it into a plain file or cut the link), or None. A missing file is judged by the
+    folders above it."""
+    path = target / rel
+    plain = Path(os.path.realpath(target)) / rel
+    if path.is_symlink() or os.path.normcase(os.path.realpath(path)) != os.path.normcase(str(plain)):
+        return "is a link or resolves elsewhere"
+    if path.is_file() and path.stat().st_nlink > 1:
+        return f"has {path.stat().st_nlink} hard links"
+    return None
+
+
 def agy_hooks_blocker(target):
     """Why .agents/hooks.json must not be written, or None: the guard path would be expanded by the shell, .agents or
     the file is a link or resolves elsewhere (it could be a tracked file), the file has several hard links, git tracks
@@ -225,14 +241,12 @@ def agy_hooks_blocker(target):
     if bad:
         return bad
     path = target / AGY_HOOKS_REL
-    plain = Path(os.path.realpath(target)) / AGY_HOOKS_REL
     link = agents_link_problem(target)
     if link:
         return link
-    if path.is_symlink() or os.path.normcase(os.path.realpath(path)) != os.path.normcase(str(plain)):
-        return f"{AGY_HOOKS_REL} is a link or resolves elsewhere"
-    if path.is_file() and path.stat().st_nlink > 1:
-        return f"{AGY_HOOKS_REL} has {path.stat().st_nlink} hard links"
+    link = file_link_problem(target, AGY_HOOKS_REL)
+    if link:
+        return f"{AGY_HOOKS_REL} {link}"
     tracking = git_tracking(target, AGY_HOOKS_REL)
     if tracking == "tracked":
         return f"{AGY_HOOKS_REL} is tracked by git; tagteam writes machine-local paths into it"
@@ -300,13 +314,13 @@ def is_tagteam_hook(hook):
     return isinstance(hook, dict) and any(GUARD_NAME in str(hook.get(k) or "") for k in ("command", "commandWindows"))
 
 
-def tagteam_slots(groups):
+def tagteam_slots(groups, is_tag=is_tagteam_hook):
     """[(group index, hook index, group, hook)] of the tagteam hooks in one event's group list (others are ignored)."""
     out = []
     for gi, group in enumerate(groups if isinstance(groups, list) else []):
         hooks = group.get("hooks") if isinstance(group, dict) else None
         for hi, hook in enumerate(hooks if isinstance(hooks, list) else []):
-            if is_tagteam_hook(hook):
+            if is_tag(hook):
                 out.append((gi, hi, group, hook))
     return out
 
@@ -353,16 +367,14 @@ def pair_hooks(want, have):
     return pairs, [have[si] for si in range(len(have)) if si not in used]
 
 
-def hook_shape_error(current, expected):
-    """Why the events the template uses cannot be edited safely (None when they can). Other events are not looked at."""
-    hooks = current.get("hooks") if isinstance(current, dict) else None
-    if hooks is None:
-        return None
+def hooks_shape_error(hooks, events=None):
+    """Why a settings 'hooks' value cannot be edited safely (None when it can). events: the event names to look at (a
+    missing or null one is skipped), or None for every event."""
     if not isinstance(hooks, dict):
         return "'hooks' is not an object"
-    for event in expected["hooks"]:
+    for event in hooks if events is None else events:
         groups = hooks.get(event)
-        if groups is None:
+        if groups is None and events is not None:
             continue
         if not isinstance(groups, list):
             return f"hooks.{event} is not a list"
@@ -373,6 +385,12 @@ def hook_shape_error(current, expected):
                 if not isinstance(hook, dict):
                     return f"hooks.{event}[{gi}].hooks[{hi}] is not an object"
     return None
+
+
+def hook_shape_error(current, expected):
+    """Why the events the template uses cannot be edited safely (None when they can). Other events are not looked at."""
+    hooks = current.get("hooks") if isinstance(current, dict) else None
+    return None if hooks is None else hooks_shape_error(hooks, list(expected["hooks"]))
 
 
 def diagnose_hooks(target, expected, current):
@@ -524,18 +542,332 @@ def copy_tree(rep, src_dir, target, rel_dir, pattern="*"):
             put(rep, target, rel, f.read_bytes(), keep_existing=f.name.endswith(".local.json"))
 
 
-def merge_settings(rep, src, target):
-    rel = Path(".claude/settings.json")
-    new = json.loads(src.read_text(encoding="utf-8"))
-    dst = target / rel
-    if not dst.exists():
-        put(rep, target, rel, src.read_bytes())
+# ---- .claude/settings.json: only tagteam's own hook handlers are replaced --------------------------------------
+
+SETTINGS_REL = ".claude/settings.json"
+SETTINGS_LOCAL_REL = ".claude/settings.local.json"
+TTL_KEY = "subagentPromptCacheTtl"
+
+
+class ClaudeSettingsError(Exception):
+    """Why the install stops (exit 1) because of .claude/settings.json."""
+
+
+PROJECT_DIR_VARS = ("${CLAUDE_PROJECT_DIR}", "$CLAUDE_PROJECT_DIR")
+
+
+def guard_word_ok(word):
+    """Whether one word of a command is the installed guard: .claude/tagteam/role_guard.py as the whole word, bare or below
+    ./, the project dir variable or an absolute path (a project's own tools/.claude/... copy is not it). Case is ignored
+    on Windows only."""
+    fold = str.lower if is_windows() else str
+    word, rel = fold(word), fold(GUARD_REL)
+    if word == rel:
+        return True
+    head = word[:-len(rel) - 1] if word.endswith("/" + rel) else None
+    return head is not None and (head in (".", "") or head in map(fold, PROJECT_DIR_VARS) or head.startswith("/")
+                                 or re.match(r"[a-z]:(/|$)", head, re.I) is not None)
+
+
+# The shell wrapper of the template, whole: nothing but this text (the echo message may differ) may come before the guard call.
+WRAPPER = re.compile(r'p=; for c in python3 python; do "\$c" -c "" </dev/null >/dev/null 2>&1 && \{ p=\$c; break; \}; done; '
+                     r'\[ -n "\$p" \] \|\| \{ echo "[^"$`\\]*"( >&2)?; exit [02]; \}; exec "\$p" (.+)')
+PYTHON_NAME = re.compile(r"(python[0-9.]*|py)(\.exe)?", re.I)  # a whole executable name, not a word that contains one
+
+
+def is_claude_tagteam_hook(hook):
+    """A handler of .claude/settings.json is tagteam's when its command is exactly a guard call as the template and earlier
+    templates write it: `<python> <guard> <Event> [--host H]` (python, python3, a path ending in one of them), or the
+    template's whole shell wrapper ending in `exec "$p" <guard> <Event> [--host H]`. Anything else, a project's own logic
+    around the call or a command that only mentions the guard, is not."""
+    if not (isinstance(hook, dict) and isinstance(hook.get("command"), str)):
+        return False
+    wrapped = WRAPPER.fullmatch(hook["command"])
+    try:
+        words = shlex.split((wrapped.group(2) if wrapped else hook["command"]).replace("\\", "/"))
+    except ValueError:
+        return False
+    if not wrapped:
+        if not words or not PYTHON_NAME.fullmatch(words[0].rsplit("/", 1)[-1]):
+            return False
+        words = words[1:]
+    return (len(words) in (2, 4) and (len(words) == 2 or words[2] == "--host") and guard_word_ok(words[0])
+            and re.fullmatch(r"[A-Za-z]+", words[1]) is not None)
+
+
+def merge_claude_hooks(current, template):
+    """(new hooks object, note lines). Every tagteam handler is taken out of every event; groups and events that only that
+    emptied are dropped (an event the template uses stays as a slot); then the template's groups go in at the place of the
+    first group removed from that event, else at the end. Anything else keeps its content and order."""
+    new, notes = {}, []
+    for event, groups in current.items():
+        kept, first, removed = [], None, False
+        for gi, group in enumerate(groups):
+            rest = [h for h in group["hooks"] if not is_claude_tagteam_hook(h)]
+            if len(rest) == len(group["hooks"]):
+                kept.append(copy.deepcopy(group))
+                continue
+            removed = True
+            if rest:
+                notes.append(f"note: hooks.{event}[{gi}]: removed a tagteam handler that shared a group with other hooks")
+                kept.append(dict(copy.deepcopy(group), hooks=copy.deepcopy(rest)))
+            elif first is None:
+                first = len(kept)
+        if event in template:
+            at = len(kept) if first is None else first
+            kept[at:at] = copy.deepcopy(template[event])
+        elif removed and not kept:
+            continue
+        new[event] = kept
+    for event, groups in template.items():
+        if event not in new:
+            new[event] = copy.deepcopy(groups)
+    return new, notes
+
+
+SEPS = (";", "&&", "&", "||")
+ASSIGNMENT = re.compile(r"(\$env:)?[A-Za-z_]\w*=")  # sh NAME=v, PowerShell $env:NAME=v; cmd's `set NAME=v` is handled below
+
+
+def hook_program(command):
+    """The program a command runs, '' when that cannot be told. Assignments before it (sh NAME=v, PowerShell $env:NAME=v,
+    cmd or sh `set`/`export` NAME=v up to the next separator) are skipped, never shown: their values can be secrets."""
+    try:
+        words = shlex.split(command.replace("\\", "/"))
+    except ValueError:
+        return ""
+    i = 0
+    while i < len(words):
+        if words[i] in ("set", "export", "setx"):
+            while i < len(words) and not words[i].endswith(SEPS):  # `set A=b c && run`: the value may run on
+                i += 1
+            i += 1
+        elif words[i] in SEPS or words[i] == "env" or ASSIGNMENT.match(words[i]):
+            i += 1
+        else:
+            break
+    name = words[i].rstrip("/").rsplit("/", 1)[-1] if i < len(words) else ""
+    return name[:40] if re.fullmatch(r"[\w.@+-]+", name) else ""
+
+
+def hook_label(hook):
+    """(kind, program or host) of one handler for the notice; never the whole command."""
+    kind = hook.get("type") if isinstance(hook.get("type"), str) else "command"
+    if kind == "command" and isinstance(hook.get("command"), str):
+        return kind, hook_program(hook["command"])
+    if kind == "http" and isinstance(hook.get("url"), str):
+        try:
+            return kind, (urllib.parse.urlparse(hook["url"]).hostname or "?")[:40]
+        except ValueError:
+            return kind, "?"
+    if kind == "mcp_tool":
+        return kind, f"{hook.get('server')}/{hook.get('tool')}"[:40]
+    return kind[:20], ""
+
+
+def other_hook_notes(target, events, merged_hooks):
+    """Lines that list the handlers that are not tagteam's on the events the template uses, in .claude/settings.json (as it
+    will be) and .claude/settings.local.json (read only, skipped when it is not usable). No judgement, no commands."""
+    sources = [(SETTINGS_REL, merged_hooks)]
+    try:
+        local = json.loads((target / SETTINGS_LOCAL_REL).read_text(encoding="utf-8-sig"))
+        if isinstance(local, dict) and isinstance(local.get("hooks"), dict) and not hooks_shape_error(local["hooks"]):
+            sources.append((SETTINGS_LOCAL_REL, local["hooks"]))
+    except (OSError, ValueError, RecursionError):
+        pass
+    rows = []
+    for event in events:
+        for rel, hooks in sources:
+            for group in hooks.get(event, []):
+                matcher = group.get("matcher")
+                label = f'matcher {json.dumps(matcher)[:40]}' if isinstance(matcher, str) else "(no matcher)"
+                for hook in group["hooks"]:
+                    if not is_claude_tagteam_hook(hook):
+                        kind, name = hook_label(hook)
+                        rows.append((event, rel, kind, label, name))
+    if not rows:
+        return []
+    w = [max(len(r[i]) for r in rows) for i in range(4)]
+    lines = ["note: other hooks run next to tagteam's on these events (Claude Code runs them in parallel; any deny wins; "
+             "tagteam only denies):"]
+    for r in rows:
+        lines.append("  " + "  ".join(r[i].ljust(w[i]) for i in range(4)) + "  " + r[4])
+    lines.append("      a hook that rewrites tool input (updatedInput) is checked by tagteam before the rewrite.")
+    return lines
+
+
+def dump_settings(obj):
+    return (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def guard_mention_notes(hooks):
+    """Lines for handlers that mention the guard without being a tagteam handler (kept as they are): check them."""
+    return [f"note: hooks.{event}[{gi}].hooks[{hi}] mentions the tagteam guard but is not a tagteam handler; check it"
+            for event, groups in hooks.items() for gi, group in enumerate(groups) for hi, hook in enumerate(group["hooks"])
+            if isinstance(hook.get("command"), str) and "role_guard.py" in hook["command"].lower()
+            and not is_claude_tagteam_hook(hook)]
+
+
+def plan_claude_settings(source, target):
+    """Read, check and merge .claude/settings.json in memory, before anything is written: {"old": bytes or None, "new":
+    bytes, "notes": [...]} or None without a template file. Raises ClaudeSettingsError, with nothing written."""
+    try:
+        return plan_claude_settings_unchecked(source, target)
+    except RecursionError:  # valid JSON nested too deeply to copy or write
+        raise ClaudeSettingsError(f"{SETTINGS_REL}: is nested too deeply to be merged; nothing was written")
+
+
+def plan_claude_settings_unchecked(source, target):
+    src = source / "harness" / "claude" / "settings.json"
+    if not src.is_file():
+        return None
+    fail = lambda why, name=SETTINGS_REL: ClaudeSettingsError(f"{name}: {why}; nothing was written")  # noqa: E731
+    raw = src.read_bytes()
+    try:
+        tpl = json.loads(raw.decode("utf-8-sig"))
+    except (ValueError, RecursionError) as exc:
+        raise fail(f"is not valid JSON ({exc})", f"{src}")
+    if not isinstance(tpl, dict):
+        raise fail("is not a JSON object", f"{src}")
+    thooks = tpl.get("hooks", {})
+    if hooks_shape_error(thooks):
+        raise fail(hooks_shape_error(thooks), f"{src}")
+    path = target / SETTINGS_REL
+    problem = file_link_problem(target, SETTINGS_REL)  # also for a missing file: its folders may be links
+    if problem:
+        raise fail(problem + "; tagteam does not replace it")
+    if path.exists() and (not os.access(path, os.W_OK) or not path.stat().st_mode & 0o222):
+        raise fail("is read-only; tagteam does not replace it")
+    if not path.exists():
+        return {"old": None, "new": dump_settings(tpl), "notes": other_hook_notes(target, thooks, thooks)}
+    try:
+        old = path.read_bytes()
+        bom = old.startswith(b"\xef\xbb\xbf")
+        cur = json.loads(old.decode("utf-8-sig"))
+    except (OSError, UnicodeDecodeError) as exc:
+        raise fail(f"cannot be read ({type(exc).__name__}: {exc})")
+    except (ValueError, RecursionError) as exc:  # JSONDecodeError says where
+        raise fail(f"is not valid JSON ({exc})")
+    if not isinstance(cur, dict):
+        raise fail("is not a JSON object")
+    notes = []
+    new = dict(cur)
+    if "hooks" in tpl:
+        bad = hooks_shape_error(cur["hooks"]) if "hooks" in cur else None
+        if bad:
+            raise fail(bad)
+        new["hooks"], notes = merge_claude_hooks(cur.get("hooks", {}), thooks)
+    if TTL_KEY in tpl:
+        if TTL_KEY not in cur:
+            new[TTL_KEY] = tpl[TTL_KEY]
+        elif cur[TTL_KEY] != tpl[TTL_KEY]:
+            notes.append(f"note: {TTL_KEY} is {json.dumps(cur[TTL_KEY])} here and was kept; the template sets {json.dumps(tpl[TTL_KEY])}")
+    notes += guard_mention_notes(new.get("hooks", {})) + other_hook_notes(target, thooks, new.get("hooks", {}))
+    try:
+        data = dump_settings(new)
+    except UnicodeEncodeError as exc:  # a lone surrogate in a string
+        raise fail(f"holds a string that cannot be written as UTF-8 ({exc.reason})")
+    return {"old": old, "new": (b"\xef\xbb\xbf" if bom else b"") + data, "notes": notes}
+
+
+def backup_settings(rep, target, old):
+    """Copy the original, byte for byte, to <state folder>/backups/ (or next to the file when that folder cannot be
+    used), record it in rep and return its path. Raises ClaudeSettingsError when no copy can be made."""
+    state = installed_state_dir(target)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    tries = []
+    if state is None:
+        print("warning: no usable state folder; the backup of settings.json goes next to the file", file=sys.stderr)
+    else:
+        tries.append((state / "backups", f"settings.json.{stamp}"))
+    tries.append((None, None))
+    for folder, name in tries:
+        try:
+            if folder is None:
+                path = backup_path(target / SETTINGS_REL)
+            else:
+                folder.mkdir(parents=True, exist_ok=True)
+                path = next(p for p in (folder / (name if n == 1 else f"{name}-{n}") for n in range(1, 1000)) if not p.exists())
+            with open(path, "xb") as fh:
+                fh.write(old)
+        except (OSError, StopIteration) as exc:
+            if folder is None:
+                raise ClaudeSettingsError(f"{SETTINGS_REL}: cannot make a backup ({exc}); it was not changed; "
+                                          "other files may already be updated: fix this and re-run --update")
+            print(f"warning: the state folder cannot hold the backup ({exc}); the backup goes next to the file", file=sys.stderr)
+            continue
+        try:
+            shown = path.relative_to(target)
+        except ValueError:
+            shown = path
+        rep.add("backup", shown)
+        return path
+
+
+def create_new_file(path, data):
+    """Publish data as a new file that never replaces one: written whole to a temporary sibling, then hard-linked to the
+    name, which fails with FileExistsError when anything (a link included) is there. Where the file system has no hard
+    links the name is created exclusively (O_EXCL) and written in place; a failed write removes it. Raises OSError."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        if not is_windows():
+            os.chmod(tmp, 0o644)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            raise
+        except OSError:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o644)
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+            except OSError:
+                os.remove(path)
+                raise
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def write_claude_settings(rep, plan, target):
+    """Apply a plan from plan_claude_settings: only on a real change, after a backup of the original."""
+    if plan is None:
         return
-    cur = json.loads(dst.read_text(encoding="utf-8"))
-    for k in HOOK_KEYS:
-        if k in new:
-            cur[k] = new[k]
-    put(rep, target, rel, (json.dumps(cur, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    rep.notes += plan["notes"]
+    path = target / SETTINGS_REL
+    problem = file_link_problem(target, SETTINGS_REL)  # again: the planning was a while ago
+    if problem:
+        raise ClaudeSettingsError(f"{SETTINGS_REL}: {problem}; it was not touched; other files may already be updated: re-run --update")
+    if plan["old"] is None:
+        try:
+            create_new_file(path, plan["new"])
+        except FileExistsError:
+            raise ClaudeSettingsError(f"{SETTINGS_REL}: appeared while tagteam was installing; it was not touched; "
+                                      "other files may already be updated: re-run --update")
+        except OSError as exc:
+            raise ClaudeSettingsError(f"{SETTINGS_REL}: could not be created ({type(exc).__name__}: {exc}); other files may "
+                                      "already be updated: fix this and re-run --update")
+        rep.add("created", SETTINGS_REL)
+    elif same_but_line_endings(plan["old"], plan["new"]):
+        rep.add("kept", SETTINGS_REL)
+    else:
+        try:
+            changed = path.read_bytes() != plan["old"]
+        except OSError:
+            changed = True
+        if changed:
+            raise ClaudeSettingsError(f"{SETTINGS_REL}: changed while tagteam was installing; it was not touched; "
+                                      "other files may already be updated: re-run --update")
+        bak = backup_settings(rep, target, plan["old"])
+        try:
+            replace_file(path, plan["new"])
+        except OSError as exc:
+            raise ClaudeSettingsError(f"{SETTINGS_REL}: could not be replaced ({type(exc).__name__}: {exc}); it is unchanged "
+                                      f"and the backup is {bak}; other files may already be updated: fix this and re-run --update")
+        rep.add("updated", SETTINGS_REL)
 
 
 def merge_agents_md(rep, src, target):
@@ -722,8 +1054,7 @@ def install_codex_hooks(rep, hooks, target):
 def install(target, source, interactive):
     rep = Report()
     h = source / "harness"
-    if (h / "claude" / "settings.json").is_file():
-        merge_settings(rep, h / "claude" / "settings.json", target)
+    settings = plan_claude_settings(source, target)  # read, checked and merged before the first write
     copy_tree(rep, h / "claude" / "agents", target, ".claude/agents", "*.md")
     linked = agents_link_problem(target)
     if linked:  # checked before the first write: skills and hooks both live below .agents
@@ -749,6 +1080,7 @@ def install(target, source, interactive):
         elif example:
             put(rep, target, local, example.read_bytes())
     ensure_gitignore(rep, target)
+    write_claude_settings(rep, settings, target)  # last: state.py is in place, .tagteam/ is ignored, a failure stops nothing else
     return rep
 
 
@@ -1004,11 +1336,11 @@ HOOK_TIMEOUT_DEFAULT = 60  # seconds a command hook may take when settings.json 
 def settings_guard_hooks(target, event):
     """[(matcher, timeout seconds, command)] of the tagteam hooks of one event in the installed .claude/settings.json."""
     try:
-        groups = json.loads((target / ".claude/settings.json").read_text(encoding="utf-8"))["hooks"][event]
+        groups = json.loads((target / SETTINGS_REL).read_text(encoding="utf-8-sig"))["hooks"][event]
         out = []
         for g in groups:
             for h in g["hooks"]:
-                if GUARD_NAME in str(h.get("command", "")):
+                if is_claude_tagteam_hook(h):
                     t = h.get("timeout")
                     ok = isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0
                     out.append((g.get("matcher"), t if ok else HOOK_TIMEOUT_DEFAULT, h["command"]))
@@ -1082,6 +1414,48 @@ def hook_command_test(target):
     return fails, None
 
 
+def claude_hook_drift(target, source, hooks):
+    """(errors, warnings, notes) about the tagteam handlers of the installed .claude/settings.json against the template:
+    a missing or changed handler is an error; a duplicate, a handler on an event the template does not use and one that
+    shares a group with other hooks are warnings. Without a template file nothing can be compared: a note, and a warning
+    when no handler names the guard at all."""
+    fix = f"; run install.py {target} --update"
+    try:
+        thooks = json.loads((source / "harness/claude/settings.json").read_text(encoding="utf-8-sig"))["hooks"]
+        if hooks_shape_error(thooks):
+            raise ValueError("shape")
+    except (OSError, ValueError, KeyError, TypeError):
+        thooks = None
+    errors, warnings, notes = [], [], []
+    if thooks is None:
+        notes.append(f"settings.json drift: unverified (no template hooks under {source})")
+        if not any(tagteam_slots(groups, is_claude_tagteam_hook) for groups in hooks.values()):
+            warnings.append(f".claude/settings.json does not mention {GUARD_NAME}: the role hooks are not wired")
+        return errors, warnings, notes
+    for event, tgroups in thooks.items():
+        want, have = tagteam_slots(tgroups, is_claude_tagteam_hook), tagteam_slots(hooks.get(event), is_claude_tagteam_hook)
+        pairs, left = pair_hooks(want, have)
+        for wi, (_, _, tgroup, thook) in enumerate(want):
+            si, exact = pairs[wi]
+            if si is None:
+                errors.append(f"settings.json missing: {event}: no tagteam hook{fix}")
+            elif not exact:
+                _, _, hgroup, hhook = have[si]
+                errors += [f"settings.json different: {event}: {line}{fix}"
+                           for line in definition_diff(hook_definition(hgroup, hhook), hook_definition(tgroup, thook))]
+        warnings += [f"settings.json: {event}: duplicate tagteam hook (group {gi}, hook {hi}){fix}" for gi, hi, _, _ in left]
+    for event, groups in hooks.items():
+        if event not in thooks:
+            warnings += [f"settings.json: {event}: tagteam hook for an event the template does not use (group {gi}, hook {hi}){fix}"
+                         for gi, hi, _, _ in tagteam_slots(groups, is_claude_tagteam_hook)]
+        for gi, group in enumerate(groups if isinstance(groups, list) else []):
+            inner = group.get("hooks") if isinstance(group, dict) else None
+            flags = {is_claude_tagteam_hook(x) for x in inner} if isinstance(inner, list) else set()
+            if flags == {True, False}:
+                warnings.append(f"settings.json: {event}[{gi}]: a tagteam hook shares a group with other hooks{fix}")
+    return errors, warnings, notes
+
+
 def static_checks(target, source, host):
     """(errors, warnings, notes) that need no hook run. Prints the tool lines as it goes."""
     errors, warnings, notes = [], [], []
@@ -1105,11 +1479,14 @@ def static_checks(target, source, host):
         if not any((target / ".claude/agents").glob("*.md")):
             errors.append(".claude/agents has no agent definition; run install.py --update")
         try:
-            settings = (target / ".claude/settings.json").read_text(encoding="utf-8")
-            if not isinstance(json.loads(settings).get("hooks"), dict):
+            hooks = json.loads((target / SETTINGS_REL).read_text(encoding="utf-8-sig")).get("hooks")
+            if not isinstance(hooks, dict):
                 errors.append(".claude/settings.json has no hooks")
-            elif GUARD_NAME not in settings:
-                warnings.append(f".claude/settings.json does not mention {GUARD_NAME}: the role hooks are not wired")
+            else:
+                bad, shaky, unverified = claude_hook_drift(target, source, hooks)
+                errors += bad
+                warnings += shaky
+                notes += unverified
         except (OSError, ValueError, AttributeError):
             errors.append(".claude/settings.json is missing or unreadable; run install.py --update")
     if host == "codex":
@@ -2011,7 +2388,11 @@ def main(argv=None, runner=run_cmd, plat=None):
     interactive = sys.stdin.isatty() and not a.yes
     if not (a.schedule and not a.update and (target / COLLECTOR_REL).is_file()) and not a.dry_run:
         target.mkdir(parents=True, exist_ok=True)
-        rep = install(target, source, interactive)
+        try:
+            rep = install(target, source, interactive)
+        except ClaudeSettingsError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         print(("Updated" if a.update else "Installed") + f" tagteam in {target}")
         rep.print()
         migrate_state(target)
