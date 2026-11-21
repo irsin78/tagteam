@@ -1134,7 +1134,7 @@ class TaskTest(RouteBase):
         self.fallback("unavailable:gpt-6.1-terra", model="gpt-6.1-terra")
 
     def test_fallback_vendor_without_a_usable_base_grade_model(self):
-        self.local({"models": {m: {"enabled": False} for m in ("gemini-4-hydrogen", "gemini-4-argon", "gemini-3.8-flash")}})
+        self.local({"models": {m: {"enabled": False} for m in ("gemini-4-neon", "gemini-4-hydrogen", "gemini-4-argon", "gemini-3.8-flash")}})
         self.fallback("unavailable:google", vendor="google")
 
     def test_fallback_cli_missing(self):

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-18",
+  "updated": "2026-11-21",
   "aa_new_model_days": 120,
   "_order": "Models are listed most capable first within a vendor: an earlier model is stronger than a later one of the same vendor (route.py uses this for the orchestrator cap and as the last tie-break). Grades are per (model, effort) and follow grading.floors applied to Artificial Analysis index values. Without bench.local.json the route takes the first usable entry of defaults[vendor][grade], else the first model in this order at its lowest effort of that grade.",
   "grading": {"floors": {"S": 54, "A": 48, "B": 30}, "caps": {"S": 10, "A": 4, "B": 2, "C": 0.2}},
@@ -56,7 +56,9 @@
     "google": {
       "claude-sonnet-4-6": "other vendor's model through agy breaks vendor independence",
       "claude-opus-4-6-thinking": "other vendor's model through agy breaks vendor independence",
-      "gpt-oss-120b": "other vendor's model through agy breaks vendor independence"
+      "gpt-oss-120b": "other vendor's model through agy breaks vendor independence",
+      "claude-opus-5-5": "other vendor's model through agy breaks vendor independence",
+      "claude-sonnet-5-5": "other vendor's model through agy breaks vendor independence"
     }
   },
   "orchestrators": {
@@ -99,6 +101,9 @@
     },
     "gpt-6-luna": {
       "vendor": "openai", "grades": {"low": "C", "medium": "C", "high": "C", "xhigh": "C"}
+    },
+    "gemini-4-neon": {
+      "vendor": "google", "grades": {"low": "B", "medium": "S", "high": "S", "xhigh": "S"}, "label": "Gemini 4 Neon"
     },
     "gemini-4-carbon": {
       "vendor": "google", "grades": {"low": "S", "medium": "S", "high": "S"}, "label": "Gemini 4 Carbon"
