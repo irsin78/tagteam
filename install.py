@@ -9,7 +9,9 @@
 import argparse
 import ast
 import copy
+import csv
 import difflib
+import errno
 import hashlib
 import importlib.util
 import json
@@ -25,6 +27,7 @@ import tempfile
 import time
 import urllib.parse
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -2159,7 +2162,7 @@ def live_check(target, host):
     return "FAILED", f"{host} succeeded but no valid role record of this run appeared in {sessions}: {hint}. Last output: {tail}"
 
 
-def check(target, source=None, host=None, live=False):
+def check(target, source=None, host=None, live=False, plat=None, runner=None):
     source = source or Path(__file__).resolve().parent
     shown = host or "claude"
     print(f"check host={shown}" + ("" if host else " (no --host: claude handler check only)"))
@@ -2204,16 +2207,23 @@ def check(target, source=None, host=None, live=False):
         print(f"live ({shown}): {status} ({text})")
     else:
         print(f"live ({shown}): unverified (not requested; --live runs the real {shown} CLI once and costs tokens)")
+    weekly_report(target, plat, runner or run_cmd)  # looked up now, so that a test can replace it
     print("check: " + ("FAILED" if failed else "ok"))
     return 1 if failed else 0
 
 
 # ---- --schedule / --unschedule: weekly model-list check -------------------------------
-# Opt-in. The task runs the installed collector (no LLM); it never edits models.json.
+# Opt-in. One task per machine (not per project) runs the collector copy in <tagteam home>/bin (no LLM); each project that
+# wants the check is listed in <tagteam home>/projects.json, and the collector writes that project's proposal file from the
+# shared cache. It never edits models.json.
 
 COLLECTOR_REL = ".claude/tagteam/models_collect.py"
 PROPOSAL_FILES = ("model-update.json", "model-update.applied", "model-update.log")  # the log: the job's output (macOS launchd, Linux cron)
 MARK_FALLBACK = "missed runs will not be re-run"
+MACHINE_TASK = "tagteam-models"  # Windows task name; the Linux crontab line ends with "# tagteam-models"
+MACHINE_LABEL = "net.tagteam.models"  # macOS launchd label; the plist is ~/Library/LaunchAgents/<label>.plist
+BIN_FILES = ("models_collect.py", "state.py")  # the collector copy in <home>/bin: the collector and every module it imports
+COLLECTOR_SCHEMA_LINE = re.compile(r"^COLLECTOR_SCHEMA = (\d+)$", re.M)
 
 
 def run_cmd(argv, input_text=None):
@@ -2221,12 +2231,251 @@ def run_cmd(argv, input_text=None):
     try:
         p = subprocess.run(argv, input=input_text, capture_output=True, text=True, timeout=120)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
-    except (OSError, subprocess.SubprocessError) as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:  # ValueError: output that cannot be decoded
         return 127, str(e)
 
 
-def task_name(target):
+def legacy_task_name(target):
+    """The name an older install gave this project's own weekly task (one task per project)."""
     return "tagteam-models-" + hashlib.sha1(str(target).encode("utf-8")).hexdigest()[:8]
+
+
+def tagteam_home():
+    """The per-machine folder: $TAGTEAM_HOME, else ~/.tagteam (the collector has the same two lines)."""
+    return Path(os.path.abspath(os.environ.get("TAGTEAM_HOME") or Path.home() / ".tagteam"))
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def collector_schema(path):
+    """COLLECTOR_SCHEMA of a collector file: the number on its exact `COLLECTOR_SCHEMA = n` line, 1 when the file has no
+    such line (an older collector), None when the file cannot be read."""
+    try:
+        found = COLLECTOR_SCHEMA_LINE.search(Path(path).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return int(found.group(1)) if found else 1
+
+
+def project_key(path):
+    """What two spellings of one project folder have in common: the real path (symlinks and, on macOS, the case of the
+    folder name), then the platform's case rule."""
+    return os.path.normcase(os.path.realpath(str(path)))
+
+
+def registry_path(home):
+    return Path(home) / "projects.json"
+
+
+def read_registry(home):
+    """(document, None) of projects.json, or (None, reason) when the file cannot be read or is not a schema 1 registry. A
+    missing file is an empty registry. Reads only: nothing is moved or rewritten here."""
+    path = registry_path(home)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"schema": 1, "projects": []}, None
+    except (OSError, ValueError) as exc:  # ValueError: bad JSON or bytes that are not UTF-8
+        return None, f"{path} cannot be read ({type(exc).__name__}: {str(exc)[:100]})"
+    if (not isinstance(doc, dict) or doc.get("schema") != 1 or not isinstance(doc.get("projects"), list)
+            or not all(isinstance(p, dict) and isinstance(p.get("path"), str) for p in doc["projects"])):
+        return None, f"{path} is not a project registry of schema 1"
+    return doc, None
+
+
+def write_registry(home, doc):
+    replace_file(registry_path(home), (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+
+
+def set_aside_registry(home):
+    """Move an unusable projects.json away (projects.json.corrupt, or with a time stamp when that name is taken: nothing that
+    is already there is overwritten). Returns the new name."""
+    path = registry_path(home)
+    stamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
+    for suffix in (".corrupt", f".corrupt-{stamp}") + tuple(f".corrupt-{stamp}-{n}" for n in range(2, 50)):
+        aside = path.with_name(path.name + suffix)
+        if not aside.exists():
+            os.replace(path, aside)
+            return aside
+    raise OSError(f"no free name to set {path} aside")
+
+
+def registry_has(home, target):
+    doc = read_registry(home)[0]
+    key = project_key(target)
+    return bool(doc) and any(project_key(p["path"]) == key for p in doc["projects"])
+
+
+def registry_add(home, target, dry=False):
+    """Put the project into projects.json (the entry of a registered one, `last` included, stays as it is). True when added.
+    An unusable file is set aside first (real runs only; a dry run says it would)."""
+    doc, problem = read_registry(home)
+    if problem:
+        print(f"  note     {problem}; " + ("[dry-run] would set it aside and start a new one" if dry else
+                                           f"kept as {set_aside_registry(home).name} and started a new one"))
+        doc = {"schema": 1, "projects": []}
+    key = project_key(target)
+    if any(project_key(p["path"]) == key for p in doc["projects"]):
+        return False
+    path = str(target).replace("\\", "/") if is_windows() else str(target)
+    doc["projects"].append({"path": path, "added": utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")})
+    if not dry:
+        write_registry(home, doc)
+    return True
+
+
+def registry_others(home, target):
+    """How many projects other than this one are listed, or None when projects.json cannot be read."""
+    doc, problem = read_registry(home)
+    if problem:
+        return None
+    key = project_key(target)
+    return sum(project_key(p["path"]) != key for p in doc["projects"])
+
+
+def registry_remove(home, target, dry=False):
+    """Take the project out of projects.json. True when it was listed. Never touches an unusable file."""
+    doc, problem = read_registry(home)
+    if problem:
+        return False
+    key = project_key(target)
+    keep = [p for p in doc["projects"] if project_key(p["path"]) != key]
+    listed = len(keep) != len(doc["projects"])
+    if listed and not dry:
+        doc["projects"] = keep
+        write_registry(home, doc)
+    return listed
+
+
+REGISTRY_LOCK = "registry.lock"
+LOCK_WAIT_SECONDS, LOCK_POLL_SECONDS = 300, 5  # a test replaces these
+
+
+class registry_lock:
+    """`with registry_lock(home):` one process at a time changes projects.json, the collector copy and the machine task (the
+    collector takes the same lock for its registry writes). An OS advisory lock on the open file <home>/registry.lock:
+    fcntl.flock(LOCK_EX | LOCK_NB) on POSIX, msvcrt.locking(LK_NBLCK) on byte 0 on Windows. It is polled every 5 seconds for up
+    to 5 minutes and released by the OS when the process ends, so it cannot go stale; the file itself is never deleted.
+    Raises OSError when the lock is not free in time (the caller changes nothing). A dry run takes no lock."""
+
+    def __init__(self, home, dry=False):
+        self.path, self.dry, self.fd = Path(home) / REGISTRY_LOCK, dry, None
+
+    def _try(self, fd):
+        """True when taken, False when another holder has it (only EACCES, EAGAIN/EWOULDBLOCK and EDEADLK mean that, as in
+        the collector); any other error, say a file system without locks, is raised at once."""
+        try:
+            if is_windows():
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK):
+                return False
+            raise
+        return True
+
+    def __enter__(self):
+        if self.dry:
+            return self
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        try:
+            while not self._try(fd):
+                if time.monotonic() >= deadline:
+                    raise OSError(f"{self.path} is held by another process (an install or the weekly job); nothing was changed, "
+                                  "try again in a few minutes")
+                time.sleep(LOCK_POLL_SECONDS)
+        except OSError:
+            os.close(fd)
+            raise
+        self.fd = fd
+        return self
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            try:
+                if is_windows():
+                    import msvcrt
+                    os.lseek(self.fd, 0, os.SEEK_SET)
+                    msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(self.fd)
+            self.fd = None
+        return False
+
+
+def sync_bin(target, home, dry=False):
+    """Bring <home>/bin (the collector copy the machine task runs) up to this project's collector: only when the copy is
+    missing or incomplete, or the project's COLLECTOR_SCHEMA is not lower than the installed collector's (even when the
+    copy lacks state.py); an older project never puts back an older collector. state.py is written first, then the
+    collector, each atomically, so a run in between sees an old pair or a new pair, never a new collector with no state.
+    Prints what it did. True when a complete copy is in place (or would be)."""
+    src_dir, bin_dir = target / ".claude/tagteam", Path(home) / "bin"
+    missing = [n for n in BIN_FILES if not (src_dir / n).is_file()]
+    if missing:
+        print(f"error: cannot make the collector copy: {', '.join(missing)} not installed in {src_dir}", file=sys.stderr)
+        return False
+    mine = collector_schema(src_dir / "models_collect.py")
+    theirs = collector_schema(bin_dir / "models_collect.py")  # None: no collector in the copy
+    complete = all((bin_dir / n).is_file() for n in BIN_FILES)
+    if theirs is not None and mine < theirs:
+        print(f"  bin      left alone: the copy in {bin_dir} has collector schema {theirs}, this project's has {mine}")
+        if not complete:
+            print(f"error: the copy in {bin_dir} is incomplete and newer than this project's collector; update a project "
+                  "that has the newer collector", file=sys.stderr)
+        return complete
+    changed = [n for n in ("state.py", "models_collect.py")
+               if not (bin_dir / n).is_file() or (bin_dir / n).read_bytes() != (src_dir / n).read_bytes()]
+    for n in changed:
+        print(("  [dry-run] would copy " if dry else "  copied ") + f"{src_dir / n} -> {bin_dir / n}")
+        if not dry:
+            replace_file(bin_dir / n, (src_dir / n).read_bytes())
+    if not changed:
+        print(f"  bin      {bin_dir} is up to date (collector schema {mine})")
+    return True
+
+
+def remove_bin(home, dry=False):
+    """Delete the two collector files of <home>/bin, then the folder when nothing else is in it. A file or folder that is
+    not ours stays. True when no file of ours is left; an error is reported, never swallowed."""
+    bin_dir, ok = Path(home) / "bin", True
+    for n in BIN_FILES:
+        f = bin_dir / n
+        if f.exists():
+            print(("  [dry-run] would delete " if dry else "  deleted ") + str(f))
+            if not dry:
+                try:
+                    f.unlink()
+                except OSError as exc:
+                    print(f"  error    could not delete {f} ({type(exc).__name__}: {exc})", file=sys.stderr)
+                    ok = False
+    if ok and bin_dir.is_dir() and not dry:
+        try:
+            bin_dir.rmdir()
+        except OSError:
+            print(f"  note     {bin_dir} holds other files and stays")
+    return ok
+
+
+def proposal_belongs_to(proposal, target):
+    """Whether a model-update.json is this project's: True when it names this project, False when it names another or cannot
+    be read as one (then it is not ours to delete). The file records `project` (forward slashes)."""
+    try:
+        name = json.loads(proposal.read_text(encoding="utf-8"))["project"]
+        return project_key(str(name).replace("/", os.sep)) == project_key(target)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def task_xml(argv, root):
@@ -2242,7 +2491,7 @@ def task_xml(argv, root):
   <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
-    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit><Enabled>true</Enabled></Settings>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit><Enabled>true</Enabled></Settings>
   <Actions Context="Author"><Exec><Command>{cmd}</Command><Arguments>{args}</Arguments>
     <WorkingDirectory>{escape(str(root))}</WorkingDirectory></Exec></Actions>
 </Task>
@@ -2328,16 +2577,46 @@ def probe_cli(argv, path):
     return p.returncode, ((p.stdout or p.stderr).strip().splitlines() or [""])[0][:120]
 
 
+def names_project(tokens, target):
+    """Whether an argument list has `--project <this project's folder>` as two whole arguments (a longer path that merely
+    starts with it does not count)."""
+    tokens = [str(t) for t in tokens]
+    return any(a == "--project" and b == str(target) for a, b in zip(tokens, tokens[1:]))
+
+
+def task_xml_arguments(text):
+    """The words of the <Arguments> of a Windows task's XML, after XML-unescaping and splitting as a command line (quotes
+    removed). [] when there are none."""
+    from xml.sax.saxutils import unescape
+    found = re.search(r"<Arguments>(.*?)</Arguments>", text, re.S)
+    if not found:
+        return []
+    line = unescape(found.group(1), {"&quot;": '"', "&apos;": "'"})
+    return [w[1:-1] if len(w) > 1 and w[0] == w[-1] == '"' else w for w in shlex.split(line, posix=False)]
+
+
+QUERY_ERRORS = (CronReadError, OSError, subprocess.SubprocessError, csv.Error, ValueError)  # a scheduler that cannot be asked
+MIN_WEEKLY_SCHEMA = 2  # the first collector schema with --weekly and --from-cache
+
+
 class Scheduler:
-    def __init__(self, target, plat=None, runner=run_cmd, dry=False, python=None, home=None, uid=None, clis=None, probe=None):
+    """The machine's one weekly task (name tagteam-models) and the per-project steps around it. `home` is the user's home
+    (macOS LaunchAgents), `thome` the tagteam folder (default: tagteam_home()); a test gives both. Only what this installer
+    made is ever changed or deleted: the machine task by its fixed name (on Linux also by its command), a per-project task of
+    an older install only when its job names this project."""
+
+    def __init__(self, target, plat=None, runner=run_cmd, dry=False, python=None, home=None, uid=None, clis=None, probe=None,
+                 thome=None):
         self.target, self.dry, self.runner = target, dry, runner
         self.plat = plat or {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
-        self.name = task_name(target)
-        self.argv = [python or sys.executable, str(target / COLLECTOR_REL), "--project", str(target)]
+        self.thome = Path(thome) if thome else tagteam_home()
+        self.name, self.label, self.older = MACHINE_TASK, MACHINE_LABEL, False  # older: the per-project task of an older install
+        self.argv = [python or sys.executable, str(self.thome / "bin" / BIN_FILES[0]), "--weekly"]
         self.clis = clis  # CLI executables; None: look them up when the job is registered
         self.probe = probe or probe_cli  # looked up late: a test replaces probe_cli
         self.uid = uid
-        self.plist = Path(home or Path.home()) / "Library/LaunchAgents" / f"net.tagteam.{self.name}.plist"
+        self.agents = Path(home or Path.home()) / "Library/LaunchAgents"
+        self.plist = self.agents / f"{self.label}.plist"
 
     def run(self, argv, input_text=None):
         print("  " + ("[dry-run] " if self.dry else "$ ") + subprocess.list2cmdline(argv))
@@ -2346,16 +2625,38 @@ class Scheduler:
     def _gui(self):
         return "gui/%d" % (self.uid if self.uid is not None else os.getuid())
 
+    def _owns_line(self, line):
+        """A crontab line of this task: the marker comment at the end and, for the machine task, our command; for the older
+        per-project task, this project's path."""
+        line = line.rstrip()
+        if not line.endswith("# " + self.name):
+            return False
+        if self.older:
+            try:  # the job as the shell reads it: crontab's \% is a plain %, quoting is removed
+                return names_project(shlex.split(line.replace("\\%", "%")), self.target)
+            except ValueError:
+                return False
+        return re.search(r"bin/models_collect\.py['\"]? --weekly", line) is not None
+
     def _cron(self):
-        """Read the user crontab once: (all lines, lines without our marked line)."""
+        """Read the user crontab once: (all lines, lines without the ones this task owns)."""
         rc, text = self.runner(["crontab", "-l"])
         if rc != 0:
             if "no crontab" not in text.lower():
                 raise CronReadError("cannot read the crontab (crontab -l: %s); nothing was changed" % text.strip()[:200])
             text = ""
-        mark = "# " + self.name
         lines = text.splitlines()
-        return lines, [ln for ln in lines if not ln.rstrip().endswith(mark)]
+        return lines, [ln for ln in lines if not self._owns_line(ln)]
+
+    def _windows_tasks(self):
+        """The names of the scheduled tasks in the root folder. Raises CronReadError when the list cannot be had."""
+        rc, text = self.runner(["schtasks", "/Query", "/FO", "CSV"])
+        if rc != 0:
+            raise CronReadError("cannot list the scheduled tasks (schtasks /Query: %s)" % text.strip()[:200])
+        try:
+            return [row[0].lstrip("\\") for row in csv.reader(text.splitlines()) if row]
+        except csv.Error as exc:
+            raise CronReadError("cannot read the list of scheduled tasks (%s)" % exc)
 
     def cli_files(self):
         return self.clis if self.clis is not None else cli_paths(self.target)
@@ -2366,22 +2667,32 @@ class Scheduler:
         shell's whole PATH is not copied."""
         files = self.cli_files()
         runtimes = [shutil.which(r) for r in dict.fromkeys(env_runtime(f) for f in files) if r]
-        dirs = [os.path.dirname(f) for f in files] + [os.path.dirname(r) for r in runtimes if r]             + [os.path.dirname(self.argv[0])] + SYSTEM_PATH.split(":")
+        dirs = [os.path.dirname(f) for f in files] + [os.path.dirname(r) for r in runtimes if r] \
+            + [os.path.dirname(self.argv[0])] + SYSTEM_PATH.split(":")
         return ":".join(dict.fromkeys(d for d in dirs if d))
 
     def is_registered(self):
-        """Whether the weekly check is registered now (a query that changes nothing). Raises CronReadError on linux when the
-        crontab cannot be read."""
+        """Whether the task is registered now (queries only). Raises CronReadError when that cannot be told: access denied, an
+        unreadable crontab. 'Not found' is only what the scheduler plainly says (macOS: exit 113; Windows: the name is
+        missing from the task list), never any failure."""
         if self.plat == "windows":
-            return self.runner(["schtasks", "/Query", "/TN", self.name])[0] == 0
+            if self.runner(["schtasks", "/Query", "/TN", self.name])[0] == 0:
+                return True
+            if self.name in self._windows_tasks():
+                raise CronReadError(f"cannot query the task {self.name}, which is in the task list")
+            return False
         if self.plat == "macos":
-            return self.runner(["launchctl", "print", f"{self._gui()}/net.tagteam.{self.name}"])[0] == 0
+            rc, text = self.runner(["launchctl", "print", f"{self._gui()}/{self.label}"])
+            if rc == 0:
+                return True
+            if rc == 113 or "could not find service" in text.lower():
+                return False
+            raise CronReadError(f"cannot tell whether {self.label} is loaded (launchctl print: {text.strip()[:200]})")
         old, keep = self._cron()
         return len(keep) != len(old)
 
     def log_path(self):
-        state = installed_state_dir(self.target)
-        return state / "model-update.log" if state else None
+        return self.thome / "weekly.log"
 
     def schedule(self):
         print(f"task {self.name} ({self.plat}): {subprocess.list2cmdline(self.argv)}")
@@ -2399,21 +2710,29 @@ class Scheduler:
         except CronReadError as e:
             print("error: %s" % e, file=sys.stderr)
             return 1
+        except OSError as e:
+            print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+            return 1
         print(("would schedule" if self.dry else "scheduled") if rc == 0 else "scheduling FAILED", self.name)
         return int(rc != 0)
 
     def _add_windows(self):
-        xml = task_xml(self.argv, self.target)
+        xml = task_xml(self.argv, self.thome)
         if self.dry:
             print(xml)
-        tmp = Path(tempfile.gettempdir()) / f"{self.name}.xml"
+        tmp = None
         try:
-            if not self.dry:
-                tmp.write_bytes(b"\xff\xfe" + xml.encode("utf-16-le"))
-            rc, msg = self.run(["schtasks", "/Create", "/TN", self.name, "/XML", str(tmp), "/F"])
+            if self.dry:
+                shown = os.path.join(tempfile.gettempdir(), self.name + "-<unique>.xml")
+            else:  # a name of its own: an existing file of that name is never truncated or deleted
+                fd, shown = tempfile.mkstemp(prefix=self.name + "-", suffix=".xml")
+                tmp = shown
+                with os.fdopen(fd, "wb") as f:
+                    f.write(b"\xff\xfe" + xml.encode("utf-16-le"))
+            rc, msg = self.run(["schtasks", "/Create", "/TN", self.name, "/XML", shown, "/F"])
         finally:
-            if not self.dry and tmp.exists():
-                tmp.unlink()
+            if tmp and os.path.exists(tmp):
+                os.remove(tmp)
         if rc != 0:
             print(f"note: /XML registration failed ({msg.strip()[:200]}); using /SC WEEKLY, {MARK_FALLBACK}")
             rc, _ = self.run(["schtasks", "/Create", "/TN", self.name, "/SC", "WEEKLY", "/D", "MON", "/ST", "09:00",
@@ -2421,63 +2740,207 @@ class Scheduler:
         return rc
 
     def _add_macos(self):
-        job = {"Label": "net.tagteam." + self.name, "ProgramArguments": self.argv,
+        job = {"Label": self.label, "ProgramArguments": self.argv,
                "StartCalendarInterval": {"Weekday": 1, "Hour": 9, "Minute": 0},
-               "WorkingDirectory": str(self.target),
+               "WorkingDirectory": str(self.thome),
                "EnvironmentVariables": {"PATH": self.job_path()}}  # launchd's own PATH is /usr/bin:/bin:/usr/sbin:/sbin
         log = self.log_path()
-        if log:  # without these a failing run leaves no trace anywhere
-            job["StandardOutPath"] = job["StandardErrorPath"] = str(log)
+        job["StandardOutPath"] = job["StandardErrorPath"] = str(log)  # without these a failing run leaves no trace anywhere
         data = plistlib.dumps(job)
+        gui_label = f"{self._gui()}/{self.label}"
         if self.dry:
             print(data.decode("utf-8"))
-        else:
-            if log:
-                log.parent.mkdir(parents=True, exist_ok=True)  # launchd does not create the folder of its log
-            if self.plist.exists():
-                self.run(["launchctl", "bootout", f"{self._gui()}/net.tagteam.{self.name}"])
-            self.plist.parent.mkdir(parents=True, exist_ok=True)
-            self.plist.write_bytes(data)
-        return self.run(["launchctl", "bootstrap", self._gui(), str(self.plist)])[0]
+            return self.run(["launchctl", "bootstrap", self._gui(), str(self.plist)])[0]
+        log.parent.mkdir(parents=True, exist_ok=True)  # launchd does not create the folder of its log
+        old = self.plist.read_bytes() if self.plist.exists() else None
+        replace_file(self.plist, data)  # the new plist is on disk (or this raises) before the running job is touched
+        if old is not None:
+            self.run(["launchctl", "bootout", gui_label])
+        rc = self.run(["launchctl", "bootstrap", self._gui(), str(self.plist)])[0]
+        if rc != 0:  # leave the machine as it was: the old plist and, when there was one, its job
+            if old is None:
+                self.plist.unlink()
+            else:
+                replace_file(self.plist, old)
+                if self.run(["launchctl", "bootstrap", self._gui(), str(self.plist)])[0] != 0:
+                    print(f"WARN the previous job {self.label} could not be loaded again; run install.py --schedule", file=sys.stderr)
+        return rc
 
     def _add_linux(self):
-        # cron's PATH is as short as launchd's; % is special in crontab, also in the log path
-        job = "PATH=%s %s" % (shlex.quote(self.job_path()), shlex.join(self.argv))
-        log = self.log_path()
-        if log:  # without the redirect cron mails the output to a mailbox nobody reads, or drops it
-            job += " >> %s 2>&1" % shlex.quote(str(log))
+        # cron's PATH is as short as launchd's and its cwd is the home folder; % is special in crontab, also in a path
+        job = "cd %s && PATH=%s %s" % (shlex.quote(str(self.thome)), shlex.quote(self.job_path()), shlex.join(self.argv))
+        log = self.log_path()  # without the redirect cron mails the output to a mailbox nobody reads, or drops it
+        job += " >> %s 2>&1" % shlex.quote(str(log))
         line = "0 9 * * 1 %s # %s" % (job.replace("%", "\\%"), self.name)
         if self.dry:
             print("  crontab  " + line)
-        elif log:
+        else:
             log.parent.mkdir(parents=True, exist_ok=True)  # the shell opens the log before the job could create its folder
+        # (the crontab is read and replaced in two commands: an edit made in between is lost; crontab offers no lock)
         return self.run(["crontab", "-"], "\n".join(self._cron()[1] + [line]) + "\n")[0]
 
-    def unschedule(self, was_registered=False):
+    # -- the per-project steps: enable (install, --update, --schedule) and unschedule (policy off, --unschedule) --
+
+    def legacy(self):
+        """This project's older per-project task, as a Scheduler of its own (same runner, other name and label)."""
+        old = copy.copy(self)
+        old.name = legacy_task_name(self.target)
+        old.label, old.older = "net.tagteam." + old.name, True
+        old.plist = self.agents / f"{old.label}.plist"
+        return old
+
+    def owned(self):
+        """Whether this task exists and is ours to change. The machine task: its fixed name (Linux: also its command; macOS:
+        also a plist launchd no longer has loaded). An older per-project task: only when the job itself names this project,
+        a name that matches is not enough."""
+        if not self.older:
+            return self.is_registered() or (self.plat == "macos" and self.plist.exists())
+        if self.plat == "linux":
+            return self.is_registered()
+        if self.plat == "macos":
+            try:
+                job = plistlib.loads(self.plist.read_bytes())
+            except (OSError, ValueError):
+                return False  # no plist, or one we cannot read: what it runs is unknown
+            return names_project(job.get("ProgramArguments") or [], self.target)
+        if not self.is_registered():
+            return False
+        rc, text = self.runner(["schtasks", "/Query", "/TN", self.name, "/XML"])
         try:
-            rc = getattr(self, "_del_" + self.plat)()
-        except CronReadError as e:
-            print("error: %s" % e, file=sys.stderr)
+            return rc == 0 and names_project(task_xml_arguments(text), self.target)
+        except ValueError:
+            return False
+
+    def count_legacy(self):
+        """How many per-project tasks of an older install are left on this machine (any project). Raises CronReadError
+        when the crontab or the task list cannot be read."""
+        if self.plat == "macos":
+            return len(list(self.agents.glob("net.tagteam.tagteam-models-*.plist")))
+        if self.plat == "linux":
+            return sum(re.search(r"# tagteam-models-\S+$", ln.rstrip()) is not None for ln in self._cron()[0])
+        return sum(n.startswith("tagteam-models-") for n in self._windows_tasks())
+
+    def remove_legacy(self):
+        """Delete this project's older per-project task, when there is one that names this project. 0 when it is gone (or
+        never was)."""
+        old = self.legacy()
+        if not old.owned():
+            return 0
+        rc = getattr(old, "_del_" + self.plat)()
+        print(("  would remove " if self.dry else "  removed " if rc == 0 else "  removal FAILED, still registered: ")
+              + f"the per-project task {old.name} (replaced by the machine task {self.name})")
+        return int(rc != 0)
+
+    def traces(self):
+        """Whether this project has anything the policy `off` must undo: a registry entry or an older per-project task."""
+        return registry_has(self.thome, self.target) or self.legacy().owned()
+
+    def enable(self, explicit=False):
+        """Policy weekly: collector copy, registry entry, the machine task, then the older per-project task of this project,
+        all under registry.lock. The older task goes only after the machine task is there (else the check would stop
+        altogether). explicit: --schedule, which registers the machine task again; install and --update register it only when
+        it is missing. A project whose collector has no --weekly and --from-cache (schema below 2) is refused, its older
+        task left running."""
+        schema = collector_schema(self.target / COLLECTOR_REL)
+        if schema is None or schema < MIN_WEEKLY_SCHEMA:
+            print(f"error: this project's collector ({'not installed' if schema is None else f'schema {schema}'}) has no --weekly and "
+                  f"--from-cache (schema {MIN_WEEKLY_SCHEMA} or newer); update tagteam in this project first. "
+                  "Its older weekly task, if any, was left as it is.", file=sys.stderr)
             return 1
-        print(("removed " if rc == 0 else "removal FAILED, still registered: " if was_registered
-               else "not registered (nothing to remove): ") + self.name)
+        try:
+            with registry_lock(self.thome, self.dry):
+                if not sync_bin(self.target, self.thome, self.dry):
+                    return 1
+                if registry_add(self.thome, self.target, self.dry):
+                    print(("  [dry-run] would list " if self.dry else "  listed ") + f"{self.target} in {registry_path(self.thome)}")
+                if explicit or not self.is_registered():
+                    if self.schedule() != 0:
+                        return 1
+                return self.remove_legacy()
+        except QUERY_ERRORS as exc:
+            print(f"error: {exc if isinstance(exc, CronReadError) else f'{type(exc).__name__}: {exc}'}", file=sys.stderr)
+            return 1
+
+    def remove_task(self):
+        """Delete the machine task and the two collector files (not the cache, not other files). 0 when the task is gone or
+        never was and the files are gone."""
+        if self.owned():
+            rc = getattr(self, "_del_" + self.plat)()
+            print(("would remove " if self.dry else "removed ") + self.name if rc == 0
+                  else "removal FAILED, still registered: " + self.name)
+            if rc != 0:
+                return 1  # the task still runs the collector copy: it stays
+        else:
+            print("not registered (nothing to remove): " + self.name)
+        return int(not remove_bin(self.thome, self.dry))
+
+    def _delete_proposals(self):
+        """Delete this project's proposal files. A model-update.json that names another project (a state folder shared through
+        TAGTEAM_STATE_DIR) leaves all of them alone. Raises OSError."""
         state = installed_state_dir(self.target)
-        for fn in PROPOSAL_FILES if state else ():
-            if (state / fn).exists():
+        if state is None:
+            return
+        proposal = state / "model-update.json"
+        mine = proposal.exists() and proposal_belongs_to(proposal, self.target)
+        if proposal.exists() and not mine:
+            print(f"  note     {proposal} does not name this project; the proposal files in {state} were left alone")
+            return
+        # The two other files name no project. They go with this project's proposal, or when the state folder is this
+        # project's own; in a folder shared through TAGTEAM_STATE_DIR with no proposal of this project, they stay.
+        own_folder = not os.environ.get("TAGTEAM_STATE_DIR")
+        for fn in PROPOSAL_FILES:
+            if (state / fn).exists() and (fn == "model-update.json" or mine or own_folder):
                 print(("  [dry-run] would delete " if self.dry else "  deleted ") + str(state / fn))
                 if not self.dry:
                     (state / fn).unlink()
-        return int(was_registered and rc != 0)
+        if not mine and not own_folder and any((state / fn).exists() for fn in PROPOSAL_FILES):
+            print(f"  note     no proposal of this project in the shared state folder {state}; the files there were left alone")
+
+    def unschedule(self):
+        """Policy off or --unschedule, under registry.lock: delete this project's proposal files and its older per-project
+        task; when no other project is listed, delete the machine task and the collector copy; last, take the project out of
+        projects.json (so a step that failed leaves the project listed and the next run tries again). With a projects.json
+        that cannot be read the machine task and the copy stay: other projects may depend on them. 0 unless something that
+        should be gone is not."""
+        try:
+            with registry_lock(self.thome, self.dry):
+                self._delete_proposals()
+                if self.remove_legacy():
+                    return 1
+                others = registry_others(self.thome, self.target)
+                if others is None:
+                    print(f"  note     {registry_path(self.thome)} cannot be read, so the machine task {self.name} and the collector "
+                          "copy stay (other projects may depend on them)", file=sys.stderr)
+                elif others == 0:
+                    if self.remove_task():
+                        return 1
+                else:
+                    print(f"  {others} other project(s) stay in the weekly check; the machine task {self.name} stays")
+                if registry_remove(self.thome, self.target, self.dry):
+                    print(("  [dry-run] would take " if self.dry else "  took ") + f"{self.target} out of {registry_path(self.thome)}")
+                return 0
+        except QUERY_ERRORS as exc:
+            print(f"error: {exc if isinstance(exc, CronReadError) else f'{type(exc).__name__}: {exc}'}", file=sys.stderr)
+            return 1
 
     def _del_windows(self):
         return self.run(["schtasks", "/Delete", "/TN", self.name, "/F"])[0]
 
     def _del_macos(self):
-        rc = self.run(["launchctl", "bootout", f"{self._gui()}/net.tagteam.{self.name}"])[0]
-        if self.plist.exists():
-            if not self.dry:
+        """Success when the job is gone: bootout worked, or launchd confirms the job is not loaded. The plist goes only then."""
+        gui_label = f"{self._gui()}/{self.label}"
+        rc = self.run(["launchctl", "bootout", gui_label])[0]
+        if rc != 0:
+            try:
+                rc = 0 if not self.is_registered() else rc
+            except CronReadError:
+                pass  # unknown: still a failure
+        if rc == 0 and self.plist.exists() and not self.dry:
+            try:
                 self.plist.unlink()
-            rc = 0
+            except OSError as exc:
+                print(f"  error    could not delete {self.plist} ({type(exc).__name__}: {exc})", file=sys.stderr)
+                return 1
         return rc
 
     def _del_linux(self):
@@ -2535,9 +2998,9 @@ def model_check_mode(target):
 
 
 def apply_model_check(target, plat, runner):
-    """After an install or --update: register the weekly model-list check when the project's policy says weekly and it is
-    not registered, remove it when the policy says off and it is. Nothing changes when it already is as the policy says.
-    A failure is a warning: the install has succeeded."""
+    """After an install or --update: policy weekly puts this project into the machine's weekly check (collector copy, registry,
+    machine task when missing, this project's older per-project task removed); policy off takes it out again when it is in.
+    Nothing changes when it already is as the policy says. A failure is a warning: the install has succeeded."""
     if os.environ.get(SKIP_SCHEDULER_ENV):
         print(f"note: the weekly model-list check was left alone ({SKIP_SCHEDULER_ENV} is set)")
         return
@@ -2548,20 +3011,68 @@ def apply_model_check(target, plat, runner):
         return
     try:
         sched = Scheduler(target, plat, runner)
-        registered = sched.is_registered()
-        if mode == "weekly" and not registered and sched.schedule() != 0:
+        if mode == "weekly" and sched.enable() != 0:
             print("warning: the weekly model-list check could not be scheduled; install.py --schedule retries it, "
                   "and `Model list check: off` in AGENTS.md stops these attempts", file=sys.stderr)
-        elif mode == "off" and registered:
-            failed = sched.unschedule(was_registered=True) != 0
-            if sched.is_registered():
-                print(f"warning: the weekly model-list check {sched.name} is STILL registered (it could not be removed: "
-                      f"permission?); remove it by hand, or run install.py {target} --unschedule", file=sys.stderr)
-            elif failed:
-                print(f"warning: removal of the weekly model-list check {sched.name} failed; "
-                      "registration could not be confirmed; check the scheduler manually", file=sys.stderr)
-    except (CronReadError, OSError, subprocess.SubprocessError) as exc:
+        elif mode == "off" and sched.traces() and sched.unschedule() != 0:
+            print(f"warning: removal of the weekly model-list check failed; it may still be registered ({sched.name}); "
+                  f"check the scheduler by hand, or run install.py {target} --unschedule", file=sys.stderr)
+    except QUERY_ERRORS as exc:
         print(f"warning: the weekly model-list check was not changed ({type(exc).__name__}: {exc})", file=sys.stderr)
+
+
+def cache_ages(home):
+    """'claude 0d, aa 2d' for the files in <home>/cache, or 'none'."""
+    now, parts = utc_now(), []
+    cache = Path(home) / "cache"
+    for path in sorted(cache.glob("cli-*.json")) + [cache / "aa.json"]:
+        label = path.stem[4:] if path.stem.startswith("cli-") else path.stem
+        try:
+            fetched = datetime.fromisoformat(str(json.loads(path.read_text(encoding="utf-8"))["fetched"]).replace("Z", "+00:00"))
+            if fetched.tzinfo is None:
+                fetched = fetched.replace(tzinfo=timezone.utc)
+            parts.append(f"{label} {max((now - fetched).days, 0)}d")
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, KeyError, TypeError):
+            parts.append(f"{label} ?")
+    return ", ".join(parts) or "none"
+
+
+def weekly_report(target, plat, runner):
+    """The `weekly check:` lines of --check. Information and WARN only: this never makes the check fail, and it changes nothing
+    (the registry is read, never moved)."""
+    if os.environ.get(SKIP_SCHEDULER_ENV):
+        print(f"weekly check: skipped ({SKIP_SCHEDULER_ENV} is set)")
+        return
+    sched = Scheduler(target, plat, runner)
+    mode = model_check_mode(target)[0]
+    warns = []
+    try:
+        task = sched.is_registered()
+        print("weekly check: machine task " + ("registered" if task else "missing"))
+        if mode == "weekly" and not task:
+            warns.append(f"the machine task {sched.name} is missing (policy is weekly; install.py {target} --schedule registers it)")
+    except QUERY_ERRORS as exc:
+        print(f"weekly check: machine task unverified ({exc})")
+    doc, problem = read_registry(sched.thome)
+    if problem:
+        print("weekly check: this project unverified (the registry cannot be read)")
+        warns.append(f"{problem}; the next install, --update or --schedule sets it aside and starts a new one")
+    else:
+        listed = any(project_key(p["path"]) == project_key(target) for p in doc["projects"])
+        print("weekly check: this project " + ("registered" if listed else "not registered"))
+        if mode == "weekly" and not listed:
+            warns.append(f"this project is not in {registry_path(sched.thome)} (policy is weekly; install.py {target} --schedule adds it)")
+    print("weekly check: cache " + cache_ages(sched.thome))
+    try:
+        legacy = sched.count_legacy()
+        if legacy:
+            warns.append(f"{legacy} per-project task(s) left from an older install (removed when each project is updated)")
+    except QUERY_ERRORS as exc:
+        print(f"weekly check: per-project tasks of an older install unverified ({exc})")
+    for w in warns:
+        print("WARN weekly check: " + w)
 
 
 def main(argv=None, runner=None, plat=None):
@@ -2573,8 +3084,10 @@ def main(argv=None, runner=None, plat=None):
     ap.add_argument("--live", action="store_true", help="with --check: also run the real CLI once (costs tokens)")
     ap.add_argument("--repair-hooks", action="store_true",
                     help="bring the tagteam entries of .codex/hooks.json back to the template (preview; --yes writes)")
-    ap.add_argument("--schedule", action="store_true", help="register the weekly model-list check (installs first if needed)")
-    ap.add_argument("--unschedule", action="store_true", help="remove the weekly check and its proposal files")
+    ap.add_argument("--schedule", action="store_true",
+                    help="put this project into the machine's weekly model-list check (installs first if needed)")
+    ap.add_argument("--unschedule", action="store_true",
+                    help="take this project out of the weekly check and delete its proposal files (the machine task goes with the last one)")
     ap.add_argument("--dry-run", action="store_true", help="with --schedule/--unschedule: print, change nothing")
     ap.add_argument("--source", default=str(Path(__file__).resolve().parent))
     ap.add_argument("--yes", action="store_true", help="with --repair-hooks: write (the installer asks nothing)")
@@ -2591,7 +3104,7 @@ def main(argv=None, runner=None, plat=None):
     runner = runner or run_cmd  # looked up now, so that a test can replace it
     sched = Scheduler(target, plat, runner, a.dry_run)
     if a.check:
-        return check(target, source, a.host, a.live)
+        return check(target, source, a.host, a.live, plat, runner)
     if a.repair_hooks:
         return repair_hooks(target, source, a.yes)
     if a.unschedule:
@@ -2618,7 +3131,7 @@ def main(argv=None, runner=None, plat=None):
         if not a.dry_run and not (target / COLLECTOR_REL).is_file():
             print(f"error: {COLLECTOR_REL} is not installed; cannot schedule", file=sys.stderr)
             return 1
-        return sched.schedule()
+        return sched.enable(explicit=True)
     return 0
 
 

@@ -14,8 +14,8 @@
 | Codex hook entries | `python3` with an absolute guard path |
 | `run.py` per vendor | `ACTUAL_MODEL ... (match)` for `claude`, `openai` and `google`; Codex needs no `windows.sandbox` argument here |
 | Timeout | the process group is killed |
-| `--schedule`, `--unschedule` | a plist with Monday 09:00 `StartCalendarInterval` in `~/Library/LaunchAgents`, loaded as `net.tagteam.<name>`; `--unschedule` boots it out and removes the plist, `model-update.json`, `model-update.applied` (when there is one) and the log; the collector's own `collect.log` stays |
-| launchd environment | a job's own PATH is only `/usr/bin:/bin:/usr/sbin:/sbin`, so the job gets its own PATH (the CLI folders and the Python's folder) and writes `model-update.log`; `--schedule` prints each CLI's `--version ... ok` with that PATH. `launchctl kickstart -k gui/$(id -u)/net.tagteam.<name>` leaves `claude=ok google=ok openai=ok` in the log. `TAGTEAM_AA_API_KEY` is not passed on purpose: a plist is a plain file |
+| `--schedule`, `--unschedule` | one launchd agent per machine, `net.tagteam.models`: a plist with Monday 09:00 `StartCalendarInterval` in `~/Library/LaunchAgents/net.tagteam.models.plist`, running `~/.tagteam/bin/models_collect.py --weekly` in `~/.tagteam`. Install, `--update` and `--schedule` register it when it is missing and remove this project's own `net.tagteam.tagteam-models-<8 hex>` agent of an older install, and so does `--unschedule` (`--check` counts the ones left). `--unschedule` takes the project out of `~/.tagteam/projects.json` and deletes its `model-update.json`, `model-update.applied` and `model-update.log` (when there are any); for the last project it also boots the agent out and removes the plist and `~/.tagteam/bin/`; the cache and `~/.tagteam/weekly.log` stay |
+| launchd environment | a job's own PATH is only `/usr/bin:/bin:/usr/sbin:/sbin`, so the job gets its own PATH (the CLI folders and the Python's folder) and writes `~/.tagteam/weekly.log`; `--schedule` prints each CLI's `--version ... ok` with that PATH. `launchctl kickstart -k gui/$(id -u)/net.tagteam.models` runs the job once; the log then shows `refresh claude=ok google=ok openai=ok aa=skipped` and one line per project. `TAGTEAM_AA_API_KEY` is not passed on purpose: a plist is a plain file. So the weekly run here refreshes the CLI lists only and leaves the Artificial Analysis cache alone; a manual run with the key (`models_collect.py --refresh` or `--write-bench`) fills `~/.tagteam/cache/aa.json`, which every project then reads |
 | State folder, worktrees | `<repo>/.tagteam/`, shared by linked worktrees |
 
 A read-only `run.py` Claude worker in a worktree can time out after 120 s with no output (cause unknown); a similar silent
@@ -39,5 +39,6 @@ timeout appears on Windows inside the Codex sandbox.
 ## Unconfirmed
 
 - A launchd job woken from sleep, or a missed Monday 09:00 (the plist has no catch-up).
+- The single machine agent through real launchd after the move from one agent per project (the per-project agents were run with `launchctl kickstart`).
 - The desktop app's session tool name (`mcp__ccd_session__start_session`, the hook matcher).
 - An interactive Codex session on macOS (only `codex exec`).

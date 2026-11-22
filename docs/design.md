@@ -257,9 +257,10 @@ does not accumulate: a rule nobody can explain is not kept "just in case".
 
 ## 9. Model list maintenance
 
-Commands and the apply procedure: manual [section 8](manual.md#8-keeping-the-model-list-current). Weekly, a scheduled script
-asks each vendor CLI for its model list and, with an Artificial Analysis API key, fetches scores and prices. It writes a
-proposal and nothing else; the `model-update` skill applies each change kind by a fixed rule (automatic for availability
+Commands and the apply procedure: manual [section 8](manual.md#8-keeping-the-model-list-current). Weekly, one scheduled script per machine
+asks each vendor CLI for its model list and, with an Artificial Analysis API key, fetches scores and prices, once, into a
+cache shared by every project on the machine (`~/.tagteam/cache/`). It then writes each registered project's proposal from
+that cache (no further network call) and nothing else; the `model-update` skill applies each change kind by a fixed rule (automatic for availability
 and benchmark values; held for deletions and for a default-route change that lacks two agreeing sources, a probe run and
 passing route tests). So the update path needs no model, the collector cannot change a route, and only `models.json`
 changes. Claude Code lists model families, not versions. Data from Artificial Analysis must be credited; the README and the

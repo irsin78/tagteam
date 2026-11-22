@@ -45,6 +45,10 @@ class CollectTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.cfg, self.state = os.path.join(self.tmp, "cfg"), os.path.join(self.tmp, "state")
+        self.home = os.path.join(self.tmp, "home")  # the machine folder; never the real ~/.tagteam
+        home = mock.patch.dict(os.environ, {"TAGTEAM_HOME": self.home})
+        home.start()
+        self.addCleanup(home.stop)
         os.makedirs(self.cfg)
         os.makedirs(self.state)
         shutil.copy(os.path.join(TAGTEAM, "models.json"), self.cfg)
@@ -61,7 +65,12 @@ class CollectTest(unittest.TestCase):
         with open(os.path.join(self.cfg, "models.local.json"), "w", encoding="utf-8") as f:
             json.dump(data, f)
 
+    def fresh_cache(self):
+        """Each run below asks the fake CLIs and AA itself; the cache is tested in test_models_collect_cache.py."""
+        shutil.rmtree(os.path.join(self.home, "cache"), True)
+
     def collect(self, openai=None, google=None, extra=(), key="", fetch=None, claude=None):
+        self.fresh_cache()
         env = {"TAGTEAM_CONFIG_DIR": self.cfg, "TAGTEAM_STATE_DIR": self.state, "TAGTEAM_AA_API_KEY": key,
                "TAGTEAM_CLI_CLAUDE": claude or self.cli(os.path.join(FIX, "claude_model.json")),
                "TAGTEAM_CLI_OPENAI": openai or self.cli(os.path.join(FIX, "codex_models.json")),
@@ -243,13 +252,18 @@ class CollectTest(unittest.TestCase):
         def fake(cmd, timeout, cwd=None, env=None):
             calls.append({"cmd": cmd, "cwd": cwd, "env": env})
             return 0, read(os.path.join(FIX, "claude_model.json")), ""
-        with mock.patch.object(mc, "run_cli", side_effect=fake),                 mock.patch.object(mc.run, "resolve_cli", return_value=["claude"]):
-            status, listing = mc.collect_vendor("claude", self.models, {}, 5)
+        with mock.patch.object(mc, "run_cli", side_effect=fake),                 mock.patch.object(mc, "resolve_cli", return_value=["claude"]):
+            with mock.patch.dict(os.environ, {"TAGTEAM_AA_API_KEY": "secret-key-123"}):
+                status, entry = mc.fetch_vendor("claude", 5, self.home)
         self.assertEqual(status["status"], "ok")
+        self.assertEqual(entry["listing"]["families"], ["fable", "haiku", "opus", "sonnet"])
         listing_call = calls[0]
         self.assertIn("/model", listing_call["cmd"])
-        self.assertEqual(listing_call["cwd"], mc.tempfile.gettempdir())
+        self.assertEqual(listing_call["cwd"], self.home)  # the machine folder, not the project
         self.assertEqual(listing_call["env"]["HARNESS_DELEGATE_RUN"], "1")
+        for call in calls:  # the listing and the --version call alike
+            self.assertNotIn("TAGTEAM_AA_API_KEY", call["env"])
+            self.assertEqual(call["cwd"], self.home)
 
     def test_claude_model_unexpected_output_is_error(self):
         path = os.path.join(self.tmp, "claude_odd.json")
@@ -393,6 +407,7 @@ class BenchTest(CollectTest):
     def write_bench(self, **kw):
         """Run --write-bench with a fake AA; -> (exit code, printed text)."""
         key = kw.pop("key", AA_KEY)
+        self.fresh_cache()
         out, err = io.StringIO(), io.StringIO()
         env = {"TAGTEAM_CONFIG_DIR": self.cfg, "TAGTEAM_STATE_DIR": self.state, "TAGTEAM_AA_API_KEY": key}
         with mock.patch.dict(os.environ, env), mock.patch.object(mc, "aa_fetch_page", self.aa(**kw)), \

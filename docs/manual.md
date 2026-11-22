@@ -18,7 +18,7 @@ are in the project you installed into. Commands are written `python3`; on Window
 | [5. The router](#5-the-router) | How a model is chosen (5.1); grades; pin or hide a model (5.2); mark a vendor exhausted (5.3) |
 | [6. The role hook](#6-the-role-hook) | What the hook does; fix a wrong session role |
 | [7. The launcher](#7-the-launcher) | Run a worker on another vendor; read-only limits; git check; exit codes |
-| [8. Keeping the model list current](#8-keeping-the-model-list-current) | Collect, apply (8.1) and schedule (8.2) model updates |
+| [8. Keeping the model list current](#8-keeping-the-model-list-current) | Collect, apply (8.1), schedule (8.2) and the machine cache (8.3) for model updates |
 | [9. When something goes wrong](#9-when-something-goes-wrong) | What a message means; recover from a broken hook (9.1) |
 | [10. Model-compensation rules](#10-model-compensation-rules) | List the rules that exist for one model's mistake |
 | [11. Developing the harness](#11-developing-the-harness) | Tests; uninstall |
@@ -92,12 +92,12 @@ Other things the installer does:
 | What | Behaviour |
 |---|---|
 | `models.local.json` | If missing, copied from `models.local.json.example` (no plans in it). Plans are an optional override you write yourself (section 5.2); without one, a vendor is usable when its CLI is present and its `available` list is not empty, and agy's plan is inferred from that list (section 5.1). |
-| Benchmark and available models | If `TAGTEAM_AA_API_KEY` is set and `bench.local.json` does not exist, runs `models_collect.py --write-bench` once (15 second timeout); if a vendor with a plan other than `none` has no `available` list, runs `--write-available` once. A failure prints a warning; the install continues. |
+| Benchmark and available models | If `TAGTEAM_AA_API_KEY` is set and `bench.local.json` does not exist, runs `models_collect.py --write-bench` once (15 second timeout); if a vendor with a plan other than `none` has no `available` list, runs `--write-available` once. Both commands read the machine-wide cache and fetch only what is stale (section 8.3). A failure prints a warning; the install continues. |
 | install record | Writes `.claude/tagteam/install.json` (committed: the template's `commit`, exact `tag` or null, `describe`, `dirty`) and `.claude/tagteam/install.local.json` (git-ignored: `checkout`, the folder that holds `install.py`; relative to the project when the checkout lies inside it, else an absolute path with `/`). The remote URL is never recorded. A template that is not a git checkout records a null commit and a warning. Installing a different commit that is known not to descend from the recorded one, or from a checkout with uncommitted changes, prints a warning and continues; reinstalling the recorded commit does not. |
 | `.gitignore` | Adds `.claude/tagteam/models.local.json`, `.claude/tagteam/bench.local.json`, `.claude/tagteam/install.local.json`, `.codex/hooks.json`, `.agents/hooks.json` and `.tagteam/`. |
 | Line endings | A file whose content differs from the new one only in `\r\n` versus `\n` (a clone with `core.autocrlf=true`) is reported `kept` and not rewritten, so `--update` makes no change that git shows. Only valid UTF-8 text without a NUL byte is compared this way; any other file is compared exactly. |
 | State folder | Moves records of an old `<git common dir>/tagteam/` into `.tagteam/` once (section 2). |
-| Weekly check | On by default. The line `Model list check: weekly\|off` in `## Project policy` of `AGENTS.md` decides (a missing line means `weekly`); install and `--update` apply it: `weekly` registers the check, `off` leaves it unregistered (section 8.2). |
+| Weekly check | On by default. The line `Model list check: weekly\|off` in `## Project policy` of `AGENTS.md` decides (a missing line means `weekly`); install and `--update` apply it. `weekly` puts the project into the machine's weekly check: it updates the collector copy in `~/.tagteam/bin/`, lists the project in `~/.tagteam/projects.json`, registers the machine's one weekly task when it is missing, and removes this project's own task from an older install. `off` takes the project out again (section 8.2). |
 
 ### 1.1 Check
 
@@ -129,6 +129,11 @@ a failure ends with `check: FAILED` (exit code 1), otherwise `check: ok`.
   (`cmd /c` on Windows, `sh -c` elsewhere), from the folder `.agents`, within each hook's own timeout. A worker's `git commit`
   must be denied and `git status` must get `ask`; a bad quote, a wrong guard path, a missing interpreter or an answer that
   comes too late is a failure.
+- **weekly check**: information only, it never fails the check. `weekly check: machine task registered|missing`,
+  `weekly check: this project registered|not registered`, `weekly check: cache claude 0d, google 0d, aa 2d` (the age of
+  each cache file, or `none`), and `WARN weekly check: <n> per-project task(s) left from an older install (removed when each
+  project is updated)`. With policy `weekly`, a missing machine task or a project that is not registered is a WARN too.
+  What the scheduler or the registry could not tell is printed `unverified`; the check reads and changes nothing there.
 - **live** (`--live`, uses tokens): runs the real CLI once as a marked worker and requires a valid role record. On Codex
   run it only after trusting the hooks (section 1.2): untrusted hooks write no record. On agy it starts `agy -p` with the
   first google C-grade default model of `models.json`, mode `accept-edits`, an empty allow list and no host variables, and
@@ -284,7 +289,7 @@ cannot keep the first role, so it denies git commit/push and delegation even for
 | `sessions/<id>.json` | hook | role of each session (`worker`, `orchestrator`, or on agy `unresolved`: the first decision was lost, so protected calls get a worker's rules), recorded once |
 | `agents.jsonl` | hook (Codex `SubagentStart`) | the model each Codex subagent really runs on |
 | `agy-models.jsonl` | hook (agy PreInvocation) | one line `{ts, cid, model}` each time an agy conversation's model changes: which half of the Orchestrator model did what |
-| `model-update.log` | the scheduled job (macOS, Linux) | output of the weekly collector run |
+| `model-update.log` | the per-project job of an older install (macOS, Linux) | its output; the machine task logs to `~/.tagteam/weekly.log` (section 8.3), and `--unschedule` still deletes this file |
 | `backups/settings.json.<time>` | `install.py` | the original `.claude/settings.json`, copied before the installer changed it (section 1); never deleted |
 | `exhausted.json` | `run.py`, `route.py` | vendors temporarily unusable, with `until` |
 | `runs/<id>/` | `run.py` | one launcher run (section 7) |
@@ -706,20 +711,33 @@ result. Benchmark scores and prices come from the free Data API of [Artificial A
 its terms require crediting it wherever the data is shown or shared. The values stay in the machine-local
 `bench.local.json` (its `source` field names them) and are not part of this repository.
 
-    python3 .claude/tagteam/models_collect.py [--project DIR] [--timeout 60] [--mark-applied]
-    python3 .claude/tagteam/models_collect.py --write-bench [--timeout 60]
-    python3 .claude/tagteam/models_collect.py --write-available [--timeout 60]
+    python3 .claude/tagteam/models_collect.py [--project DIR] [--timeout 60] [--refresh] [--mark-applied]
+    python3 .claude/tagteam/models_collect.py --write-bench [--timeout 60] [--refresh]
+    python3 .claude/tagteam/models_collect.py --write-available [--timeout 60] [--refresh]
+    python3 .claude/tagteam/models_collect.py --from-cache [--project DIR]
+    python3 ~/.tagteam/bin/models_collect.py --weekly [--timeout 60]
 
-- Without flags it lists models through `codex debug models`, `agy models` and `claude -p /model` (Claude Code lists
-  model families only, so Claude availability is per family; it runs in a temporary folder), compares them with
-  `models.json`, and writes `model-update.json` in the state folder. It never edits `models.json`. Exit: 0 collected; 1 some
-  vendor failed or was missing, or a key is set and the benchmark fetch failed (even when every CLI answered); 2 usage or
-  configuration error; 3 every vendor CLI failed.
-- With `TAGTEAM_AA_API_KEY` set, it also reads the free Artificial Analysis list (at most 10 pages per run, daily quota) and
-  adds benchmark changes to the proposal. The key is never written to a file.
+Network results (the vendor CLI lists and the Artificial Analysis rows) are kept once per machine in `~/.tagteam/cache/`
+and shared by every project; section 8.3 has the layout and the rules. The first three commands (a manual run) read that
+cache and fetch only what is older than 6 days or missing; `--refresh` fetches regardless of age. Each prints a line such as
+`cache: claude 0d, google 0d, openai 0d, aa 2d`.
+
+- Without flags it takes the model lists of `codex debug models`, `agy models` and `claude -p /model` (Claude Code lists
+  model families only, so Claude availability is per family), compares them with this project's `models.json`, and writes
+  `model-update.json` in the state folder. It never edits `models.json`. Exit: 0 collected; 1 some vendor failed or was
+  missing, or the benchmark data failed to load (even when every CLI answered); 2 usage or configuration error; 3 every
+  vendor CLI failed.
+- With `TAGTEAM_AA_API_KEY` set it refreshes the free Artificial Analysis list when its cache is stale (at most 10 pages
+  per fetch, daily quota); without a key it uses the cache as it is, whatever its age, and writes nothing to it. Either way
+  the benchmark changes go into the proposal. The key is never written to a file or printed (section 8.3).
 - `--write-bench` writes `bench.local.json` for every registered model and effort that has a value, keeping entries from
-  other sources; without a key it writes nothing and exits 0. `--write-available` writes the `available` lists into
-  `models.local.json` for the vendors whose CLI answered. `--mark-applied` records the current proposal as handled.
+  other sources; with neither a key nor an Artificial Analysis cache it writes nothing and exits 0. `--write-available`
+  writes the `available` lists into `models.local.json` for the vendors whose list is available. `--mark-applied` records
+  the current proposal as handled.
+- `--from-cache` writes the same proposal from the cache alone and never touches the network, whatever the cache's age. A
+  vendor with no cache is reported `error` with the detail `no cache`; with no Artificial Analysis cache `bench` is
+  `skipped`, with one `ok` plus `cached_at`. The weekly task runs this for each project.
+- `--weekly` is the machine task's command (section 8.2).
 
 Change kinds in a proposal: `new_model`, `now_available`, `no_longer_available`, `efforts_dropped`, `missing_registered`,
 `bench_changed`, `bench_added`, `grade_changed`.
@@ -738,22 +756,86 @@ days makes the start line warn that collection stopped; check the scheduled task
     python3 install.py <project dir> --schedule [--dry-run]
     python3 install.py <project dir> --unschedule [--dry-run]
 
-Registers a weekly run (Monday 09:00) of `models_collect.py --project <project dir>` under the name `tagteam-models-<8 hex
-digits>` (Windows Task Scheduler), as a launchd agent `net.tagteam.<name>` (macOS) or a crontab line ending in `# <name>`
-(Linux). `--dry-run` prints what would be registered and starts nothing (on Linux the crontab line, as `  crontab  <line>`). `--unschedule` removes the task and deletes
-`model-update.json`, `model-update.applied` and `model-update.log`. The scheduled run reads the user's environment, so set
-`TAGTEAM_AA_API_KEY` as a user-level variable if you want benchmark data (launchd does not pass it). Per-platform
-details: [platform/](platform/windows.md).
+There is **one weekly task per machine**, not one per project: Monday 09:00, running
+`<python> ~/.tagteam/bin/models_collect.py --weekly` in the folder `~/.tagteam/`. Its name is fixed: `tagteam-models`
+(Windows Task Scheduler), the launchd agent `net.tagteam.models` (macOS, `~/Library/LaunchAgents/net.tagteam.models.plist`),
+or a crontab line ending in `# tagteam-models` (Linux). One run refreshes the shared cache once (one listing per CLI, one
+Artificial Analysis fetch of at most 10 pages), then runs each registered project's own collector with `--from-cache`, so
+every project gets its own `model-update.json` from its own `models.json`, with no further network call (section 8.3).
+
+Install, `--update` and `--schedule` (policy `weekly`) do four things, all under `~/.tagteam/registry.lock`:
+
+1. Update the collector copy `~/.tagteam/bin/` (`models_collect.py` and `state.py`) when it is missing or incomplete, or this
+   project's `COLLECTOR_SCHEMA` is not lower than the copy's. A project with an older collector never puts an older copy
+   back; the installer says so and leaves the copy. A project whose collector is older than schema 2 (no `--weekly` and
+   `--from-cache`) is refused with an error, and its own older task is left as it is.
+2. List the project in `~/.tagteam/projects.json`.
+3. Register the machine task when it is missing (`--schedule` registers it again).
+4. Remove this project's own task from an older install (`tagteam-models-<8 hex digits>`, `net.tagteam.tagteam-models-<8
+   hex digits>`, or the crontab line ending in `# tagteam-models-<8 hex digits>`), after the machine task is in place and
+   only when that task names this project. Other projects' older tasks are not touched; each goes when its project is
+   updated.
+
+Policy `off` and `--unschedule` take the project out of `projects.json`, delete its `model-update.json`,
+`model-update.applied` and `model-update.log`, and delete its own older task. When no other project is listed they also
+delete the machine task and `~/.tagteam/bin/`; the cache stays. If `projects.json` cannot be read, the machine task and the
+copy stay, because other projects may depend on them. An unreadable `projects.json` found by install is moved aside as
+`projects.json.corrupt` and a new one is started. `--dry-run` prints what would be done and changes nothing (on Linux the
+crontab line, as `  crontab  <line>`). Setting `TAGTEAM_SKIP_SCHEDULER` (to anything) makes install and `--update` leave
+the scheduler alone (CI, tests). `--check` reports the state (section 1.1).
+
+The key: the Windows task reads the user's environment, so set `TAGTEAM_AA_API_KEY` as a user-level variable if you want
+benchmark data. launchd (a plist is a plain file) and cron do not get the key. With no key the weekly run refreshes the CLI
+lists only and leaves the Artificial Analysis cache as it is; a manual run that has the key (`models_collect.py --refresh`
+or `--write-bench`) fills that cache, and every project then reads it, the next weekly run included. Per-platform details:
+[platform/](platform/windows.md).
 
 On macOS and Linux a launchd or cron job gets only `/usr/bin:/bin:/usr/sbin:/sbin`, so the installer gives the job its own
 `PATH`: the folders of the CLIs, of the runtime a CLI script needs (for example `node`), of the Python that runs the
 collector, and those system folders. `--schedule` prints that PATH and runs each CLI's `--version` with it (a failure is a
-WARN; with `--dry-run` it only says what it would run). launchd and cron also write the job's output to `model-update.log`
-in the state folder (the crontab line ends in `>> <state folder>/model-update.log 2>&1`; the folder is made when the job is
-registered), so a failing run leaves a trace: without it cron mails the output, and a server without a mail system loses it.
+WARN; with `--dry-run` it only says what it would run). launchd (`StandardOutPath`) and cron (a `>>` redirect) write the
+job's output to `~/.tagteam/weekly.log`, so a failing run leaves a trace: without it cron mails the output, and a server
+without a mail system loses it.
 
-The check is on by default: install and `--update` register it unless `## Project policy` in `AGENTS.md` has the line
+The check is on by default: install and `--update` apply it unless `## Project policy` in `AGENTS.md` has the line
 `Model list check: off` (`weekly` or no line registers it). `--schedule` and `--unschedule` still work by hand.
+
+### 8.3 The machine folder and the shared cache
+
+All of it lives in `~/.tagteam/` (Windows `%USERPROFILE%\.tagteam\`); the environment variable `TAGTEAM_HOME` replaces
+that folder and is made absolute once at the start of a run.
+
+| Entry | Meaning |
+|---|---|
+| `cache/cli-<vendor>.json` | the vendor CLI's own list, its `--version` and the time fetched. Claude's is the list of model families; each project maps them to its ids |
+| `cache/aa.json` | the Artificial Analysis rows, `index_version`, the remaining-quota header and the time fetched |
+| `cache/attempts.json` | the last attempt of each item with its time and result, failures included |
+| `projects.json` | the registered projects: path, time added, and the last weekly result (`at`, `exit`) |
+| `bin/` | the collector copy the machine task runs: `models_collect.py` and `state.py`, nothing else |
+| `refresh.lock`, `registry.lock` | lock files (below); never deleted |
+| `weekly.log` | one line per weekly refresh and per project, plus the job's own output on macOS and Linux |
+
+- **Freshness.** A cache file written less than 6 days ago is fresh and is used without any network call (CLI lists and
+  Artificial Analysis are judged one by one). A stale or missing one is fetched again; a fetch that fails keeps the old file,
+  and a cache that cannot be written counts as a failed fetch. The weekly run refreshes everything, fresh or not.
+  `--refresh` does the same for a manual run.
+- **One fetch at a time.** A refresh holds an OS advisory lock on `refresh.lock` (`flock`, `msvcrt.locking`), so two
+  sessions that start together fetch once; the other waits up to 5 minutes (polling every 5 seconds) and then reads the cache.
+  The lock is released by the operating system when its process ends, however it ends. Every attempt is recorded in
+  `attempts.json`: a run that began while another one was fetching and failed does not repeat the failed call, it reports that
+  failure and keeps the old cache. `registry.lock` is the same kind of lock around every change of `projects.json`, taken by
+  the installer and by the weekly run.
+- **Machine-level only.** The refresh looks the CLIs up by their default names on PATH (`claude`, `codex`, `agy`) and runs
+  them in `~/.tagteam/`; no project's `models.json` decides what is cached. A project's comparison, registration and
+  `plans` stay its own.
+- **The key.** Only a process that has `TAGTEAM_AA_API_KEY` fetches Artificial Analysis data; a run without it never writes or
+  deletes `aa.json`. The key is never stored: it is removed from the environment of every child process (the CLIs, the
+  project collectors) and replaced by `***` in everything the collector writes or prints (cache, proposal, logs).
+- **`--weekly`.** Refreshes everything (section above), then for each project in `projects.json` runs
+  `<python> <project>/.claude/tagteam/models_collect.py --from-cache --project <project>` (120 seconds each, the environment
+  without the key and with the absolute `TAGTEAM_HOME`). A project whose folder or collector is gone is removed from the
+  list and the log says so. Each project's result is written back to `projects.json` as `last`. Exit: 0; 1 some refresh or a
+  project failed; 3 every refresh failed.
 
 ## 9. When something goes wrong
 
@@ -817,5 +899,5 @@ In this repository:
 The first covers the router, launcher, hook and collector (with fake CLIs); the second covers the installer, including
 the hook commands run in a real shell with fake interpreters. Both are expected to pass before a change is merged.
 
-There is no uninstall command. Remove the installed files by hand, run `--unschedule` first if you registered the weekly
-check.
+There is no uninstall command. Remove the installed files by hand, run `--unschedule` first for each project that is in
+the weekly check (the last one also removes the machine task); `~/.tagteam/` keeps its cache and logs and can be deleted by hand.

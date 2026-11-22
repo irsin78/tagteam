@@ -92,16 +92,22 @@ Headless `-p` runs. [host: agy 1.5.9 and 1.5.10 Windows, measured 2026-11-18 / r
 
 ## Scheduled model check
 
-- `install.py <project> --schedule` registers a Task Scheduler task named `tagteam-models-<8 hex digits>`, weekly on
-  Monday at 09:00, with "run as soon as possible after a missed start" and "only when the network is available". Check it
-  with `schtasks /Query /TN <name>`; remove it with `--unschedule`.
+- There is one task per machine, named `tagteam-models`, not one per project. Install, `--update` and `--schedule` register it
+  when it is missing (`--schedule` registers it again): weekly on Monday at 09:00, with "run as soon as possible after a missed
+  start" and "only when the network is available", running `<python> %USERPROFILE%\.tagteam\bin\models_collect.py --weekly`
+  in `%USERPROFILE%\.tagteam\` (`TAGTEAM_HOME` moves that folder), with an execution limit of one hour. Check it with `schtasks /Query /TN tagteam-models`;
+  `--unschedule` on the last registered project removes it, and so does policy `off`. The task of an older install,
+  `tagteam-models-<8 hex digits>`, is removed when its project is updated; `--check` counts the ones left
+  (`schtasks /Query /FO CSV`).
 - If registration through the XML file fails, the installer falls back to a plain weekly task and says that missed runs
   will not be re-run.
 - The task reads **user-level** environment variables (confirmed), so `setx TAGTEAM_AA_API_KEY <key>` is enough; open a
-  new terminal afterwards because `setx` does not change the current one.
+  new terminal afterwards because `setx` does not change the current one. The key is never stored by tagteam: the collector
+  leaves it out of the environment of the CLIs and of each project's collector, and blanks it in everything it writes. The one
+  weekly run fetches the Artificial Analysis data once for all projects.
 - A `python.exe` console window appears briefly when the task runs (harmless; hiding it is unconfirmed). The task runs the
   Python that was current at `--schedule` time (its absolute path is stored): run `--schedule` again after upgrading or
-  moving Python.
+  moving Python. The log is `%USERPROFILE%\.tagteam\weekly.log`, written by the collector itself.
 
 ## Worktrees
 

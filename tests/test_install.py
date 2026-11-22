@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -24,9 +25,11 @@ REAL_AGY_HOOKS = INSTALL.parent / "harness/agy/hooks.json"
 sys.path.insert(0, str(INSTALL.parent))
 import install  # noqa: E402
 
+REAL_RUN_CMD = install.run_cmd  # the tests replace it with a guard; one test needs the real one (with subprocess.run mocked)
 REAL_PROBE = install.probe_cli  # the tests replace install.probe_cli with a fake; one test needs the real one
 REAL_APPLY = install.apply_model_check  # the weekly-check step of install; the tests below the policy class opt in to it
 _guards = []
+_home_tmp = None
 REAL_POPEN = subprocess.Popen
 
 
@@ -62,17 +65,24 @@ def setUpModule():
     """No test may register, query or remove a real scheduled task (this machine has real ones): main() runs no scheduler
     step unless a test restores REAL_APPLY and hands main its own runner; the default command runner refuses; and a process
     started by a test (the installer as a script) inherits TAGTEAM_SKIP_SCHEDULER."""
+    global _home_tmp
+    _home_tmp = tempfile.TemporaryDirectory()  # the machine folder of every test that does not make its own: never the real ~/.tagteam
     for guard in (mock.patch.object(install, "apply_model_check", lambda *a, **k: None),
                   mock.patch.object(install, "run_cmd", side_effect=AssertionError("real command runner forbidden in tests")),
                   mock.patch.object(subprocess, "Popen", guarded_popen),
-                  mock.patch.dict(os.environ, {install.SKIP_SCHEDULER_ENV: "1"})):  # inherited by every subprocess a test starts
+                  mock.patch.dict(os.environ, {install.SKIP_SCHEDULER_ENV: "1",  # inherited by every subprocess a test starts
+                                               "TAGTEAM_HOME": str(Path(_home_tmp.name) / "tagteam-home"),
+                                               "HOME": str(Path(_home_tmp.name) / "home"),
+                                               "USERPROFILE": str(Path(_home_tmp.name) / "home")})):
         guard.start()
         _guards.append(guard)
+    os.environ.pop("TAGTEAM_STATE_DIR", None)  # (restored at the end; a real one would send every state-folder deletion of a test there)
 
 
 def tearDownModule():
     while _guards:
         _guards.pop().stop()
+    _home_tmp.cleanup()
 
 
 
@@ -98,6 +108,7 @@ if event == "PreToolUse":
 sys.exit(0)
 '''
 FAKE_COLLECT = '''import json, os, sys
+COLLECTOR_SCHEMA = 2
 cfg = os.path.dirname(os.path.abspath(__file__))
 if "--write-available" in sys.argv:
     with open(os.path.join(cfg, "avail.log"), "a") as f:
@@ -2552,13 +2563,14 @@ class ScheduleTests(unittest.TestCase):
         base = Path(self._tmp.name)
         self.proj = (base / "proj").resolve()
         (self.proj / ".claude/tagteam").mkdir(parents=True)
-        (self.proj / ".claude/tagteam/models_collect.py").write_text("# collector\n", encoding="utf-8")
+        (self.proj / ".claude/tagteam/models_collect.py").write_text("# collector\nCOLLECTOR_SCHEMA = 2\n", encoding="utf-8")
         (self.proj / ".claude/tagteam/state.py").write_text(STATE_STUB, encoding="utf-8")
         self.state = base / "state"
         self.state.mkdir()
         self.home = base / "home"
+        self.thome = base / "thome"
         self.calls = []
-        self.fail = lambda argv: False
+        self.fail_cmd = lambda argv: False
         self.crontab = ""
         self.probed = []
         self.probe_rc = 0
@@ -2574,13 +2586,16 @@ class ScheduleTests(unittest.TestCase):
         self.calls.append((argv, input_text))
         if argv[:2] == ["crontab", "-l"]:
             return (0, self.crontab) if self.crontab else (1, "no crontab")
-        return (1, "boom") if self.fail(argv) else (0, "")
+        return (1, "boom") if self.fail_cmd(argv) else (0, "")
 
     def sched(self, plat, dry=False):
         return install.Scheduler(self.proj, plat, self.runner, dry, python="/usr/bin/py", home=self.home, uid=501,
-                                 clis=CLI_FILES)
+                                 clis=CLI_FILES, thome=self.thome)
 
     def name(self):
+        return "tagteam-models"
+
+    def legacy_name(self):
         return "tagteam-models-" + hashlib.sha1(str(self.proj).encode("utf-8")).hexdigest()[:8]
 
     def quiet(self, fn):
@@ -2589,7 +2604,7 @@ class ScheduleTests(unittest.TestCase):
         return code, out.getvalue()
 
     def cmd(self):
-        return ["/usr/bin/py", str(self.proj / ".claude/tagteam/models_collect.py"), "--project", str(self.proj)]
+        return ["/usr/bin/py", str(self.thome / "bin/models_collect.py"), "--weekly"]
 
     def test_windows_schedule_xml_and_argv(self):
         captured = {}
@@ -2600,7 +2615,7 @@ class ScheduleTests(unittest.TestCase):
                 data = Path(argv[argv.index("/XML") + 1]).read_bytes()
                 captured["raw"] = data
             return 0, ""
-        s = install.Scheduler(self.proj, "windows", runner, False, python="C:/Py/python.exe")
+        s = install.Scheduler(self.proj, "windows", runner, False, python="C:/Py/python.exe", thome=self.thome)
         code, _ = self.quiet(s.schedule)
         self.assertEqual(code, 0)
         name = self.name()
@@ -2611,18 +2626,19 @@ class ScheduleTests(unittest.TestCase):
         self.assertTrue(raw.startswith(b"\xff\xfe"))
         xml = raw[2:].decode("utf-16-le")
         for want in ("<Monday />", "<LogonType>InteractiveToken</LogonType>", "<StartWhenAvailable>true</StartWhenAvailable>",
-                     "<ExecutionTimeLimit>PT10M</ExecutionTimeLimit>", "<RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>",
-                     '<Command>"C:/Py/python.exe"</Command>', "models_collect.py", "--project", f"<WorkingDirectory>{self.proj}</WorkingDirectory>"):
+                     "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>", "<RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>",
+                     '<Command>"C:/Py/python.exe"</Command>', "models_collect.py", "--weekly", f"<WorkingDirectory>{self.thome}</WorkingDirectory>"):
             self.assertIn(want, xml)
         self.assertFalse(Path(self.calls[0][5]).exists(), "temp xml removed")
 
-    def test_task_name_hash_per_project(self):
-        self.assertEqual(install.task_name(self.proj), self.name())
-        self.assertNotEqual(install.task_name(self.proj), install.task_name(self.proj / "other"))
-        self.assertRegex(self.name(), r"^tagteam-models-[0-9a-f]{8}$")
+    def test_the_machine_task_has_a_fixed_name_and_the_old_per_project_name_stays_for_cleanup(self):
+        self.assertEqual((install.MACHINE_TASK, install.MACHINE_LABEL), ("tagteam-models", "net.tagteam.models"))
+        self.assertEqual(install.legacy_task_name(self.proj), self.legacy_name())
+        self.assertNotEqual(install.legacy_task_name(self.proj), install.legacy_task_name(self.proj / "other"))
+        self.assertRegex(self.legacy_name(), r"^tagteam-models-[0-9a-f]{8}$")
 
     def test_windows_xml_failure_falls_back_to_weekly(self):
-        self.fail = lambda argv: "/XML" in argv
+        self.fail_cmd = lambda argv: "/XML" in argv
         code, out = self.quiet(self.sched("windows").schedule)
         self.assertEqual(code, 0)
         fallback = self.calls[1][0]
@@ -2637,33 +2653,32 @@ class ScheduleTests(unittest.TestCase):
         self.assertIn("InteractiveToken", out)
         self.assertIn("schtasks /Create /TN", out)
 
-    def test_macos_schedule_and_unschedule(self):
+    def test_macos_schedule_and_remove(self):
         s = self.sched("macos")
-        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state / "new")}):
-            code, out = self.quiet(s.schedule)
-        plist = self.home / f"Library/LaunchAgents/net.tagteam.{self.name()}.plist"
+        code, out = self.quiet(s.schedule)
+        plist = self.home / "Library/LaunchAgents/net.tagteam.models.plist"
         data = plistlib.loads(plist.read_bytes())
+        self.assertEqual(data["Label"], "net.tagteam.models")
         self.assertEqual(data["ProgramArguments"], self.cmd())
         self.assertEqual(data["StartCalendarInterval"], {"Weekday": 1, "Hour": 9, "Minute": 0})
-        self.assertEqual(data["WorkingDirectory"], str(self.proj))
+        self.assertEqual(data["WorkingDirectory"], str(self.thome))
         # launchd hands a job /usr/bin:/bin:/usr/sbin:/sbin: the CLI folders and the interpreter's must be named
         self.assertEqual(data["EnvironmentVariables"], {"PATH": JOB_PATH})
         self.assertIn("PATH     " + JOB_PATH, out)
-        # a failing run must leave a trace: the log is in the state folder, whose folder launchd does not create
-        log = str(self.state / "new" / "model-update.log")
+        # a failing run must leave a trace: the log is in the machine folder, which launchd does not create
+        log = str(self.thome / "weekly.log")
         self.assertEqual((data["StandardOutPath"], data["StandardErrorPath"]), (log, log))
-        self.assertTrue((self.state / "new").is_dir())
+        self.assertTrue(self.thome.is_dir())
         self.assertEqual(self.calls[-1][0], ["launchctl", "bootstrap", "gui/501", str(plist)])
         self.quiet(self.sched("macos").schedule)  # overwrite: boots out the old one first
-        self.assertIn(["launchctl", "bootout", f"gui/501/net.tagteam.{self.name()}"], [c[0] for c in self.calls])
+        self.assertIn(["launchctl", "bootout", "gui/501/net.tagteam.models"], [c[0] for c in self.calls])
         self.calls.clear()
-        self.assertEqual(self.quiet(self.sched("macos").unschedule)[0], 0)
-        self.assertEqual(self.calls[0][0], ["launchctl", "bootout", f"gui/501/net.tagteam.{self.name()}"])
+        self.assertEqual(self.quiet(self.sched("macos").remove_task)[0], 0)
+        self.assertEqual(self.calls[-1][0], ["launchctl", "bootout", "gui/501/net.tagteam.models"])
         self.assertFalse(plist.exists())
 
     def test_macos_dry_run_shows_path_and_log_but_creates_nothing(self):
-        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state / "new")}):
-            code, out = self.quiet(self.sched("macos", dry=True).schedule)
+        code, out = self.quiet(self.sched("macos", dry=True).schedule)
         self.assertEqual(code, 0)
         self.assertIn("EnvironmentVariables", out)
         self.assertIn(JOB_PATH, out)
@@ -2671,22 +2686,38 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(self.probed, [], "a preview starts no CLI")
         for f in CLI_FILES:
             self.assertIn(f"[dry-run] would run: {f} --version", out)
-        self.assertFalse((self.state / "new").exists())
+        self.assertFalse(self.thome.exists())
         self.assertFalse((self.home / "Library").exists())
 
-    def test_macos_without_a_computable_state_folder_has_no_log_paths(self):
-        (self.proj / ".claude/tagteam/state.py").unlink()
-        self.quiet(self.sched("macos").schedule)
-        data = plistlib.loads(next((self.home / "Library/LaunchAgents").glob("*.plist")).read_bytes())
-        self.assertNotIn("StandardOutPath", data)
-        self.assertEqual(data["EnvironmentVariables"], {"PATH": JOB_PATH})
+    def proposal_of(self, project):
+        return json.dumps({"schema": 1, "project": Path(project).as_posix()})
 
-    def test_unschedule_deletes_the_job_log_too(self):
-        for fn in ("model-update.log", "keep.txt"):
+    def test_unschedule_deletes_the_proposal_files_and_the_old_job_log(self):
+        for fn in ("model-update.applied", "model-update.log", "keep.txt"):
             (self.state / fn).write_text("x", encoding="utf-8")
+        (self.state / "model-update.json").write_text(self.proposal_of(self.proj), encoding="utf-8")
         with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state)}):
             self.quiet(self.sched("macos").unschedule)
         self.assertEqual(sorted(p.name for p in self.state.iterdir()), ["keep.txt"])
+
+    def test_the_proposal_of_another_project_survives_an_unschedule(self):
+        for fn in install.PROPOSAL_FILES:
+            (self.state / fn).write_text("x", encoding="utf-8")
+        (self.state / "model-update.json").write_text(self.proposal_of(self.proj.parent / "other"), encoding="utf-8")
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state)}):
+            code, out = self.quiet(self.sched("windows").unschedule)
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(p.name for p in self.state.iterdir()), sorted(install.PROPOSAL_FILES))
+        self.assertIn("does not name this project", out)
+
+    def test_without_a_proposal_a_shared_state_folder_keeps_the_applied_marker_and_the_log(self):
+        for fn in ("model-update.applied", "model-update.log"):
+            (self.state / fn).write_text("x", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state)}):  # an override: a folder others may share
+            code, out = self.quiet(self.sched("windows").unschedule)
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(p.name for p in self.state.iterdir()), ["model-update.applied", "model-update.log"])
+        self.assertIn("left alone", out)
 
     def make_cli(self, folder, name, first_line=None):
         folder.mkdir(exist_ok=True)
@@ -2702,7 +2733,7 @@ class ScheduleTests(unittest.TestCase):
         models = self.proj / ".claude/tagteam/models.json"
         models.write_text(json.dumps(
             {"vendors": {"claude": {"cli": "claude"}, "openai": {"cli": "codex"}, "google": {"cli": "agy"}}}), encoding="utf-8")
-        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join([str(a), str(b)])}):
+        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join([stored(a), stored(b)])}):
             self.assertEqual(install.cli_paths(self.proj), [shutil.which("claude"), shutil.which("codex")])
             models.unlink()  # no models.json: the three known names
             self.assertEqual(len(install.cli_paths(self.proj)), 2)
@@ -2749,47 +2780,55 @@ class ScheduleTests(unittest.TestCase):
         self.quiet(self.sched("windows").schedule)  # no PATH problem on Windows: nothing to probe
         self.assertEqual(self.probed, [])
 
-    def test_linux_crontab_replaces_marked_line_only(self):
+    def test_linux_crontab_replaces_only_the_line_that_is_ours(self):
         mark = "# " + self.name()
-        self.crontab = f"5 5 * * * other job\n0 9 * * 1 old {mark}\n"
+        old_mark = "# " + self.legacy_name()  # an older per-project line is not ours to replace here
+        foreign = f"0 3 * * * /usr/local/bin/backup.sh {mark}"  # somebody else's line with a similar comment
+        ours = f"0 9 * * 1 cd /h && /usr/bin/py /h/bin/models_collect.py --weekly >> /h/weekly.log 2>&1 {mark}"
+        self.crontab = f"5 5 * * * other job\n{foreign}\n{ours}\n0 9 * * 1 legacy {old_mark}\n"
         self.quiet(self.sched("linux").schedule)
         written = self.calls[-1][1]
         self.assertEqual(self.calls[-1][0], ["crontab", "-"])
         lines = written.splitlines()
-        self.assertEqual(lines[0], "5 5 * * * other job")
-        self.assertEqual(sum(ln.endswith(mark) for ln in lines), 1)
-        self.assertTrue(lines[1].startswith(f"0 9 * * 1 PATH={JOB_PATH} /usr/bin/py "), lines[1])  # cron's PATH is minimal too
-        self.assertIn("--project", lines[1])
+        self.assertEqual(lines[:3], ["5 5 * * * other job", foreign, f"0 9 * * 1 legacy {old_mark}"])
+        self.assertNotIn(ours, lines)
+        self.assertEqual(len(lines), 4)
+        # cron's PATH is minimal and its cwd is the home folder: the job changes into the machine folder first
+        self.assertTrue(lines[3].startswith(f"0 9 * * 1 cd {self.thome} && PATH={JOB_PATH} /usr/bin/py "), lines[3])
+        self.assertIn(f"{self.thome / 'bin/models_collect.py'} --weekly", lines[3])
         self.crontab = written
         self.calls.clear()
-        self.quiet(self.sched("linux").unschedule)
-        self.assertEqual(self.calls[-1][1], "5 5 * * * other job\n")
+        self.quiet(self.sched("linux").remove_task)
+        self.assertEqual(self.calls[-1][1], f"5 5 * * * other job\n{foreign}\n0 9 * * 1 legacy {old_mark}\n")
 
-    def test_linux_cron_line_logs_to_the_state_folder(self):
+    def test_a_foreign_crontab_line_is_not_a_registered_machine_task(self):
+        self.crontab = f"0 3 * * * /usr/local/bin/backup.sh # {self.name()}\n"
+        s = self.sched("linux")
+        self.assertFalse(s.is_registered())
+        self.assertEqual(self.quiet(s.remove_task)[0], 0)
+        self.assertEqual([c for c in self.calls if c[0] == ["crontab", "-"]], [], "nothing of ours: nothing written")
+
+    def test_linux_cron_line_logs_to_the_machine_folder(self):
         mark = "# " + self.name()
-        state = self.state / "new state%dir"  # does not exist yet; a space and a percent sign in the path
-        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(state)}):
-            self.quiet(self.sched("linux").schedule)
+        thome = self.state / "new home%dir"  # does not exist yet; a space and a percent sign in the path
+        s = install.Scheduler(self.proj, "linux", self.runner, False, python="/usr/bin/py", clis=CLI_FILES, thome=thome)
+        self.quiet(s.schedule)
         line = self.calls[-1][1].splitlines()[-1]
         words = install.shlex.split(line[len("0 9 * * 1 "):])
-        self.assertEqual(words[words.index(">>") + 1].replace("\\%", "%"), str(state / "model-update.log"))
+        self.assertEqual(words[words.index(">>") + 1].replace("\\%", "%"), str(thome / "weekly.log"))
         self.assertTrue(line.endswith(" 2>&1 " + mark), line)
-        self.assertTrue(state.is_dir(), "the folder of the log is made when the job is registered")
-
-    def test_linux_without_a_state_folder_has_no_redirect(self):
-        self.quiet(self.sched("linux").schedule)
-        self.assertNotIn(">>", self.calls[-1][1])
+        self.assertTrue(thome.is_dir(), "the folder of the log is made when the job is registered")
 
     def test_linux_dry_run_prints_the_crontab_line_and_writes_nothing(self):
         mark = "# " + self.name()
-        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state / "new")}):
-            code, out = self.quiet(self.sched("linux", dry=True).schedule)
+        code, out = self.quiet(self.sched("linux", dry=True).schedule)
         self.assertEqual(code, 0)
         (line,) = [ln for ln in out.splitlines() if ln.startswith("  crontab  ")]
-        self.assertTrue(line.startswith(f"  crontab  0 9 * * 1 PATH={JOB_PATH} /usr/bin/py ") and line.endswith(f" 2>&1 {mark}"), line)
+        self.assertTrue(line.startswith(f"  crontab  0 9 * * 1 cd {self.thome} && PATH={JOB_PATH} /usr/bin/py ")
+                        and line.endswith(f" 2>&1 {mark}"), line)
         words = install.shlex.split(line[len("  crontab  0 9 * * 1 "):])  # the shell command as cron would hand it to sh
-        self.assertEqual(words[words.index(">>") + 1], str(self.state / "new" / "model-update.log"))
-        self.assertFalse((self.state / "new").exists())
+        self.assertEqual(words[words.index(">>") + 1], str(self.thome / "weekly.log"))
+        self.assertFalse(self.thome.exists())
         self.assertNotIn(["crontab", "-"], [c[0] for c in self.calls])
 
     def test_crontab_read_error_never_writes(self):
@@ -2803,7 +2842,7 @@ class ScheduleTests(unittest.TestCase):
             return 0, ""
         for op in ("schedule", "unschedule"):
             self.calls.clear()
-            s = install.Scheduler(self.proj, "linux", runner, False, python="/usr/bin/py")
+            s = install.Scheduler(self.proj, "linux", runner, False, python="/usr/bin/py", thome=self.thome)
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
                 code = getattr(s, op)()
             self.assertEqual(code, 1, op)
@@ -2812,28 +2851,42 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(len(reads), 2, "one read per operation")
 
     def test_crontab_read_once_and_percent_escaped(self):
-        odd = self.proj / "100%done"
-        s = install.Scheduler(odd, "linux", self.runner, False, python="/usr/bin/py")
+        odd = self.state / "100%done"
+        s = install.Scheduler(self.proj, "linux", self.runner, False, python="/usr/bin/py", thome=odd)
         self.quiet(s.schedule)
         self.assertEqual(sum(c[0] == ["crontab", "-l"] for c in self.calls), 1)
         line = self.calls[-1][1].splitlines()[-1]
         self.assertIn("100\\%done", line)
         self.assertNotIn("100%done", line)
 
-    def test_unschedule_when_not_registered_is_ok(self):
+    def test_remove_task_when_not_registered_is_ok(self):
         for plat in ("windows", "macos", "linux"):
-            self.fail = lambda argv: True
-            code, out = self.quiet(self.sched(plat).unschedule)
+            machine = FakeMachine(self.home)  # a pretend scheduler that plainly says: no such task
+            s = install.Scheduler(self.proj, plat, machine, False, python="/usr/bin/py", home=self.home, uid=501, thome=self.thome)
+            code, out = self.quiet(s.remove_task)
             self.assertEqual(code, 0, plat)
             self.assertIn("not registered", out)
+            self.assertEqual(machine.writes(), [], plat)
+
+    def test_a_scheduler_that_cannot_be_asked_is_not_the_same_as_a_missing_task(self):
+        seen = []
+        denied = lambda argv, input_text=None: seen.append(argv) or (1, "ERROR: Access is denied.")
+        for plat in ("windows", "macos", "linux"):
+            s = install.Scheduler(self.proj, plat, denied, False, python="/usr/bin/py", home=self.home, uid=501, thome=self.thome)
+            with self.assertRaises(install.CronReadError, msg=plat):
+                self.quiet(s.remove_task)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.quiet(s.unschedule)[0], 1, plat)  # reported, nothing deleted
+        self.assertFalse(any(a[:2] in (["schtasks", "/Delete"], ["launchctl", "bootout"], ["crontab", "-"]) for a in seen))
 
     def test_unschedule_deletes_proposal_files_and_uses_delete_argv(self):
-        for fn in ("model-update.json", "model-update.applied", "keep.txt"):
+        for fn in ("model-update.applied", "keep.txt"):
             (self.state / fn).write_text("x", encoding="utf-8")
+        (self.state / "model-update.json").write_text(self.proposal_of(self.proj), encoding="utf-8")
         with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(self.state)}):
             code, _ = self.quiet(self.sched("windows").unschedule)
         self.assertEqual(code, 0)
-        self.assertEqual(self.calls[0][0], ["schtasks", "/Delete", "/TN", self.name(), "/F"])
+        self.assertIn(["schtasks", "/Delete", "/TN", self.name(), "/F"], [c[0] for c in self.calls])
         self.assertEqual(sorted(p.name for p in self.state.iterdir()), ["keep.txt"])
 
     def test_unschedule_deletes_proposal_files_from_the_new_state_folder(self):
@@ -2844,8 +2897,9 @@ class ScheduleTests(unittest.TestCase):
         old = self.proj / ".git/tagteam"
         old.mkdir()
         for folder in (new, old):
-            for fn in ("model-update.json", "keep.txt"):
-                (folder / fn).write_text("x", encoding="utf-8")
+            (folder / "keep.txt").write_text("x", encoding="utf-8")
+            (folder / "model-update.json").write_text(self.proposal_of(self.proj), encoding="utf-8")
+        (new / "model-update.log").write_text("x", encoding="utf-8")
         with mock.patch.dict(os.environ):
             os.environ.pop("TAGTEAM_STATE_DIR", None)
             self.assertEqual(install.installed_state_dir(self.proj), self.proj / ".tagteam")
@@ -2862,13 +2916,15 @@ class ScheduleTests(unittest.TestCase):
     def test_main_flags(self):
         calls = []
         runner = lambda argv, input_text=None: calls.append(argv) or (0, "")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with mock.patch.dict(os.environ, {"TAGTEAM_HOME": str(self.thome)}), contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(install.main([str(self.proj), "--schedule", "--dry-run"], runner, "linux"), 0)
             self.assertEqual(install.main([str(self.proj), "--schedule"], runner, "windows"), 0)
             self.assertEqual(install.main([str(self.proj), "--unschedule", "--yes"], runner, "windows"), 0)
         self.assertIn("[dry-run] crontab -", out.getvalue())
-        self.assertEqual([c[:2] for c in calls if c[0] == "schtasks"], [["schtasks", "/Create"], ["schtasks", "/Delete"]])
+        self.assertEqual([c[:2] for c in calls if c[0] == "schtasks" and c[1] in ("/Create", "/Delete")],
+                         [["schtasks", "/Create"], ["schtasks", "/Delete"]])
         self.assertFalse((self.proj / "AGENTS.md").exists(), "schedule-only must not reinstall")
+        self.assertFalse((self.thome / "bin").exists(), "the last project went: the machine task and the copy go with it")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             install.main([str(self.proj), "--dry-run"])
 
@@ -3163,6 +3219,98 @@ class InstallRecordTests(unittest.TestCase):
         self.assertFalse(self.local.exists())
 
 
+class FakeMachine:
+    """A pretend scheduler for the three platforms: the tasks of this one machine, kept between calls. The only scheduler
+    these tests may reach. Calls that change something are listed in `writes`."""
+
+    def __init__(self, home):
+        self.home, self.tasks, self.crontab, self.loaded, self.calls, self.fail = Path(home), set(), "", set(), [], lambda argv: False
+        self.task_text = {}  # Windows: what `schtasks /Query /XML` shows of a task
+
+    def __call__(self, argv, input_text=None):
+        self.calls.append(argv)
+        if self.fail(argv):
+            return 1, "ERROR: Access is denied."
+        if argv[0] == "schtasks":
+            name = argv[argv.index("/TN") + 1] if "/TN" in argv else None
+            if argv[1] == "/Query":
+                if name and "/XML" in argv:
+                    return (0, self.task_text.get(name, "<Task/>")) if name in self.tasks else (1, "ERROR: not found")
+                if name:
+                    return (0, "") if name in self.tasks else (1, "ERROR: The system cannot find the file specified.")
+                rows = ['"TaskName","Next Run Time","Status"'] + [f'"\\{t}","N/A","Ready"' for t in sorted(self.tasks)]
+                return 0, "\n".join(rows + ['"\\Microsoft\\Windows\\Other","N/A","Ready"']) + "\n"
+            if argv[1] == "/Create":
+                self.tasks.add(name)
+                if "/XML" in argv:
+                    self.task_text[name] = Path(argv[argv.index("/XML") + 1]).read_bytes()[2:].decode("utf-16-le")
+                else:
+                    self.task_text[name] = argv[argv.index("/TR") + 1]
+                return 0, ""
+            if argv[1] == "/Delete":
+                return (0, "") if name in self.tasks and not self.tasks.discard(name) else (1, "ERROR: not found")
+        if argv[0] == "crontab":
+            if argv[1] == "-l":
+                return (0, self.crontab) if self.crontab else (1, "no crontab for user")
+            self.crontab = input_text
+            return 0, ""
+        if argv[0] == "launchctl":
+            if argv[1] == "bootstrap":
+                self.loaded.add(plistlib.loads(Path(argv[3]).read_bytes())["Label"])
+                return 0, ""
+            label = argv[2].rsplit("/", 1)[1]
+            if argv[1] == "print":
+                return (0, "") if label in self.loaded else (113, "Could not find service")  # launchctl's "not loaded"
+            if argv[1] == "bootout":
+                return (0, "") if label in self.loaded and not self.loaded.discard(label) else (3, "No such process")
+        return 0, ""
+
+    def writes(self):
+        return [a[:2] for a in self.calls if a[:2] in (["schtasks", "/Create"], ["schtasks", "/Delete"], ["crontab", "-"],
+                                                         ["launchctl", "bootstrap"], ["launchctl", "bootout"])]
+
+    def agents(self):
+        return self.home / "Library/LaunchAgents"
+
+    def add_legacy(self, plat, project):
+        """An older install's own task of this project."""
+        name = install.legacy_task_name(project)
+        if plat == "windows":
+            self.tasks.add(name)
+            self.task_text[name] = f'<Arguments>/path/models_collect.py --project "{project}"</Arguments>'
+        elif plat == "macos":
+            self.agents().mkdir(parents=True, exist_ok=True)
+            job = {"Label": "net.tagteam." + name, "WorkingDirectory": str(project),
+                   "ProgramArguments": ["/usr/bin/python3", f"{project}/.claude/tagteam/models_collect.py", "--project", str(project)]}
+            (self.agents() / f"net.tagteam.{name}.plist").write_bytes(plistlib.dumps(job))
+            self.loaded.add("net.tagteam." + name)
+        else:
+            self.crontab += f"0 9 * * 1 /usr/bin/python3 /x/models_collect.py --project {project} # {name}\n"
+
+    def machine_tasks(self, plat):
+        """How many machine tasks (tagteam-models, not tagteam-models-<hash>) are registered."""
+        if plat == "windows":
+            return len([t for t in self.tasks if t == "tagteam-models"])
+        if plat == "macos":
+            return len([l for l in self.loaded if l == "net.tagteam.models"])
+        return len([ln for ln in self.crontab.splitlines() if ln.rstrip().endswith("# tagteam-models")])
+
+    def legacy_tasks(self, plat):
+        if plat == "windows":
+            return sorted(t for t in self.tasks if t.startswith("tagteam-models-"))
+        if plat == "macos":
+            return sorted(p.name for p in self.agents().glob("net.tagteam.tagteam-models-*.plist")) if self.agents().exists() else []
+        return [ln for ln in self.crontab.splitlines() if re.search(r"# tagteam-models-\S+$", ln)]
+
+
+PLATFORMS = ("windows", "macos", "linux")
+
+
+def stored(path):
+    """How projects.json spells a project folder: forward slashes on Windows only."""
+    return str(path).replace("\\", "/") if os.name == "nt" else str(path)
+
+
 class ModelCheckPolicyTests(unittest.TestCase):
     """The installer asks nothing; the `Model list check:` line of the project's AGENTS.md decides about the weekly check."""
 
@@ -3173,7 +3321,8 @@ class ModelCheckPolicyTests(unittest.TestCase):
         self.src = build_source(base / "src")
         self.dst = base / "proj"
         self.dst.mkdir()
-        env = mock.patch.dict(os.environ)
+        self.thome = base / "thome"
+        env = mock.patch.dict(os.environ, {"TAGTEAM_HOME": str(self.thome), "HOME": str(base / "home"), "USERPROFILE": str(base / "home")})
         env.start()
         self.addCleanup(env.stop)
         for k in ("TAGTEAM_AA_API_KEY", "TAGTEAM_CONFIG_DIR", "TAGTEAM_STATE_DIR", install.SKIP_SCHEDULER_ENV):
@@ -3182,19 +3331,7 @@ class ModelCheckPolicyTests(unittest.TestCase):
                       mock.patch.object(install, "probe_cli", lambda argv, path: (0, ""))):
             patch.start()
             self.addCleanup(patch.stop)
-        self.registered, self.calls, self.create_rc, self.delete_rc = False, [], 0, 0
-
-    def runner(self, argv, input_text=None):  # a pretend Windows scheduler: the only scheduler these tests may reach
-        self.calls.append(argv[:2])
-        if argv[:2] == ["schtasks", "/Query"]:
-            return (0 if self.registered else 1), ""
-        if argv[:2] == ["schtasks", "/Create"]:
-            self.registered = self.registered or self.create_rc == 0
-            return self.create_rc, "denied" if self.create_rc else ""
-        if argv[:2] == ["schtasks", "/Delete"]:
-            self.registered = self.registered and self.delete_rc != 0
-            return self.delete_rc, "ERROR: Access is denied." if self.delete_rc else ""
-        return 0, ""
+        self.machine = FakeMachine(base / "home")
 
     def policy(self, line):
         (self.dst / "AGENTS.md").write_text(f"# mine\n\n## Project policy\n\n{line}\n", encoding="utf-8")
@@ -3204,11 +3341,14 @@ class ModelCheckPolicyTests(unittest.TestCase):
         stdin = mock.Mock(isatty=lambda: tty)
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(install.sys, "stdin", stdin), \
                 mock.patch("builtins.input", side_effect=AssertionError("the installer must not ask")):
-            code = install.main([str(self.dst), "--source", str(self.src), *extra], self.runner, "windows")
+            code = install.main([str(self.dst), "--source", str(self.src), *extra], self.machine, "windows")
         return code, out.getvalue(), err.getvalue()
 
     def kinds(self):
-        return [c[1] for c in self.calls]
+        return [w[1] for w in self.machine.writes()]
+
+    def listed(self):
+        return [p["path"] for p in install.read_registry(self.thome)[0]["projects"]]
 
     def test_nothing_is_asked_even_at_a_terminal_and_no_plans_are_written(self):
         code, out, err = self.run_main(tty=True)
@@ -3228,22 +3368,28 @@ class ModelCheckPolicyTests(unittest.TestCase):
     def test_weekly_is_the_default_and_registers_once(self):
         code, out, err = self.run_main()
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.kinds(), ["/Query", "/Create"])
-        self.assertIn("scheduled tagteam-models-", out)
-        self.calls.clear()
+        self.assertEqual(self.kinds(), ["/Create"])
+        self.assertEqual(self.machine.tasks, {"tagteam-models"})
+        self.assertEqual(self.listed(), [stored(self.dst)])
+        self.assertIn("scheduled tagteam-models", out)
+        for rel in install.BIN_FILES:
+            self.assertTrue((self.thome / "bin" / rel).is_file(), rel)
+        self.machine.calls.clear()
         self.run_main("--update")
-        self.assertEqual(self.kinds(), ["/Query"])  # already registered: no change
+        self.assertEqual(self.kinds(), [])  # already registered and listed: no change
 
-    def test_off_unregisters_and_keeps_it_off(self):
-        self.registered = True
+    def test_off_takes_the_project_out_and_keeps_it_out(self):
+        self.run_main()
         self.policy("- MODEL LIST CHECK: Off (this machine does not schedule it)")  # case does not matter
-        code, out, err = self.run_main()
+        self.machine.calls.clear()
+        code, out, err = self.run_main("--update")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.kinds(), ["/Query", "/Delete", "/Query"])  # the last one confirms the removal
-        self.assertFalse(self.registered)
-        self.calls.clear()
+        self.assertEqual(self.kinds(), ["/Delete"])  # the last project: the machine task goes with it
+        self.assertEqual((self.machine.tasks, self.listed()), (set(), []))
+        self.assertFalse((self.thome / "bin").exists())
+        self.machine.calls.clear()
         self.run_main("--update")
-        self.assertEqual(self.kinds(), ["/Query"])
+        self.assertEqual(self.kinds(), [])
 
     def test_only_the_project_policy_section_counts_and_code_blocks_do_not(self):
         text = ("# Rules\n\n- Model list check: off\n\n## Project policy\n\n- Push mode: team\n```\n## Not a heading\n"
@@ -3262,40 +3408,40 @@ class ModelCheckPolicyTests(unittest.TestCase):
                      "## Project policy\n```\n```python\n- Model list check: off\n```\n"):
             (self.dst / "AGENTS.md").write_text(text, encoding="utf-8")
             self.assertEqual(install.model_check_mode(self.dst), ("weekly", None), text)
-        self.policy("- Model   list   check: off")  # as the installer reads it
-        self.registered = True
         self.run_main()
-        self.assertEqual(self.kinds(), ["/Query", "/Delete", "/Query"])
+        self.policy("- Model   list   check: off")  # as the installer reads it
+        self.run_main("--update")
+        self.assertEqual(self.machine.tasks, set())
 
     def test_a_removal_that_fails_is_a_warning_that_says_the_task_is_still_registered(self):
-        self.registered, self.delete_rc = True, 1
+        self.run_main()
         self.policy("- Model list check: off")
-        code, out, err = self.run_main()
+        self.machine.fail = lambda argv: argv[:2] == ["schtasks", "/Delete"]
+        code, out, err = self.run_main("--update")
         self.assertEqual(code, 0)
-        self.assertIn("removal FAILED, still registered", out)
-        self.assertNotIn("nothing to remove", out)
-        self.assertIn("is STILL registered", err)
-        self.assertTrue(self.registered)
-        self.calls.clear()
-        with mock.patch.object(install.Scheduler, "is_registered", side_effect=[True, False]):
+        self.assertIn("removal FAILED, still registered: tagteam-models", out)
+        self.assertIn("removal of the weekly model-list check failed; it may still be registered", err)
+        self.assertEqual(self.machine.tasks, {"tagteam-models"})
+        self.assertTrue((self.thome / "bin" / "models_collect.py").is_file(), "the task that is still there keeps its collector")
+        with mock.patch.object(install.Scheduler, "traces", side_effect=OSError("no schtasks")):
             code, out, err = self.run_main("--update")
         self.assertEqual(code, 0)
-        self.assertIn("removal of the weekly model-list check", err)
-        self.assertIn("failed", err)
+        self.assertIn("the weekly model-list check was not changed (OSError: no schtasks)", err)
 
     def test_the_skip_flag_leaves_the_scheduler_alone(self):
         with mock.patch.dict(os.environ, {install.SKIP_SCHEDULER_ENV: "1"}):
             code, out, err = self.run_main()
         self.assertEqual(code, 0, err)
         self.assertIn("left alone", out)
-        self.assertEqual(self.calls, [])
+        self.assertEqual(self.machine.calls, [])
+        self.assertFalse(self.thome.exists())
 
     def test_a_value_that_is_not_weekly_or_off_is_a_warning_and_means_weekly(self):
         self.policy("- Model list check: sometimes")
         code, out, err = self.run_main()
         self.assertEqual(code, 0)
         self.assertIn("unknown Model list check value 'sometimes'", err)
-        self.assertEqual(self.kinds(), ["/Query", "/Create"])
+        self.assertEqual(self.kinds(), ["/Create"])
 
     def test_an_unreadable_agents_md_means_the_default_with_a_note(self):
         (self.dst / "AGENTS.md").write_bytes(b"\xff\xfe## Project policy\n")
@@ -3312,13 +3458,13 @@ class ModelCheckPolicyTests(unittest.TestCase):
             self.assertEqual(install.model_check_mode(self.dst)[0], want, text)
 
     def test_a_failure_to_schedule_is_a_warning_and_the_install_goes_on(self):
-        self.create_rc = 1
+        self.machine.fail = lambda argv: argv[:2] == ["schtasks", "/Create"]
         code, out, err = self.run_main()
         self.assertEqual(code, 0)
         self.assertIn("scheduling FAILED", out)
         self.assertIn("the weekly model-list check could not be scheduled", err)
         self.assertTrue((self.dst / ".claude/tagteam/role_guard.py").is_file())
-        with mock.patch.object(install.Scheduler, "is_registered", side_effect=OSError("no schtasks")):
+        with mock.patch.object(install.Scheduler, "enable", side_effect=OSError("no schtasks")):
             code, out, err = self.run_main("--update")
         self.assertEqual(code, 0)
         self.assertIn("the weekly model-list check was not changed (OSError: no schtasks)", err)
@@ -3328,17 +3474,765 @@ class ModelCheckPolicyTests(unittest.TestCase):
         code, out, err = self.run_main("--schedule")  # explicit: schedules although the policy says off
         self.assertEqual(code, 0, err)
         self.assertEqual(self.kinds(), ["/Create"])
-        self.calls.clear()
+        self.machine.calls.clear()
         self.assertEqual(self.run_main("--unschedule")[0], 0)
         self.assertEqual(self.kinds(), ["/Delete"])
 
     def test_dry_run_stays_a_preview(self):
         self.run_main("--update")  # installed, weekly registered by the policy
-        self.calls.clear()
+        self.machine.calls.clear()
+        before = sorted(str(p) for p in self.thome.rglob("*"))
         code, out, err = self.run_main("--schedule", "--dry-run")
         self.assertEqual(code, 0, err)
         self.assertIn("[dry-run]", out)
-        self.assertEqual(self.calls, [])
+        self.assertEqual(self.machine.writes(), [])
+        self.assertEqual(sorted(str(p) for p in self.thome.rglob("*")), before)
+
+
+def collector_text(schema=None):
+    """A small fake collector; the schema line only when given (an older collector has none)."""
+    return "# fake collector\n" + (f"COLLECTOR_SCHEMA = {schema}\n" if schema is not None else "") + "import sys\n"
+
+
+class MachineTaskTests(unittest.TestCase):
+    """One weekly task per machine, a registry of projects, the collector copy and the cleanup of per-project tasks."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name).resolve()
+        self.thome, self.home = self.base / "thome", self.base / "home"
+        env = mock.patch.dict(os.environ, {"TAGTEAM_HOME": str(self.thome), "HOME": str(self.home), "USERPROFILE": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("TAGTEAM_AA_API_KEY", "TAGTEAM_CONFIG_DIR", "TAGTEAM_STATE_DIR", install.SKIP_SCHEDULER_ENV):
+            os.environ.pop(k, None)
+        getuid = mock.patch.object(os, "getuid", create=True, return_value=501)
+        getuid.start()
+        self.addCleanup(getuid.stop)
+        for patch in (mock.patch.object(install, "apply_model_check", REAL_APPLY),
+                      mock.patch.object(install, "probe_cli", lambda argv, path: (0, ""))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.machine = FakeMachine(self.home)
+        self.src = build_source(self.base / "src")
+        self.set_schema(2)
+
+    def set_schema(self, schema):
+        (self.src / "harness/tagteam/models_collect.py").write_text(collector_text(schema), encoding="utf-8")
+
+    def project(self, name):
+        path = self.base / name
+        path.mkdir(exist_ok=True)
+        return path
+
+    def run_main(self, project, plat, *extra):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = install.main([str(project), "--source", str(self.src), "--yes", *extra], self.machine, plat)
+        return code, out.getvalue(), err.getvalue()
+
+    def listed(self):
+        return [p["path"] for p in install.read_registry(self.thome)[0]["projects"]]
+
+    def bin_text(self):
+        return (self.thome / "bin/models_collect.py").read_text(encoding="utf-8")
+
+    def test_two_projects_on_one_machine_register_one_task(self):
+        for plat in PLATFORMS:
+            with self.subTest(plat=plat):
+                self.machine = FakeMachine(self.home)
+                shutil.rmtree(self.thome, ignore_errors=True)
+                a, b = self.project("a-" + plat), self.project("b-" + plat)
+                for proj in (a, b):
+                    code, out, err = self.run_main(proj, plat)
+                    self.assertEqual(code, 0, err)
+                self.assertEqual(self.machine.machine_tasks(plat), 1)
+                self.assertEqual(self.machine.legacy_tasks(plat), [])
+                self.assertEqual(self.listed(), [stored(a), stored(b)])
+                self.assertTrue((self.thome / "bin/models_collect.py").is_file() and (self.thome / "bin/state.py").is_file())
+                if plat == "macos":
+                    self.assertEqual([p.name for p in self.machine.agents().glob("*.plist")], ["net.tagteam.models.plist"])
+                    job = plistlib.loads((self.machine.agents() / "net.tagteam.models.plist").read_bytes())
+                    self.assertEqual(job["ProgramArguments"][1:], [str(self.thome / "bin/models_collect.py"), "--weekly"])
+                    self.assertEqual(job["WorkingDirectory"], str(self.thome))
+                    self.assertEqual(job["StandardOutPath"], str(self.thome / "weekly.log"))
+                if plat == "linux":
+                    (line,) = self.machine.crontab.splitlines()
+                    self.assertIn(f"{self.thome / 'bin/models_collect.py'} --weekly >> {self.thome / 'weekly.log'} 2>&1 # tagteam-models", line)
+                if plat == "windows":
+                    self.assertEqual(self.machine.tasks, {"tagteam-models"})
+
+    def test_update_replaces_this_projects_old_task_and_leaves_the_others(self):
+        for plat in PLATFORMS:
+            with self.subTest(plat=plat):
+                self.machine = FakeMachine(self.home)
+                shutil.rmtree(self.thome, ignore_errors=True)
+                a, b = self.project("a-" + plat), self.project("b-" + plat)
+                self.machine.add_legacy(plat, a)
+                self.machine.add_legacy(plat, b)
+                self.assertEqual(len(self.machine.legacy_tasks(plat)), 2)
+                code, out, err = self.run_main(a, plat, "--update")
+                self.assertEqual(code, 0, err)
+                (left,) = self.machine.legacy_tasks(plat)
+                self.assertIn(install.legacy_task_name(b), left)
+                self.assertNotIn(install.legacy_task_name(a), left)
+                self.assertEqual(self.machine.machine_tasks(plat), 1)
+                self.assertEqual(self.listed(), [stored(a)])
+                self.assertIn(f"removed the per-project task {install.legacy_task_name(a)}", out)
+                self.run_main(b, plat, "--update")
+                self.assertEqual(self.machine.legacy_tasks(plat), [])
+                self.assertEqual(self.machine.machine_tasks(plat), 1)
+                self.assertEqual(self.listed(), [stored(a), stored(b)])
+
+    def test_the_old_task_stays_when_the_machine_task_cannot_be_registered(self):
+        a = self.project("a")
+        self.machine.add_legacy("windows", a)
+        self.machine.fail = lambda argv: argv[:2] == ["schtasks", "/Create"]
+        code, out, err = self.run_main(a, "windows", "--update")
+        self.assertEqual(code, 0)
+        self.assertIn("could not be scheduled", err)
+        self.assertEqual(self.machine.tasks, {install.legacy_task_name(a)})
+
+    def test_update_registers_a_missing_task_and_only_schedule_registers_it_again(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        self.machine.calls.clear()
+        self.run_main(a, "windows", "--update")
+        self.assertEqual(self.machine.writes(), [])
+        self.machine.tasks.clear()  # somebody deleted the task by hand
+        self.run_main(a, "windows", "--update")
+        self.assertEqual(self.machine.writes(), [["schtasks", "/Create"]])
+        self.machine.calls.clear()
+        self.run_main(a, "windows", "--schedule")
+        self.assertEqual(self.machine.writes(), [["schtasks", "/Create"]])
+
+    def test_unschedule_the_last_project_removes_the_machine_task_and_the_copy(self):
+        for plat in PLATFORMS:
+            with self.subTest(plat=plat):
+                self.machine = FakeMachine(self.home)
+                shutil.rmtree(self.thome, ignore_errors=True)
+                a, b = self.project("a-" + plat), self.project("b-" + plat)
+                for proj in (a, b):
+                    self.run_main(proj, plat)
+                (self.thome / "cache").mkdir()
+                (self.thome / "cache/aa.json").write_text("{}", encoding="utf-8")
+                code, out, err = self.run_main(a, plat, "--unschedule")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(self.listed(), [stored(b)])
+                self.assertEqual(self.machine.machine_tasks(plat), 1, "another project still wants the check")
+                self.assertTrue((self.thome / "bin/models_collect.py").is_file())
+                self.assertIn("1 other project(s) stay", out)
+                code, out, err = self.run_main(b, plat, "--unschedule")
+                self.assertEqual(code, 0, err)
+                self.assertEqual((self.listed(), self.machine.machine_tasks(plat)), ([], 0))
+                self.assertFalse((self.thome / "bin").exists())
+                self.assertTrue((self.thome / "cache/aa.json").is_file(), "the cache is kept")
+                if plat == "macos":
+                    self.assertEqual(list(self.machine.agents().glob("*.plist")), [])
+
+    def test_unschedule_removes_this_projects_old_task_and_not_the_others(self):
+        for plat in PLATFORMS:
+            with self.subTest(plat=plat):
+                self.machine = FakeMachine(self.home)
+                a, b = self.project("a-" + plat), self.project("b-" + plat)
+                self.machine.add_legacy(plat, a)
+                self.machine.add_legacy(plat, b)
+                self.assertEqual(self.run_main(a, plat, "--unschedule")[0], 0)
+                (left,) = self.machine.legacy_tasks(plat)
+                self.assertIn(install.legacy_task_name(b), left)
+
+    def test_a_failed_removal_of_the_machine_task_keeps_the_copy_and_reports_failure(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        self.machine.fail = lambda argv: argv[:2] == ["schtasks", "/Delete"]
+        code, out, err = self.run_main(a, "windows", "--unschedule")
+        self.assertEqual(code, 1)
+        self.assertIn("removal FAILED, still registered: tagteam-models", out)
+        self.assertTrue((self.thome / "bin/models_collect.py").is_file())
+
+    def test_the_policy_off_leaves_a_project_without_traces_alone(self):
+        a = self.project("a")
+        (a / "AGENTS.md").write_text("## Project policy\n- Model list check: off\n", encoding="utf-8")
+        proposal = a / ".tagteam/model-update.json"
+        self.run_main(a, "windows")
+        proposal.parent.mkdir(parents=True, exist_ok=True)
+        proposal.write_text("{}", encoding="utf-8")
+        self.assertFalse(self.machine.writes(), "off, never listed: nothing registered")
+        self.assertTrue(proposal.is_file(), "a pending proposal of a project that was never in the weekly check is not deleted")
+        self.run_main(a, "windows", "--update")
+        self.assertTrue(proposal.is_file())
+
+    def test_the_collector_copy_follows_the_schema_number(self):
+        a, b = self.project("a"), self.project("b")
+        self.run_main(a, "windows")
+        self.assertIn("COLLECTOR_SCHEMA = 2", self.bin_text())  # no copy yet: copied
+        self.set_schema(3)
+        self.run_main(b, "windows")
+        self.assertIn("COLLECTOR_SCHEMA = 3", self.bin_text())  # newer project: overwrites
+        self.set_schema(2)
+        code, out, err = self.run_main(a, "windows", "--update")
+        self.assertIn("COLLECTOR_SCHEMA = 3", self.bin_text())  # an older project never puts back an older one
+        self.assertIn("left alone", out)
+        self.assertIn("schema 3, this project's has 2", out)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.machine.machine_tasks("windows"), 1, "the project is still listed and the task registered")
+        self.set_schema(3)
+        (self.thome / "bin/models_collect.py").write_text(collector_text(3) + "# local edit\n", encoding="utf-8")
+        self.run_main(a, "windows", "--update")  # equal: overwrites
+        self.assertNotIn("local edit", self.bin_text())
+        (self.src / "harness/tagteam/models_collect.py").write_text(collector_text(None), encoding="utf-8")  # no line: schema 1
+        self.machine.calls.clear()
+        code, out, err = self.run_main(a, "windows", "--update")
+        self.assertIn("COLLECTOR_SCHEMA = 3", self.bin_text())
+        self.assertEqual(install.collector_schema(a / ".claude/tagteam/models_collect.py"), 1)
+        self.assertIsNone(install.collector_schema(a / "nope.py"))
+        self.assertIn("could not be scheduled", err)  # a schema 1 collector has no --weekly: refused, nothing registered
+        self.assertIn("has no --weekly and --from-cache", err)
+        self.assertEqual(self.machine.writes(), [])
+        self.set_schema(2)
+        (self.thome / "bin/state.py").unlink()  # the copy lost state.py: the schema 3 collector is still not replaced by schema 2
+        code, out, err = self.run_main(a, "windows", "--update")
+        self.assertIn("COLLECTOR_SCHEMA = 3", self.bin_text())
+        self.assertFalse((self.thome / "bin/state.py").exists())
+        self.assertIn("incomplete and newer", err)
+        self.set_schema(3)  # a project that has the newer collector completes the copy
+        self.run_main(a, "windows", "--update")
+        self.assertTrue((self.thome / "bin/state.py").is_file())
+        self.assertEqual(self.bin_text(), collector_text(3))
+
+    def test_the_copy_is_written_state_first_and_each_file_atomically(self):
+        a = self.project("a")
+        order = []
+        real = install.replace_file
+        with mock.patch.object(install, "replace_file", lambda path, data: (order.append(Path(path).name), real(path, data))[1]):
+            self.run_main(a, "windows")
+        copied = [n for n in order if n in install.BIN_FILES]
+        self.assertEqual(copied, ["state.py", "models_collect.py"])
+        self.assertEqual([p.name for p in (self.thome / "bin").iterdir()].count("models_collect.py"), 1)
+        self.assertEqual([p.name for p in (self.thome / "bin").glob("*.tmp")], [], "no half-written sibling is left")
+
+    def test_the_schema_line_must_be_exact(self):
+        f = self.base / "c.py"
+        for text, want in (("COLLECTOR_SCHEMA = 7\n", 7), ("x = 1\nCOLLECTOR_SCHEMA = 12\ny = 2\n", 12), ("COLLECTOR_SCHEMA = 4\r\n", 4),
+                           ("COLLECTOR_SCHEMA=7\n", 1), (" COLLECTOR_SCHEMA = 7\n", 1), ("COLLECTOR_SCHEMA = 7 # x\n", 1),
+                           ("# COLLECTOR_SCHEMA = 7\n", 1), ("", 1)):
+            f.write_bytes(text.encode("utf-8"))
+            self.assertEqual(install.collector_schema(f), want, repr(text))
+
+    def test_without_a_state_module_there_is_no_copy_and_no_task(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        (a / ".claude/tagteam/state.py").unlink()
+        shutil.rmtree(self.thome)
+        self.machine.tasks.clear()
+        self.machine.calls.clear()
+        code, out, err = self.run_main(a, "windows", "--schedule")
+        self.assertEqual(code, 1)
+        self.assertIn("state.py not installed", err)
+        self.assertEqual((self.machine.tasks, self.machine.writes()), (set(), []))
+        self.assertFalse((self.thome / "bin").exists())
+
+    def test_the_registry_entry_is_normalised_and_kept(self):
+        a = self.project("a")
+        self.assertTrue(install.registry_add(self.thome, a))
+        self.assertFalse(install.registry_add(self.thome, str(a) + os.sep))  # the same folder spelled differently
+        doc = install.read_registry(self.thome)[0]
+        self.assertEqual((doc["schema"], len(doc["projects"])), (1, 1))
+        self.assertEqual(set(doc["projects"][0]), {"path", "added"})
+        self.assertEqual(doc["projects"][0]["path"], stored(a))
+        self.assertRegex(doc["projects"][0]["added"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        doc["projects"][0]["last"] = {"at": "2026-11-23T09:00:00Z", "exit": 0}  # written by the collector
+        install.write_registry(self.thome, doc)
+        install.registry_add(self.thome, a)
+        self.assertEqual(install.read_registry(self.thome)[0]["projects"][0]["last"], {"at": "2026-11-23T09:00:00Z", "exit": 0})
+        self.assertEqual(install.registry_others(self.thome, a), 0)
+        self.assertEqual(install.registry_others(self.thome, self.base / "other"), 1)
+        self.assertTrue(install.registry_remove(self.thome, a))
+        self.assertFalse(install.registry_remove(self.thome, a))
+
+    @unittest.skipIf(os.name == "nt", "a backslash is a path character on POSIX only")
+    def test_a_backslash_in_a_posix_folder_name_is_kept_and_a_symlink_spelling_is_the_same_project(self):
+        odd = self.project("odd\\name")
+        install.registry_add(self.thome, odd)
+        self.assertEqual(install.read_registry(self.thome)[0]["projects"][0]["path"], str(odd))
+        link = self.base / "link"
+        try:
+            os.symlink(odd, link)
+        except OSError:
+            self.skipTest("no symlinks")
+        self.assertFalse(install.registry_add(self.thome, link))
+        self.assertTrue(install.registry_has(self.thome, link))
+
+    def break_registry(self, text="{not json"):
+        self.thome.mkdir(parents=True, exist_ok=True)
+        (self.thome / "projects.json").write_text(text, encoding="utf-8")
+
+    def test_reading_the_registry_never_moves_it(self):
+        a = self.project("a")
+        for text in ("{not json", json.dumps({"schema": 2, "projects": []}), json.dumps({"schema": 1, "projects": [{"nopath": 1}]}),
+                     json.dumps(["x"])):
+            self.break_registry(text)
+            doc, problem = install.read_registry(self.thome)
+            self.assertIsNone(doc)
+            self.assertIn("projects.json", problem)
+            install.registry_has(self.thome, a)
+            install.registry_others(self.thome, a)
+            self.assertFalse(install.registry_remove(self.thome, a))
+            self.assertEqual((self.thome / "projects.json").read_text(encoding="utf-8"), text)
+            self.assertEqual(sorted(p.name for p in self.thome.iterdir()), ["projects.json"])
+        (self.thome / "projects.json").write_bytes(b"\xff\xfe\x00bad")  # not UTF-8 at all
+        self.assertIsNotNone(install.read_registry(self.thome)[1])
+
+    def test_check_and_dry_run_leave_a_broken_registry_where_it_is_and_check_warns(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        self.break_registry()
+        before = sorted(str(p) for p in self.thome.rglob("*"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install.weekly_report(a, "windows", self.machine)
+        self.assertIn("weekly check: this project unverified", out.getvalue())
+        self.assertIn("WARN weekly check: ", out.getvalue())
+        self.assertIn("cannot be read", out.getvalue())
+        for flag in ("--schedule", "--unschedule"):
+            code, out_, err = self.run_main(a, "windows", flag, "--dry-run")
+            self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(str(p) for p in self.thome.rglob("*")), before)
+        self.assertEqual((self.thome / "projects.json").read_text(encoding="utf-8"), "{not json")
+
+    def test_install_sets_a_broken_registry_aside_and_never_overwrites_an_earlier_one(self):
+        a, b = self.project("a"), self.project("b")
+        self.break_registry("{first")
+        code, out, err = self.run_main(a, "windows")
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.thome / "projects.json.corrupt").read_text(encoding="utf-8"), "{first")
+        self.assertEqual(self.listed(), [stored(a)])
+        self.break_registry("{second")
+        self.run_main(b, "windows")
+        self.assertEqual((self.thome / "projects.json.corrupt").read_text(encoding="utf-8"), "{first")
+        (aside,) = [p for p in self.thome.glob("projects.json.corrupt-*")]
+        self.assertEqual(aside.read_text(encoding="utf-8"), "{second")
+        self.assertEqual(self.listed(), [stored(b)])
+
+    def test_unschedule_with_an_unreadable_registry_keeps_the_machine_task_and_the_copy(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        self.break_registry()
+        code, out, err = self.run_main(a, "windows", "--unschedule")
+        self.assertEqual(code, 0)
+        self.assertIn("cannot be read, so the machine task tagteam-models and the collector copy stay", err)
+        self.assertEqual(self.machine.tasks, {"tagteam-models"})
+        self.assertTrue((self.thome / "bin/models_collect.py").is_file())
+        self.assertEqual((self.thome / "projects.json").read_text(encoding="utf-8"), "{not json")
+
+    def test_the_registry_lock_is_one_os_lock_on_one_file_that_is_never_deleted(self):
+        lock = self.thome / "registry.lock"
+        with mock.patch.object(install, "LOCK_WAIT_SECONDS", 0.05), mock.patch.object(install, "LOCK_POLL_SECONDS", 0.01):
+            with install.registry_lock(self.thome):
+                self.assertTrue(lock.is_file())
+                with self.assertRaisesRegex(OSError, "held by another process"):
+                    with install.registry_lock(self.thome):
+                        self.fail("the lock was taken twice")
+                a = self.project("a")  # a whole install, while somebody holds the lock: changes nothing, says so
+                code, out, err = self.run_main(a, "windows")
+                self.assertIn("held by another process", err)
+                self.assertIn("could not be scheduled", err)
+                self.assertEqual((self.machine.writes(), self.machine.tasks), ([], set()))
+                self.assertFalse((self.thome / "bin").exists())
+                self.assertFalse((self.thome / "projects.json").exists())
+                code, out, err = self.run_main(a, "windows", "--unschedule")
+                self.assertEqual(code, 1)
+            with install.registry_lock(self.thome):  # released: free again
+                pass
+        self.assertTrue(lock.is_file(), "the file stays")
+        with install.registry_lock(self.thome, dry=True):  # a preview takes no lock
+            with install.registry_lock(self.thome):
+                pass
+
+    def test_the_registry_lock_waits_for_a_holder_that_lets_go(self):
+        import threading
+        released = threading.Event()
+        holder = install.registry_lock(self.thome)
+        holder.__enter__()
+        threading.Timer(0.15, lambda: (holder.__exit__(None, None, None), released.set())).start()
+        with mock.patch.object(install, "LOCK_WAIT_SECONDS", 5), mock.patch.object(install, "LOCK_POLL_SECONDS", 0.02):
+            with install.registry_lock(self.thome):
+                self.assertTrue(released.is_set())
+
+    def test_an_older_task_is_removed_only_when_its_job_names_this_project(self):
+        other = self.base / "somewhere-else"
+        for plat in PLATFORMS:
+            with self.subTest(plat=plat):
+                self.machine = FakeMachine(self.home)
+                a = self.project("a-" + plat)
+                self.machine.add_legacy(plat, a)  # the task has the name of a's task ...
+                name = install.legacy_task_name(a)
+                if plat == "windows":
+                    self.machine.task_text[name] = f'<Arguments>--project "{other}"</Arguments>'  # ... but it runs another project
+                elif plat == "macos":
+                    path = self.machine.agents() / f"net.tagteam.{name}.plist"
+                    path.write_bytes(plistlib.dumps({"Label": "net.tagteam." + name, "ProgramArguments": ["x", "--project", str(other)],
+                                                     "WorkingDirectory": str(other)}))
+                else:
+                    self.machine.crontab = f"0 9 * * 1 py collector --project {other} # {name}\n"
+                for argv in ([a, "--update"], [a, "--unschedule"]):
+                    self.assertEqual(self.run_main(a, plat, *argv[1:])[0], 0)
+                self.assertEqual(len(self.machine.legacy_tasks(plat)), 1, "somebody else's job stays")
+
+    def test_an_older_task_of_a_project_whose_path_only_starts_the_same_is_not_ours(self):
+        longer = self.base / "app-2"
+        for plat in PLATFORMS:
+            with self.subTest(plat=plat):
+                self.machine = FakeMachine(self.home)
+                app = self.project("app")
+                self.machine.add_legacy(plat, app)
+                name = install.legacy_task_name(app)  # a name collision, the job runs the longer path
+                if plat == "windows":
+                    self.machine.task_text[name] = f'<Arguments>/x/models_collect.py --project "{longer}"</Arguments>'
+                elif plat == "macos":
+                    (self.machine.agents() / f"net.tagteam.{name}.plist").write_bytes(plistlib.dumps(
+                        {"Label": "net.tagteam." + name, "ProgramArguments": ["py", "c.py", "--project", str(longer)]}))
+                else:
+                    self.machine.crontab = f"0 9 * * 1 py c.py --project {longer} >> /l 2>&1 # {name}\n"
+                self.assertEqual(self.run_main(app, plat, "--update")[0], 0)
+                self.assertEqual(len(self.machine.legacy_tasks(plat)), 1, "the other project's job stays")
+
+    def test_the_path_is_matched_as_a_whole_argument_in_every_job_format(self):
+        proj = self.base / "my proj%1"  # a space and a percent sign: quoted and escaped in the job
+        tgt = install.Scheduler(proj, "linux", self.machine, thome=self.thome)
+        old = tgt.legacy()
+        line = "0 9 * * 1 PATH=/b py /x/models_collect.py --project %s >> /l 2>&1 # %s" % (
+            install.shlex.quote(str(proj)).replace("%", "\\%"), old.name)
+        self.assertTrue(old._owns_line(line))
+        self.assertFalse(old._owns_line(line.replace("proj", "proj2")))
+        self.assertFalse(old._owns_line(line.replace("'", '"x')))  # broken quoting: not ours
+        from xml.sax.saxutils import escape
+        odd = f'{proj}&<x>'  # XML-escaped in the task file
+        xml = '<Exec><Arguments>%s</Arguments></Exec>' % escape(subprocess.list2cmdline(["/x/c.py", "--project", odd]))
+        self.assertTrue(install.names_project(install.task_xml_arguments(xml), odd))
+        xml = '<Exec><Arguments>%s</Arguments></Exec>' % escape(subprocess.list2cmdline(["/x/c.py", "--project", str(proj)]))
+        self.assertTrue(install.names_project(install.task_xml_arguments(xml), proj))
+        self.assertFalse(install.names_project(install.task_xml_arguments(xml), str(proj) + "-2"))
+        self.assertFalse(install.names_project(install.task_xml_arguments("<Task/>"), proj))
+        self.assertFalse(install.names_project(["--project"], proj))
+
+    def test_only_lock_contention_is_waited_for(self):
+        import errno
+        import fcntl
+        if os.name == "nt":
+            self.skipTest("flock errors are POSIX")
+        for code, waits in ((errno.EAGAIN, True), (errno.EACCES, True), (errno.EDEADLK, True), (errno.ENOLCK, False),
+                            (errno.EOPNOTSUPP, False)):
+            with mock.patch.object(fcntl, "flock", side_effect=OSError(code, os.strerror(code))), \
+                    mock.patch.object(install, "LOCK_WAIT_SECONDS", 0.05), mock.patch.object(install, "LOCK_POLL_SECONDS", 0.01):
+                with self.assertRaises(OSError) as ctx:
+                    install.registry_lock(self.thome).__enter__()
+            self.assertEqual("held by another process" in str(ctx.exception), waits, os.strerror(code))
+            if not waits:
+                self.assertEqual(ctx.exception.errno, code, "the error itself, at once")
+
+    def test_a_macos_plist_that_is_gone_but_loaded_is_not_proven_ours(self):
+        a = self.project("a")
+        self.machine.loaded.add("net.tagteam." + install.legacy_task_name(a))  # loaded, no plist to read
+        self.run_main(a, "macos")
+        self.assertIn("net.tagteam." + install.legacy_task_name(a), self.machine.loaded)
+
+    def test_the_proposal_files_of_another_project_in_a_shared_state_folder_are_kept(self):
+        a, b = self.project("a"), self.project("b")
+        shared = self.base / "shared-state"
+        shared.mkdir()
+        with mock.patch.dict(os.environ, {"TAGTEAM_STATE_DIR": str(shared)}):
+            for proj in (a, b):
+                self.run_main(proj, "windows")
+            for fn in install.PROPOSAL_FILES:
+                (shared / fn).write_text("{}", encoding="utf-8")
+            (shared / "model-update.json").write_text(json.dumps({"project": b.as_posix()}), encoding="utf-8")
+            code, out, err = self.run_main(a, "windows", "--unschedule")
+            self.assertEqual(code, 0, err)
+            self.assertIn("does not name this project", out)
+            self.assertEqual(sorted(p.name for p in shared.iterdir()), sorted(install.PROPOSAL_FILES))
+            self.assertEqual(self.listed(), [stored(b)])
+            (shared / "model-update.json").write_text(json.dumps({"project": b.as_posix()}), encoding="utf-8")
+            self.run_main(b, "windows", "--unschedule")  # b's own proposal, b the last project
+            self.assertEqual(list(shared.iterdir()), [])
+            self.assertEqual(self.listed(), [])
+            for fn in install.PROPOSAL_FILES:
+                (shared / fn).write_text("{}", encoding="utf-8")
+            (shared / "model-update.json").write_text("{broken", encoding="utf-8")  # cannot tell whose it is: kept
+            self.run_main(a, "windows", "--unschedule")
+            self.assertEqual(len(list(shared.iterdir())), 3)
+            (shared / "model-update.json").unlink()  # no proposal at all, a shared folder: the other files might be b's
+            code, out, err = self.run_main(a, "windows", "--unschedule")
+            self.assertEqual(sorted(p.name for p in shared.iterdir()), ["model-update.applied", "model-update.log"])
+            self.assertIn("left alone", out)
+            (shared / "model-update.json").write_text(json.dumps({"project": a.as_posix()}), encoding="utf-8")  # a's own: all go
+            self.run_main(a, "windows", "--unschedule")
+            self.assertEqual(sorted(p.name for p in shared.iterdir()), [])
+
+    def test_the_machine_folder_bin_keeps_files_that_are_not_ours(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        (self.thome / "bin/mine.txt").write_text("x", encoding="utf-8")
+        code, out, err = self.run_main(a, "windows", "--unschedule")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([p.name for p in (self.thome / "bin").iterdir()], ["mine.txt"])
+        self.assertIn("holds other files and stays", out)
+
+    def test_a_file_that_cannot_be_deleted_is_reported_and_fails_the_removal(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        real = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.name == "models_collect.py" and path.parent.name == "bin":
+                raise PermissionError("in use")
+            return real(path, *args, **kwargs)
+        with mock.patch.object(Path, "unlink", unlink):
+            code, out, err = self.run_main(a, "windows", "--unschedule")
+        self.assertEqual(code, 1)
+        self.assertIn("could not delete", err)
+        self.assertEqual(self.listed(), [stored(a)], "still listed: the next run tries again")
+
+    def test_a_project_with_an_old_collector_is_refused_and_keeps_its_old_task(self):
+        a = self.project("a")
+        self.machine.add_legacy("windows", a)
+        self.set_schema(1)
+        for extra in ((), ("--update",), ("--schedule",)):
+            code, out, err = self.run_main(a, "windows", *extra)
+            self.assertIn("has no --weekly and --from-cache", err)
+            self.assertEqual(self.machine.tasks, {install.legacy_task_name(a)})
+        self.assertEqual((self.machine.writes(), self.listed()), ([], []))
+        self.assertFalse((self.thome / "bin").exists())
+
+    def test_the_windows_task_file_has_a_name_of_its_own(self):
+        fixed = self.base / "tagteam-models.xml"
+        fixed.write_text("somebody's file", encoding="utf-8")
+        seen = []
+        real = self.machine.__call__
+
+        def runner(argv, input_text=None):
+            if "/XML" in argv and argv[1] == "/Create":
+                seen.append(argv[argv.index("/XML") + 1])
+            return real(argv, input_text)
+        a = self.project("a")
+        with mock.patch.object(tempfile, "tempdir", str(self.base)):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(install.main([str(a), "--source", str(self.src), "--schedule"], runner, "windows"), 0)
+        self.assertEqual(fixed.read_text(encoding="utf-8"), "somebody's file")
+        (path,) = seen
+        self.assertNotEqual(Path(path).name, "tagteam-models.xml")
+        self.assertFalse(Path(path).exists(), "removed after the registration")
+
+    def macos_scheduler(self, project):
+        return install.Scheduler(project, "macos", self.machine, False, python="/usr/bin/py", home=self.home, uid=501,
+                                 clis=[], thome=self.thome)
+
+    def test_macos_schedule_writes_the_plist_before_it_touches_the_running_job(self):
+        a = self.project("a")
+        self.run_main(a, "macos")
+        plist = self.machine.agents() / "net.tagteam.models.plist"
+        old = plist.read_bytes()
+        self.machine.calls.clear()
+
+        def broken(path, data):
+            raise OSError("disk full")
+        with mock.patch.object(install, "replace_file", broken), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.macos_scheduler(a).schedule(), 1)
+        self.assertEqual(self.machine.writes(), [], "no bootout: the working job is untouched")
+        self.assertIn("net.tagteam.models", self.machine.loaded)
+        self.assertEqual(plist.read_bytes(), old)
+
+    def test_macos_a_failed_bootstrap_is_a_failure_and_the_old_job_comes_back(self):
+        a = self.project("a")
+        self.run_main(a, "macos")
+        plist = self.machine.agents() / "net.tagteam.models.plist"
+        old = plist.read_bytes()
+        first = []
+
+        def fail(argv):
+            if argv[:2] == ["launchctl", "bootstrap"]:
+                first.append(1)
+                return len(first) == 1  # the new one is refused, the old one loads again
+            return False
+        self.machine.fail = fail
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = self.macos_scheduler(a).schedule()
+        self.assertEqual(code, 1)
+        self.assertIn("scheduling FAILED", out.getvalue())
+        self.assertEqual(plist.read_bytes(), old)
+        self.assertIn("net.tagteam.models", self.machine.loaded)
+        # no previous job: the failed plist is removed
+        plist.unlink()
+        self.machine.loaded.clear()
+        self.machine.fail = lambda argv: argv[:2] == ["launchctl", "bootstrap"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.macos_scheduler(a).schedule(), 1)
+        self.assertFalse(plist.exists())
+
+    def test_macos_removal_counts_only_when_the_job_is_gone(self):
+        a = self.project("a")
+        self.run_main(a, "macos")
+        plist = self.machine.agents() / "net.tagteam.models.plist"
+        self.machine.fail = lambda argv: argv[:2] == ["launchctl", "bootout"]  # bootout refused, the job is still loaded
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(self.macos_scheduler(a).remove_task(), 1)
+        self.assertIn("removal FAILED, still registered", out.getvalue())
+        self.assertTrue(plist.exists() and (self.thome / "bin/models_collect.py").is_file())
+        self.machine.loaded.clear()  # bootout fails with "not loaded" and launchd confirms it: gone
+        self.machine.fail = lambda argv: argv[:2] == ["launchctl", "bootout"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.macos_scheduler(a).remove_task(), 0)
+        self.assertFalse(plist.exists())
+        self.assertFalse((self.thome / "bin/models_collect.py").exists())
+
+    def test_windows_an_unknown_query_result_is_never_treated_as_missing(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        denied = lambda argv, input_text=None: (1, "ERROR: Access is denied.")
+        s = install.Scheduler(a, "windows", denied, False, thome=self.thome)
+        with self.assertRaises(install.CronReadError):
+            s.is_registered()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install.weekly_report(a, "windows", denied)
+        self.assertIn("weekly check: machine task unverified", out.getvalue())
+        self.assertNotIn("machine task missing", out.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = install.Scheduler(a, "windows", denied, False, thome=self.thome).unschedule()
+        self.assertEqual(code, 1)
+        self.assertTrue((self.thome / "bin/models_collect.py").is_file(), "nothing is deleted on a guess")
+
+    def test_scheduler_output_that_cannot_be_parsed_does_not_abort_the_check(self):
+        a = self.project("a")
+        huge = lambda argv, input_text=None: (0, '"' + "x" * 200000 + '"\n') if argv[-2:] == ["/FO", "CSV"] else (0, "")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install.weekly_report(a, "windows", huge)
+        self.assertIn("older install unverified", out.getvalue())
+        with mock.patch.dict(os.environ):
+            os.environ.pop(install.SKIP_SCHEDULER_ENV, None)
+            self.run_main(a, "windows")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                install.check(a, self.src, plat="windows", runner=huge)
+        self.assertTrue(out.getvalue().rstrip().splitlines()[-1].startswith("check:"), out.getvalue()[-300:])
+        with mock.patch.object(subprocess, "run", side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")):
+            self.assertEqual(REAL_RUN_CMD(["x"])[0], 127)
+
+    def test_dry_run_changes_nothing(self):
+        for plat in PLATFORMS:
+            with self.subTest(plat=plat):
+                self.machine = FakeMachine(self.home)
+                a = self.project("a-" + plat)
+                self.run_main(a, plat)  # installed
+                self.machine.add_legacy(plat, a)
+                shutil.rmtree(self.thome)
+                self.machine.calls.clear()
+                for flag in ("--schedule", "--unschedule"):
+                    code, out, err = self.run_main(a, plat, flag, "--dry-run")
+                    self.assertEqual(code, 0, err)
+                    self.assertIn("[dry-run]", out)
+                self.assertEqual(self.machine.writes(), [])
+                self.assertFalse(self.thome.exists())
+                self.assertEqual(len(self.machine.legacy_tasks(plat)), 1)
+
+    def test_check_reports_the_machine_task_the_project_the_cache_and_old_tasks(self):
+        a, b = self.project("a"), self.project("b")
+        self.machine.add_legacy("windows", b)
+        self.run_main(a, "windows")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install.weekly_report(a, "windows", self.machine)
+        text = out.getvalue()
+        self.assertIn("weekly check: machine task registered\n", text)
+        self.assertIn("weekly check: this project registered\n", text)
+        self.assertIn("weekly check: cache none\n", text)
+        self.assertIn("WARN weekly check: 1 per-project task(s) left from an older install (removed when each project is updated)\n", text)
+        self.assertEqual(text.count("WARN"), 1)
+
+    def test_check_warns_when_the_policy_is_weekly_but_nothing_is_registered(self):
+        a = self.project("a")
+        cache = self.thome / "cache"
+        cache.mkdir(parents=True)
+        stamp = lambda days: (install.utc_now() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        (cache / "cli-claude.json").write_text(json.dumps({"fetched": stamp(0)}), encoding="utf-8")
+        (cache / "cli-openai.json").write_text(json.dumps({"fetched": stamp(3)}), encoding="utf-8")
+        (cache / "aa.json").write_text(json.dumps({"fetched": stamp(7)}), encoding="utf-8")
+        (cache / "cli-google.json").write_text("{broken", encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install.weekly_report(a, "windows", self.machine)
+        text = out.getvalue()
+        self.assertIn("weekly check: machine task missing\n", text)
+        self.assertIn("weekly check: this project not registered\n", text)
+        self.assertIn("weekly check: cache claude 0d, google ?, openai 3d, aa 7d\n", text)
+        self.assertIn("WARN weekly check: the machine task tagteam-models is missing", text)
+        self.assertIn("WARN weekly check: this project is not in", text)
+        (a / "AGENTS.md").write_text("## Project policy\n- Model list check: off\n", encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install.weekly_report(a, "windows", self.machine)
+        self.assertNotIn("WARN", out.getvalue(), "policy off: missing is as it should be")
+
+    def test_check_goes_on_when_the_scheduler_cannot_be_asked(self):
+        a = self.project("a")
+        self.machine.fail = lambda argv: True
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install.weekly_report(a, "linux", self.machine)  # crontab -l fails with something that is not "no crontab"
+        self.assertIn("weekly check: machine task unverified", out.getvalue())
+        self.assertIn("older install unverified", out.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            install.weekly_report(a, "windows", self.machine)
+        self.assertIn("older install unverified", out.getvalue())
+
+    def test_check_through_main_runs_the_weekly_report_unless_the_scheduler_is_skipped(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {install.SKIP_SCHEDULER_ENV: "1"}), contextlib.redirect_stdout(out):
+            install.check(a, self.src, plat="windows", runner=self.machine)
+        self.assertIn("weekly check: skipped", out.getvalue())
+        with mock.patch.object(install, "weekly_report") as report, contextlib.redirect_stdout(io.StringIO()):
+            install.main([str(a), "--check", "--source", str(self.src)], self.machine, "windows")
+        report.assert_called_once()
+        self.assertEqual(report.call_args[0][1:], ("windows", self.machine))
+
+    def test_old_task_counts_on_each_platform(self):
+        for plat in PLATFORMS:
+            with self.subTest(plat=plat):
+                self.machine = FakeMachine(self.home)
+                a = self.project("a-" + plat)
+                for name in ("x", "y", "z"):
+                    self.machine.add_legacy(plat, self.project(name + plat))
+                self.run_main(a, plat)  # a machine task next to them: not counted
+                sched = install.Scheduler(a, plat, self.machine, home=self.home, thome=self.thome)
+                self.assertEqual(sched.count_legacy(), 3)
+                self.assertEqual(self.machine.machine_tasks(plat), 1)
+
+    def test_commands_per_platform(self):
+        a = self.project("a")
+        self.run_main(a, "windows")
+        self.assertEqual([c[:4] for c in self.machine.calls if c[:2] == ["schtasks", "/Create"]],
+                         [["schtasks", "/Create", "/TN", "tagteam-models"]])
+        self.run_main(a, "windows", "--unschedule")
+        self.assertIn(["schtasks", "/Delete", "/TN", "tagteam-models", "/F"], self.machine.calls)
+        self.machine = FakeMachine(self.home)
+        self.run_main(a, "macos")
+        plist = self.machine.agents() / "net.tagteam.models.plist"
+        self.assertIn(["launchctl", "bootstrap", "gui/501", str(plist)], self.machine.calls)
+        self.run_main(a, "macos", "--unschedule")
+        self.assertIn(["launchctl", "bootout", "gui/501/net.tagteam.models"], self.machine.calls)
+        self.assertFalse(plist.exists())
+        self.machine = FakeMachine(self.home)
+        self.machine.crontab = "5 5 * * * other job\n"
+        self.run_main(a, "linux")
+        self.assertEqual(self.machine.crontab.splitlines()[0], "5 5 * * * other job")
+        self.run_main(a, "linux", "--unschedule")
+        self.assertEqual(self.machine.crontab, "5 5 * * * other job\n")
 
 
 OWN_HOOKS = {

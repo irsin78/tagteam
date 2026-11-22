@@ -46,20 +46,23 @@ Compare [macOS](macos.md).
 
 ## Scheduled model check
 
-- `--schedule --dry-run` prints the task name `tagteam-models-<8 hex digits>`, the job PATH (the CLI folder `~/.local/bin`
-  followed by `/usr/bin:/bin:/usr/sbin:/sbin`), one `--version` check per CLI that it would run, and the crontab line as
-  `  crontab  <line>`.
-- After `--schedule`, `crontab -l` shows the existing line plus
-  `0 9 * * 1 PATH=<job path> /usr/bin/python3 <project>/.claude/tagteam/models_collect.py --project <project> # tagteam-models-<8 hex>`
-  (followed by the log redirect below). Run with cron's minimal environment (`env -i HOME=... SHELL=/bin/sh sh -c`), that
-  command ends `exit=0 claude=ok google=ok openai=ok bench=skipped changes=3` and writes `model-update.json`: the `PATH=` in the line is what lets cron find the CLIs. `--unschedule` removes only that line and
-  deletes `model-update.json`.
-- Cron mails a job's output, and a server without a mail system would lose it, so the line ends with
-  `>> <state folder>/model-update.log 2>&1` and the folder is created when the job is registered. A run through real cron is
-  unconfirmed. `TAGTEAM_AA_API_KEY` is not passed to the job; put it in the crontab if you want benchmark data.
+- There is one cron line per machine, ending `# tagteam-models`, not one per project. `--schedule --dry-run` prints the job
+  PATH (the CLI folder `~/.local/bin` followed by `/usr/bin:/bin:/usr/sbin:/sbin`), one `--version` check per CLI that it
+  would run, and the crontab line as `  crontab  <line>`.
+- After `--schedule`, `crontab -l` shows the existing lines plus
+  `0 9 * * 1 cd ~/.tagteam && PATH=<job path> /usr/bin/python3 ~/.tagteam/bin/models_collect.py --weekly >> ~/.tagteam/weekly.log 2>&1 # tagteam-models`
+  (with the real paths): the `PATH=` is what lets cron find the CLIs. The line runs the collector copy in `~/.tagteam/bin/`
+  (`TAGTEAM_HOME` moves the folder); it refreshes the shared cache and writes each registered project's `model-update.json`.
+  `--unschedule` on the last registered project (or policy `off`) removes only that line and `~/.tagteam/bin/`; a project's own
+  older line, `# tagteam-models-<8 hex>`, is removed when that project is updated or unscheduled, and `--check` counts the ones left.
+- Cron mails a job's output, and a server without a mail system would lose it, so the line redirects to
+  `~/.tagteam/weekly.log`, and the folder is created when the job is registered. `TAGTEAM_AA_API_KEY` is not passed to the job;
+  put it in the crontab if you want benchmark data, or run `models_collect.py --refresh` with the key by hand: every project
+  reads the Artificial Analysis cache that run fills.
 - Without `crontab` on PATH, `--schedule` prints `error: cannot read the crontab (crontab -l: ... No such file or directory:
   'crontab'); nothing was changed` and exits 1.
-- Unconfirmed: cron does not repeat a missed run (a machine that is off on Monday 09:00 skips that week; the session-start
+- Unconfirmed: a run of the machine line through real cron (the earlier per-project line was run with cron's minimal
+  environment, `env -i HOME=... SHELL=/bin/sh sh -c`, and worked); cron does not repeat a missed run (a machine that is off on Monday 09:00 skips that week; the session-start
   line warns after 14 days).
 
 ## State folder

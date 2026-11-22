@@ -61,8 +61,10 @@ its built-in orchestrator model ([manual section 3.4](docs/manual.md#34-agy-as-t
 `python3 install.py <project dir> --check --host <cli>` checks files and hook handling (not trust); the optional `--live`
 also runs the CLI once and uses tokens.
 
-A weekly check of the vendors' model lists is registered by install and `--update` unless the Project policy line
-`Model list check: off` says otherwise; `python3 install.py <project dir> --schedule` or `--unschedule` does it by hand.
+A weekly check of the vendors' model lists is set up by install and `--update` unless the Project policy line
+`Model list check: off` says otherwise. It is one task per machine, shared by all projects: it fetches the lists once into
+`~/.tagteam/cache/` and writes each registered project's proposal from that cache. `python3 install.py <project dir> --schedule`
+or `--unschedule` does it by hand (manual [section 8.2](docs/manual.md#82-scheduling)).
 
 ## What is in this repository
 
@@ -90,7 +92,8 @@ A weekly check of the vendors' model lists is registered by install and `--updat
 ## Benchmark data
 
 Optional. With a benchmark API key in the environment variable `TAGTEAM_AA_API_KEY`, install writes model scores and
-prices to `.claude/tagteam/bench.local.json` (machine-local, git-ignored), and the weekly collector proposes updates.
+prices to `.claude/tagteam/bench.local.json` (machine-local, git-ignored), and the weekly collector proposes updates. The key is
+never stored: the collector leaves it out of every child process and blanks it in everything it writes.
 Without a key, routes follow the `defaults` lists and the model order in `models.json`. Data source and its attribution
 terms: [manual section 8](docs/manual.md#8-keeping-the-model-list-current).
 
