@@ -15,6 +15,7 @@ import errno
 import hashlib
 import importlib.util
 import json
+import locale
 import os
 import plistlib
 import re
@@ -2226,12 +2227,25 @@ BIN_FILES = ("models_collect.py", "state.py")  # the collector copy in <home>/bi
 COLLECTOR_SCHEMA_LINE = re.compile(r"^COLLECTOR_SCHEMA = (\d+)$", re.M)
 
 
-def run_cmd(argv, input_text=None):
-    """Default command runner: returns (exit code, combined output)."""
+def decode_output(data):
+    """Bytes from a scheduler command -> text. UTF-8 first (a console on code page 65001 makes schtasks answer in UTF-8),
+    then the locale's encoding (cp949 and the like), never raising: a lost character must not empty the whole output."""
+    if not data:
+        return ""
     try:
-        p = subprocess.run(argv, input=input_text, capture_output=True, text=True, timeout=120)
-        return p.returncode, (p.stdout or "") + (p.stderr or "")
-    except (OSError, subprocess.SubprocessError, ValueError) as e:  # ValueError: output that cannot be decoded
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(locale.getpreferredencoding(False) or "utf-8", errors="replace")
+
+
+def run_cmd(argv, input_text=None):
+    """Default command runner: returns (exit code, combined output). Output is read as bytes and decoded by
+    decode_output, so a reader thread can never die on an encoding the locale does not expect."""
+    try:
+        p = subprocess.run(argv, input=None if input_text is None else input_text.encode("utf-8"),
+                           capture_output=True, timeout=120)
+        return p.returncode, decode_output(p.stdout) + decode_output(p.stderr)
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         return 127, str(e)
 
 

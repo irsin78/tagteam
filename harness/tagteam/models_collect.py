@@ -33,6 +33,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import sys
@@ -1008,9 +1009,22 @@ def weekly(args, home, since):
         weekly_log(home, "project %s exit=%d %s" % (proj, result, note))
     if (last or removed) and not save_project_results(home, last, removed):
         code = max(code, 1)
-    print("weekly: exit=%d refresh %s projects=%d failed=%d removed=%d" % (
-        code, " ".join("%s=%s" % (i, shown[i]) for i in order), len(last), project_failed, len(removed)))
+    summary = "weekly: exit=%d refresh %s projects=%d failed=%d removed=%d" % (
+        code, " ".join("%s=%s" % (i, shown[i]) for i in order), len(last), project_failed, len(removed))
+    if not stdout_is(os.path.join(home, "weekly.log")):  # launchd and cron send stdout to weekly.log already
+        weekly_log(home, summary)  # the Windows task keeps no stdout at all
+    print(summary)
     return code
+
+
+def stdout_is(path):
+    """True when our stdout is that very file: a regular file with the same device and inode (a Windows pipe or console
+    can report 0 for both, so only a regular file counts)."""
+    try:
+        out, there = os.fstat(sys.stdout.fileno()), os.stat(path)
+        return stat.S_ISREG(out.st_mode) and out.st_ino != 0 and os.path.samestat(out, there)
+    except (OSError, ValueError, AttributeError):  # no stdout, a stream without a descriptor, or no log yet
+        return False
 
 
 def main(argv):

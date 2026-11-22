@@ -597,15 +597,26 @@ class WeeklyBase(CacheBase):
     def proposal_of(self, proj):
         return json.loads(read(os.path.join(proj, ".tagteam", "model-update.json")))
 
-    def weekly_process(self, env=None):
-        """The real thing: the copy in bin/ run by a fresh Python, in a folder that holds nothing else."""
+    def weekly_process(self, env=None, stdout_file=None):
+        """The real thing: the copy in bin/ run by a fresh Python, in a folder that holds nothing else. stdout_file: send
+        stdout there, as launchd and cron send it to weekly.log."""
         full = dict(os.environ, **(env or self.weekly_env))
         for name in ("TAGTEAM_STATE_DIR", "TAGTEAM_CONFIG_DIR"):
             full.pop(name, None)
-        return subprocess.run([sys.executable, os.path.join(self.bin, "models_collect.py"), "--weekly"], cwd=self.bin,
-                              env=full, capture_output=True, text=True, timeout=120)
+        argv = [sys.executable, os.path.join(self.bin, "models_collect.py"), "--weekly"]
+        if stdout_file is None:
+            return subprocess.run(argv, cwd=self.bin, env=full, capture_output=True, text=True, timeout=120)
+        with open(stdout_file, "a", encoding="utf-8") as out:
+            return subprocess.run(argv, cwd=self.bin, env=full, stdout=out, stderr=subprocess.PIPE, text=True, timeout=120)
 
 class WeeklyTest(WeeklyBase):
+    def test_stdout_redirected_to_the_log_writes_the_summary_once(self):
+        log = os.path.join(self.home, "weekly.log")
+        open(log, "a").close()  # launchd and cron create the file before the collector starts
+        done = self.weekly_process(stdout_file=log)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(re.findall(r"weekly: exit=0 ", self.log())), 1)
+
     def test_the_bin_copy_runs_without_any_project_file(self):
         self.assertEqual(sorted(os.listdir(self.bin)), ["models_collect.py", "state.py"])
         done = self.weekly_process()
@@ -620,6 +631,7 @@ class WeeklyTest(WeeklyBase):
         self.assertIn("refresh claude=ok google=ok openai=ok", log)
         self.assertEqual(len(re.findall(r"project \S+ exit=0", log)), 2)
         self.assertIn("weekly: exit=0", done.stdout)
+        self.assertEqual(len(re.findall(r"weekly: exit=0 ", log)), 1)  # stdout is a pipe here, so the log gets it once
         with mc.machine_lock(self.home, "refresh.lock", wait=0.1) as held:
             self.assertTrue(held)  # released when the run ended
 

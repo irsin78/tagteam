@@ -4775,5 +4775,35 @@ class ClaudeSettingsMergeTests(unittest.TestCase):
         self.assertIn("ERROR    settings.json missing: PreToolUse: no tagteam hook", out.getvalue())
 
 
+class DecodeOutputTests(unittest.TestCase):
+    """A Windows console on code page 65001 makes schtasks answer in UTF-8 while Python's locale encoding is cp949."""
+    AM = b"\xec\x98\xa4\xec\xa0\x84"  # a two-character time marker in UTF-8, as schtasks printed it
+    AM_CP949 = b"\xbf\xc0\xc0\xfc"  # the same marker in cp949
+
+    def test_utf8_output_is_read_whole(self):
+        line = b'"\\tagteam-models-28055827","2026-11-23 ' + self.AM + b' 9:00:00","Ready"'
+        text = install.decode_output(line)
+        self.assertIn("tagteam-models-28055827", text)
+        self.assertIn("9:00:00", text)
+
+    def test_locale_output_never_raises_and_keeps_the_ascii(self):
+        line = b'"\\tagteam-models-28055827","2026-11-23 ' + self.AM_CP949 + b' 9:00:00","Ready"'
+        text = install.decode_output(line)
+        self.assertIn("tagteam-models-28055827", text)
+
+    def test_utf8_and_cp949_markers_both_decode_to_the_same_text(self):
+        marker = "\uc624\uc804"
+        self.assertIn(marker, install.decode_output(b"x " + self.AM + b" y"))
+        with mock.patch.object(install.locale, "getpreferredencoding", return_value="cp949"):
+            self.assertIn(marker, install.decode_output(b"x " + self.AM_CP949 + b" y"))
+
+    def test_run_cmd_reads_bytes_and_passes_input(self):
+        code, out = REAL_RUN_CMD([sys.executable, "-c",
+                                     "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read() + bytes([0xec, 0x98]))"],
+                                    "crontab line\n")
+        self.assertEqual(code, 0)
+        self.assertIn("crontab line", out)  # an undecodable tail does not empty the output
+
+
 if __name__ == "__main__":
     unittest.main()
