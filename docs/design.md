@@ -229,12 +229,15 @@ give another grade.
 - The order of models in `models.json` carries meaning: earlier means stronger within a vendor. The router uses it to
   keep a native Claude session from outranking its orchestrator and as the last tie-break. When the orchestrator's model or
   effort is exceeded, the launch moves to `run.py`.
-- A candidate is usable only if the plan allows the vendor, the model is not hidden, and the vendor CLI lists it. The
+- A candidate is usable only if the plan allows the vendor and the model (`min_plan`: a model above the vendor's plan is never
+  routed), the model is not hidden, and the vendor CLI lists it. The
   `available` lists are written by the collector; a vendor with no list is assumed to offer everything, which keeps an
   install usable before its first collection.
 - Plans are an optional override, not an installer question: availability decides, and the router infers only what it can
-  read. agy's list without any Pro-class id (from `models.json`, not names in code) means the free tier, so google goes
-  last; Claude and Codex lists carry no such signal and are never inferred. A named plan always wins.
+  read. agy's list with the id of an `ultra` model means the Ultra plan, one with a Pro-class id (from `models.json`, not names in
+  code) Pro, any other the free tier, so google goes last. With no fresh list google is taken as free too: an unknown list must
+  not let a Pro account be routed to a model only Ultra offers (Carbon). Claude and Codex lists carry no such signal and are
+  never inferred (no plan named means Pro). A named plan always wins.
 - agy's built-in Orchestrator model has no effort and no grade of its own. The router compares it as a stated pair
   (`compare_as` in `orchestrators`, an assumption the notice repeats), and refuses an effort given with it.
 - On `--host agy` a review is raised to at least grade A: the execution half of that model may be weaker than the

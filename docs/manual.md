@@ -464,6 +464,7 @@ to `CLAUDE_EFFORT`; on other hosts it does not, since an agy started from Claude
 | `pool` | the quota the model draws on; default: the `vendor`. The key in `exhausted.json` |
 | `cli_id` | the name the vendor's CLI knows the model by; default: the id. `run.py` passes it, with the effort, through the vendor's `model_arg` |
 | `fallback_only` | `true`: the router never picks it in the normal way, only as a stand-in (below) |
+| `min_plan` | `free`, `pro` or `ultra` (default `free`): the lowest plan of the vendor that offers the model (section 5.2). `gemini-4-carbon` is `ultra`: it appears in agy's list on the Google Ultra plan only |
 
 agy has **two quotas**: one for Google's models and one for other companies' models. The two Claude models agy serves from another
 company are registered as `claude-opus-5-5@agy` and `claude-sonnet-5-5@agy` (`vendor` google, `maker` claude, `pool`
@@ -484,7 +485,7 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
    CLI is missing are skipped. A vendor whose own pool is in `exhausted.json` is skipped too, after the stand-in below.
    The first vendor that has a candidate wins.
 2. **Candidates.** Every registered model (not `fallback_only`) and effort of that vendor whose `grades` entry equals the role's grade and that
-   is usable: plan not `none`, not hidden by `models.<id>.enabled`, and listed in a fresh `available` list (no list, or a stale one, counts as offering
+   is usable: plan not `none` and not below the model's `min_plan` (section 5.2), not hidden by `models.<id>.enabled`, and listed in a fresh `available` list (no list, or a stale one, counts as offering
    everything: section 5.2). A model marked `"candidate": true` in `models.json` is never a candidate here; only a `roles.<role>.model`
    pin can select it.
 3. **Pick order.** The first rule that matches any candidate decides: cost known and within `grading.caps` for the
@@ -513,7 +514,7 @@ to the next vendor as before.
 
 | Key | Effect |
 |---|---|
-| `plans.<vendor>` | optional. `none` removes the vendor; `free` moves it last; `pro` and `max` are the same and have no routing effect; a vendor with no entry is usable when its CLI is present and its `available` list is not empty (no list: assumed to offer everything). An entry always wins over the inference below |
+| `plans.<vendor>` | optional. The levels are `none` < `free` < `pro` < `ultra`; `max` reads as `ultra`, so an older file keeps working. `none` removes the vendor; `free` moves it last in the default order; a model whose `min_plan` is above the vendor's plan is never routed. A vendor with no entry: claude and openai count as `pro`, google is inferred (below). An entry always wins over the inference. Whether the CLI lists a model is judged separately, through `available` (no fresh list: assumed to offer everything) |
 | `models.<id>.enabled` | `false` hides a model; `true` skips the `available` check for it |
 | `available.<vendor>.ids` | ids the vendor CLI really offers (`checked` records the date); written by `--write-available` |
 | `roles.<role>` | `model`, `effort`, `vendor`, `grade` to pin for a role |
@@ -522,18 +523,25 @@ to the next vendor as before.
 A pinned model is used when it is usable, its pool is not exhausted, and it is not the author's maker for a review. A pin
 may name a `fallback_only` id such as `claude-sonnet-5-5@agy`: an explicit choice is allowed and needs no exhaustion. If
 the launch would go through `run.py` its vendor CLI must also be present; a native launch of the host's own vendor needs no
-check. Otherwise the router falls back to
+check. A model whose `min_plan` is above the vendor's plan is not usable, so a pin does not get around it (`plans.<vendor>` is
+the way to allow it; the reason then also has `plan_below:<model>`). Otherwise the router falls back to
 the normal choice and `reason` says why (`override_unusable`, `override_exhausted`, `override_same_vendor_as_author`,
 `cli_missing:<vendor>`). A `roles.<role>.effort` pin keeps limiting the candidates of that fallback. A pinned reviewer of
 another grade than the author's is allowed, with `override_grade_mismatch` in the notice (on `--host agy` not below grade A).
 
-**Plan inference.** For google only, with no `plans.google` entry: when the `available` list (from `agy models`) is known and
-holds no Pro-class id, google is treated as `free` (moved last) and the route's `reason` gets `plan_inferred_free:google` next to
-`plan_free_last:google`. Pro-class is read from `models.json`: the built-in orchestrator ids (`orchestrators`) and every effort of
-a model that reaches grade A at some effort. An empty or missing list infers nothing, and Claude and Codex are never inferred (only
-availability decides). A list whose `checked` date is older than 14 days, in the future or unreadable is unknown, not evidence: nothing is
-inferred and the vendor's models count as offered (as with no list), and the route's `reason` gets `available_stale:<vendor>`; the weekly
-check or `models_collect.py --write-available` refreshes it. Set `plans.google` to `pro` (or `max`) to turn the inference off for a machine that is mistaken for free.
+**Plan levels and inference.** `none` < `free` < `pro` < `ultra`. A model whose `min_plan` (default `free`) is above the vendor's
+plan is never a candidate, also not through a `roles` or `tasks` model pin; set `plans.<vendor>` to allow it. Claude and Codex are
+judged by availability alone and count as `pro` when no plan is named. Google, with no `plans.google` entry, is inferred from the
+fresh `available` list (from `agy models`): an id of a `min_plan: ultra` model means `ultra`, otherwise a Pro-class id means
+`pro`, otherwise (an empty list included) `free`. Pro-class is read from `models.json`: the built-in orchestrator ids
+(`orchestrators`) and every effort of a model that reaches grade A at some effort. With no fresh list (missing, or `checked` older
+than 14 days, in the future or unreadable) nothing can be inferred and google counts as `free`: models that need `pro` or `ultra`
+(Carbon) drop out, and google moves last in the default order. The route's `reason` gets `plan_free_last:google`, with
+`plan_inferred_free:google` when it is the inference, and `available_stale:<vendor>` for a stale list. A list that is
+missing or stale still counts as offering everything to a vendor whose plan is named or is `pro`. Keeping the list fresh is the
+job of the `model-update` skill: the session-start notice announces a pending proposal, and applying it copies the proposal's
+`available` lists into `models.local.json` (`models_collect.py --write-available` does it by hand). Set `plans.google` to `pro`,
+`ultra` (or `max`) to turn the inference off for a machine where it is wrong.
 
 ### 5.3 Exhaustion
 

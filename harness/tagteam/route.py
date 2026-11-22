@@ -36,9 +36,14 @@ EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 GRADES = {"C": 0, "B": 1, "A": 2, "S": 3}
 ROLES = ["design", "implement", "review", "read", "translate"]
 TS = "%Y-%m-%dT%H:%M:%SZ"
-# Vendors whose plan is inferred from their CLI's available list when models.local.json names none: a list without any
-# Pro-class model means the free tier (see Router.inferred_free). Claude and Codex are judged by availability alone.
+# Vendors whose plan is inferred from their CLI's available list when models.local.json names none (see Router.plan): a fresh
+# list with an id of a min_plan=ultra model means ultra, one with a Pro-class id pro, any other free; no fresh list at all
+# means free. Claude and Codex are judged by availability alone and count as pro when no plan is named.
 INFER_FREE = ("google",)
+# Plan levels, lowest first. models.local.json plans.<vendor> takes none|free|pro|ultra|max; `max` reads as ultra. A model's
+# optional `min_plan` (free|pro|ultra, default free) is the lowest plan that offers it.
+PLAN_LEVELS = {"none": 0, "free": 1, "pro": 2, "ultra": 3}
+PLAN_ALIASES = {"max": "ultra"}
 PRO_GRADE = "A"  # a model that reaches this grade at some effort is Pro-class
 AVAILABLE_MAX_AGE = 14  # days: an `available` list checked longer ago (two missed weekly checks) or with no readable date is unknown
 HOSTS = ["claude-desktop", "claude", "codex", "agy"]
@@ -58,6 +63,11 @@ def model_pool(model):
 
 def model_cli_id(mid, model):
     return model.get("cli_id") or mid
+
+
+def min_plan(model):
+    """The lowest plan that offers a model: free, pro or ultra (default free)."""
+    return model.get("min_plan") or "free"
 
 
 def pool_cooldowns(models):
@@ -311,23 +321,53 @@ class Router:
             return None, True
         return entry.get("ids", []), False
 
-    def inferred_free(self, vendor):
-        """True when models.local.json gives this vendor no plan, it is one of INFER_FREE, its available list is fresh and
-        holds no Pro-class id."""
-        if vendor not in INFER_FREE or vendor in (self.local.get("plans") or {}):
-            return False
+    def ultra_ids(self, vendor):
+        """CLI ids of the vendor's models that need the ultra plan (min_plan "ultra"), every effort. Not a fallback_only model."""
+        arg = self.m["vendors"][vendor]["model_arg"]
+        return {arg.format(model=model_cli_id(mid, model), effort=e)
+                for mid, model in self.m["models"].items()
+                if model["vendor"] == vendor and not model.get("fallback_only") and min_plan(model) == "ultra"
+                for e in model_efforts(model)}
+
+    def named_plan(self, vendor):
+        """The plan models.local.json names for this vendor (max -> ultra; an unknown word counts as pro), else None."""
+        named = (self.local.get("plans") or {}).get(vendor)
+        if not named or not isinstance(named, str):
+            return None
+        named = PLAN_ALIASES.get(named, named)
+        return named if named in PLAN_LEVELS else "pro"
+
+    def inferred_plan(self, vendor):
+        """The plan of an INFER_FREE vendor with no named plan, from its fresh available list: an ultra-only id -> ultra, else a
+        Pro-class id -> pro, else free (a fresh empty list included). No fresh list (missing, stale, unreadable) -> free."""
         ids = self.available(vendor)[0]
-        return bool(ids) and not set(ids) & self.pro_ids(vendor)
+        if ids is None:
+            return "free"
+        if set(ids) & self.ultra_ids(vendor):
+            return "ultra"
+        return "pro" if set(ids) & self.pro_ids(vendor) else "free"
+
+    def inferred_free(self, vendor):
+        """True when models.local.json gives this vendor no plan, it is one of INFER_FREE and the inferred plan is free (its
+        fresh available list holds no Pro-class id, or there is no fresh list)."""
+        return vendor in INFER_FREE and self.named_plan(vendor) is None and self.inferred_plan(vendor) == "free"
 
     def plan(self, vendor):
-        """none | free | pro | max as models.local.json says (pro and max are treated alike); else `free` when inferred, else pro."""
-        named = (self.local.get("plans") or {}).get(vendor)
-        return named or ("free" if self.inferred_free(vendor) else "pro")
+        """none | free | pro | ultra: as models.local.json says (max reads as ultra); else, for an INFER_FREE vendor, inferred
+        from its available list (see inferred_plan); else pro."""
+        named = self.named_plan(vendor)
+        if named:
+            return named
+        return self.inferred_plan(vendor) if vendor in INFER_FREE else "pro"
+
+    def plan_below(self, mid):
+        """True when the vendor's plan is lower than the model's min_plan."""
+        return PLAN_LEVELS[self.plan(self.m["models"][mid]["vendor"])] < PLAN_LEVELS[min_plan(self.m["models"][mid])]
 
     def usable(self, mid, effort):
         model = self.m["models"][mid]
         v = model["vendor"]
-        if self.plan(v) == "none":
+        if self.plan(v) == "none" or self.plan_below(mid):
             return False
         enabled = ((self.local.get("models") or {}).get(mid) or {}).get("enabled")
         if enabled is not None:
@@ -634,6 +674,8 @@ class Router:
             pinned = (self.m["models"][um].get("grades") or {}).get(effort)
             if not self.usable(um, effort):
                 reason.append("override_unusable")
+                if self.plan_below(um):
+                    reason.append("plan_below:" + um)
             elif model_pool(self.m["models"][um]) in self.exh:
                 reason.append("override_exhausted")
             elif role == "review" and model_maker(self.m["models"][um]) == author:

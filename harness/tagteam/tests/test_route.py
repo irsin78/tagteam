@@ -35,10 +35,15 @@ class RouteBase(unittest.TestCase):
         self.root = os.path.join(self.tmp, "root")
         shutil.copytree(os.path.join(HARNESS, "claude", "agents"), os.path.join(self.root, ".claude", "agents"))
         shutil.copytree(os.path.join(HARNESS, "codex", "agents"), os.path.join(self.root, ".codex", "agents"))
+        self.local({})
 
-    def local(self, data, stamp=True):
+    def local(self, data, stamp=True, plan_default=True):
         """Write models.local.json. An `available` entry without a `checked` key gets today's date (a list is only evidence while
-        fresh); stamp=False writes the data as given."""
+        fresh); stamp=False writes the data as given. plan_default: a file that says nothing about google (no plan, no list)
+        names the pro plan for it, because an unnamed google plan with no fresh list is free and sorts google last; pass
+        plan_default=False to test that."""
+        if plan_default and "google" not in (data.get("plans") or {}) and "google" not in (data.get("available") or {}):
+            data = dict(data, plans=dict(data.get("plans") or {}, google="pro"))
         if stamp and isinstance(data.get("available"), dict):
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             data = dict(data, available={v: (dict(e, checked=today) if isinstance(e, dict) and e and "checked" not in e else e)
@@ -244,14 +249,28 @@ class RouteTest(RouteBase):
                 self.assertEqual(r["vendor"], "google")
 
     def test_no_inference_without_a_known_list_and_none_for_claude_or_codex(self):
-        for avail in ({}, {"google": {"ids": []}}, {"google": {}}, {"google": {"ids": "x"}},
-                      {"claude": {"ids": ["claude-sonnet-5-5"]}, "openai": {"ids": ["gpt-6.1-terra"]}}):
+        for avail in ({"claude": {"ids": ["claude-sonnet-5-5"]}, "openai": {"ids": ["gpt-6.1-terra"]}},):
             with self.subTest(avail):
                 r = self.agy_implement({"available": avail})
                 self.assertFalse([x for x in r["reason"] if x.startswith(("plan_free_last", "plan_inferred_free"))], r["reason"])
         self.local({"available": {"openai": {"ids": ["gpt-6.1-terra-low"]}}})  # a small codex list is no plan signal
         r = self.route("implement", host="codex")[1]
         self.assertFalse([x for x in r["reason"] if x.startswith("plan_")], r["reason"])
+
+    def test_no_fresh_list_and_no_named_plan_means_free_for_google_only(self):
+        for avail in ({}, {"google": {}}, {"google": {"ids": "x"}}, {"google": {"checked": "2020-01-01", "ids": ["gemini-4-hydrogen-high"]}}):
+            with self.subTest(avail):
+                self.local({"available": avail}, stamp=False, plan_default=False)
+                r = self.route("implement", host="agy")[1]
+                self.assertEqual(r["vendor"], "openai")  # google is last: free
+                self.assertIn("plan_free_last:google", r["reason"])
+                self.assertIn("plan_inferred_free:google", r["reason"])
+                self.assertEqual(route.Router(self.models(), {"available": avail}, {}).plan("claude"), "pro")
+                self.assertEqual(route.Router(self.models(), {"available": avail}, {}).plan("openai"), "pro")
+
+    def models(self):
+        with open(os.path.join(TAGTEAM, "models.json"), encoding="utf-8") as f:
+            return json.load(f)
 
     def test_an_explicit_plan_wins_over_the_inference(self):
         r = self.agy_implement({"plans": {"google": "pro"}, "available": self.FLASH_ONLY})
@@ -272,14 +291,21 @@ class RouteTest(RouteBase):
         self.assertPick((0, r), "gpt-6.1-sol", "medium")
         for checked in (self.days_ago(15), "2020-01-01", None, "yesterday", 5, self.days_ago(-1), self.days_ago(-30)):
             with self.subTest(checked):
-                self.local({"available": {"google": {"checked": checked, "ids": flash}}}, stamp=False)
-                code, r = self.route("implement", host="agy")  # stale Flash-only: nothing inferred, Hydrogen counts as offered
+                # stale Flash-only, plan named pro: nothing inferred from the list, Hydrogen counts as offered
+                self.local({"plans": {"google": "pro"}, "available": {"google": {"checked": checked, "ids": flash}}}, stamp=False)
+                code, r = self.route("implement", host="agy")
                 self.assertPick((code, r), "gemini-4-hydrogen", "medium")
                 self.assertIn("available_stale:google", r["reason"])
                 self.assertFalse([x for x in r["reason"] if x.startswith(("plan_free_last", "plan_inferred_free"))], r["reason"])
-        self.local({"available": {"google": {"checked": "2020-01-01", "ids": []}}}, stamp=False)  # stale empty: all offered
+                # the same list with no plan named: unknown plan is free, google goes last
+                self.local({"available": {"google": {"checked": checked, "ids": flash}}}, stamp=False, plan_default=False)
+                code, r = self.route("implement", host="agy")
+                self.assertPick((code, r), "gpt-6.1-sol", "medium")
+                self.assertIn("available_stale:google", r["reason"])
+                self.assertIn("plan_inferred_free:google", r["reason"])
+        self.local({"plans": {"google": "pro"}, "available": {"google": {"checked": "2020-01-01", "ids": []}}}, stamp=False)  # stale empty: all offered
         self.assertPick(self.route("implement", host="agy"), "gemini-4-hydrogen", "medium")
-        self.local({"available": {"google": {"ids": flash}}}, stamp=False)  # no date at all
+        self.local({"plans": {"google": "pro"}, "available": {"google": {"ids": flash}}}, stamp=False)  # no date at all
         code, r = self.route("implement", host="agy")
         self.assertIn("available_stale:google", r["reason"])
         self.assertPick((code, r), "gemini-4-hydrogen", "medium")
@@ -533,7 +559,8 @@ class RouteTest(RouteBase):
             if m["vendor"] == "google":
                 self.assertTrue(m.get("label"), mid)
             self.assertNotIn("bench", m, mid)
-            self.assertLessEqual(set(m), {"vendor", "grades", "label", "maker", "pool", "cli_id", "aa_slug", "fallback_only"}, mid)
+            self.assertLessEqual(set(m), {"vendor", "grades", "label", "maker", "pool", "cli_id", "aa_slug", "fallback_only", "min_plan"}, mid)
+            self.assertIn(m.get("min_plan", "free"), ("free", "pro", "ultra"), mid)
             self.assertIn(route.model_maker(m), data["vendors"], mid)
             self.assertTrue(isinstance(route.model_pool(m), str) and route.model_pool(m), mid)
             if "@" in mid:  # another maker's model through a vendor CLI: its CLI name and fallback-only status are explicit
@@ -541,6 +568,8 @@ class RouteTest(RouteBase):
                 self.assertIs(m.get("fallback_only"), True, mid)
                 self.assertNotEqual(route.model_maker(m), m["vendor"], mid)
                 self.assertNotEqual(route.model_pool(m), m["vendor"], mid)
+        self.assertEqual({mid for mid, m in data["models"].items() if "min_plan" in m}, {"gemini-4-carbon"})  # the only gated model
+        self.assertEqual(data["models"]["gemini-4-carbon"]["min_plan"], "ultra")
         for v, cfg in data["vendors"].items():
             self.assertTrue({"cli", "host", "model_arg", "cooldown_minutes"} <= set(cfg), v)
         self.assertEqual(set(data["hosts"]), set(route.HOSTS))
