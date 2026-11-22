@@ -5,7 +5,8 @@ Options, exit codes, records and the git check's limits: `run.py --help` and doc
 - The git check is an accident check, not a security boundary.
 - A run's records are <state dir>/runs/<id>/; started.json is written first (before anything touches the checkout) and report.txt last,
   so --status and --wait can tell a finished, a running and a dead run apart. A usage-limit sign goes to
-  <state dir>/exhausted.json (route.py reads it).
+  <state dir>/exhausted.json (route.py reads it), under the quota ("pool") of the model that ran: its models.json
+  `pool`, else its vendor. A model reached through another vendor's CLI (id `<name>@agy`) runs as its `cli_id`.
 - After a run: the git check, a control-plane check (.claude/, .codex/, .agents/, AGENTS.md, CLAUDE.md and the
   machine-local files git ignores, compared before and after) and, for Codex, a check that its hooks wrote a role record.
 - Codex on Windows gets `-c windows.sandbox=<value>` from models.local.json codex.windows_sandbox
@@ -45,17 +46,20 @@ CONTROL_HASH_CAP = 16 * 1024 * 1024  # a control-plane file over this is compare
 FLAGS = re.I | re.S
 CLAUDE_EX = re.compile(
     r"(?:API Error: )?(?:HTTP )?429.*|(?:usage|rate)[ -]limit(?: exceeded| reached)?.*"
-    r"|You've hit your usage limit.*|Claude AI usage limit reached\|\d+.*"
+    r"|You['\u2019]ve hit your usage limit.*|Claude AI usage limit reached\|\d+.*"
     r"|\d+-hour limit reached.*|rate_limit_error.*", FLAGS)
 OPENAI_EX = re.compile(
     "(?:⚠️ |ERROR: |stream error: )*(?:HTTP 429(?: Too Many Requests)?|429 Too Many Requests"
-    r"|(?:usage|rate)[ -]limit(?: exceeded| reached)?[.!]?|You've hit your usage limit.*"
+    r"|(?:usage|rate)[ -]limit(?: exceeded| reached)?[.!]?|You['\u2019]ve hit your usage limit.*"
     r"|usage limit (?:reached|exceeded).*|exceeded retry limit, last status: 429.*"
     r"|Quota exceeded\. Check your plan and billing details\..*)", re.I)
 GOOGLE_JSON_EX = re.compile(r"quota|rate[ -]limit|\b429\b|RESOURCE_EXHAUSTED", re.I)
 GOOGLE_LINE_EX = re.compile(
     r"(?:ERROR: )?(?:HTTP 429.*|429 Too Many Requests|(?:usage|rate)[ -]limit.*"
     r"|quota(?: exceeded| exhausted)?[.!]?)", re.I)
+# codex: "... or try again at 4:14 AM." (or "try again at Nov 5th, 2026 4:14 AM."): a local time
+TRY_AGAIN = re.compile(r"try again at (?:([A-Za-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?,? (\d{4}),? )?"
+                       r"(\d{1,2}):(\d{2})\s*([AP]M)", re.I)
 AGY_LABEL = re.compile(r'Propagating selected model override to backend: label="([^"]+)"')
 CODEX_MODEL = re.compile(r"^model:\s*(\S+)", re.M)
 PRIORITY = [("exhausted", 3), ("git_head_moved", 7), ("control_plane_changed", 10), ("hooks_not_run", 11),
@@ -198,6 +202,21 @@ def agy_settings(allow_commands):
     """The per-run agy settings JSON: command(*) by default, else exactly the listed commands."""
     allow = ["command(%s)" % c for c in allow_commands] if allow_commands else ["command(*)"]
     return json.dumps({"permissions": {"allow": allow}}, separators=(",", ":"))
+
+
+def pool_of(m):
+    """The quota a model draws on: its own name when the model says nothing (the vendor's quota)."""
+    return m.get("pool") or m["vendor"]
+
+
+def cli_id_of(mid, m):
+    """The name the vendor CLI knows the model by (claude-opus-5-5@agy is asked for as claude-opus-5-5)."""
+    return m.get("cli_id") or mid
+
+
+def agy_display(label):
+    """What agy shows for a model of ours: the label without the (agy) note of a partner model."""
+    return re.sub(r"\s*\(agy\)$", "", label)
 
 
 def build_command(vendor, base, model_arg, effort, read_only, cwd, run_dir, prompt, timeout, allow_commands=None,
@@ -540,6 +559,36 @@ def hooks_ran(state, before, since):
 
 # ---- reading results --------------------------------------------------------------------
 
+def local_now():
+    return datetime.now().astimezone()
+
+
+def retry_epoch(text, now=None):
+    """The moment a usage-limit message says to try again (its local time), or None. A time of day that has
+    already passed today means tomorrow."""
+    m = TRY_AGAIN.search(text)
+    if not m:
+        return None
+    now = now or local_now()
+    month, day, year, hour, minute, ampm = m.groups()
+    if not 1 <= int(hour) <= 12:
+        return None
+    hour = int(hour) % 12 + (12 if ampm.upper() == "PM" else 0)
+    try:
+        if year:  # a date that has already passed is no usable time: the caller falls back to its cooldown
+            number = datetime.strptime(month[:3].title(), "%b").month
+            when = datetime(int(year), number, int(day), hour, int(minute)).astimezone()
+            return when.timestamp() if when > now else None
+        today = datetime(now.year, now.month, now.day, hour, int(minute))
+    except ValueError:
+        return None
+    for fold in (0, 1):  # a wall-clock time that occurs twice (DST ends) may still lie ahead in its second pass
+        when = today.replace(fold=fold).astimezone()
+        if when > now:
+            return when.timestamp()
+    return (today + timedelta(days=1)).astimezone().timestamp()
+
+
 def detect_exhausted(vendor, code, out, err, data, skip=frozenset()):
     """Return (evidence, until_epoch or None) when the output shows a usage limit, else None."""
     if vendor == "claude":
@@ -547,12 +596,12 @@ def detect_exhausted(vendor, code, out, err, data, skip=frozenset()):
             result = str(data.get("result", "")).strip()
             if CLAUDE_EX.fullmatch(result):
                 m = re.search(r"limit reached\|(\d+)", result, re.I)
-                return result[:200], int(m.group(1)) if m else None
+                return result[:200], int(m.group(1)) if m else retry_epoch(result)
     elif vendor == "openai":
         if code != 0:
             for line in (out + "\n" + err).splitlines():
                 if line.strip() not in skip and OPENAI_EX.fullmatch(line.strip()):
-                    return line.strip()[:200], None
+                    return line.strip()[:200], retry_epoch(line)
     else:
         if data and data.get("error") and GOOGLE_JSON_EX.search(str(data["error"])):
             return str(data["error"])[:200], None
@@ -561,6 +610,12 @@ def detect_exhausted(vendor, code, out, err, data, skip=frozenset()):
                 if line.strip() not in skip and GOOGLE_LINE_EX.fullmatch(line.strip()):
                     return line.strip()[:200], None
     return None
+
+
+def agy_label_matches(found, label, effort):
+    """agy shows "Gemini 4 Hydrogen (XHigh)": the model name exactly, the effort word in any case."""
+    m = re.fullmatch(r"(.*) \(([^()]*)\)", found)
+    return bool(m) and m.group(1) == label and m.group(2).lower() == effort.lower()
 
 
 def actual_model(vendor, model, effort, label, data, out, err, run_dir):
@@ -577,8 +632,7 @@ def actual_model(vendor, model, effort, label, data, out, err, run_dir):
         m = CODEX_MODEL.search("\n".join(head))
         return (m.group(1) if m else None), bool(m) and m.group(1) == model
     found = AGY_LABEL.findall(read_text(os.path.join(run_dir, "agy.log")))
-    want = "%s (%s)" % (label, effort.capitalize())
-    return (found[-1] if found else None), bool(found) and found[-1] == want
+    return (found[-1] if found else None), bool(found) and agy_label_matches(found[-1], label, effort)
 
 
 def final_text(vendor, data, out, run_dir):
@@ -925,6 +979,8 @@ def main(argv):
     label = info.get("label")
     if args.vendor == "google" and not label:
         return fail("google model %s has no label in models.json" % args.model)
+    label = agy_display(label) if label else label
+    pool = pool_of(info)
     try:
         sandbox = windows_sandbox(config_dir) if args.vendor == "openai" else None
     except ValueError as exc:
@@ -957,7 +1013,7 @@ def main(argv):
         {"pid": os.getpid(), "started": iso(start), "vendor": args.vendor, "model": args.model, "effort": args.effort,
          "timeout": args.timeout}, indent=2) + "\n")
     write_text(os.path.join(run_dir, "prompt.txt"), prompt)
-    model_arg = vcfg.get("model_arg", "{model}").format(model=args.model, effort=args.effort)
+    model_arg = vcfg.get("model_arg", "{model}").format(model=cli_id_of(args.model, info), effort=args.effort)
     try:
         cmd = build_command(args.vendor, base, model_arg, args.effort, args.read_only, cwd, run_dir, prompt,
                             args.timeout, args.allow_command, args.run_commands, sandbox)
@@ -1064,8 +1120,14 @@ def main(argv):
     lines = ["RUN %s vendor=%s model=%s effort=%s status=%s exit=%s secs=%d"
              % (run_id, args.vendor, args.model, args.effort, status, code, secs)]
     if status == "ok" or status == "model_mismatch":
-        lines.append("ACTUAL_MODEL: %s (%s)" % (found or "not found", "match" if matches else "MISMATCH, expected " + args.model))
-    result = {"id": run_id, "vendor": args.vendor, "model": args.model, "effort": args.effort, "status": status,
+        verdict = "match"
+        if not matches:
+            verdict = "MISMATCH, expected " + args.model
+            if args.vendor == "google" and "@" in args.model:  # the display name is an assumption: show both sides
+                verdict += ' (agy should show "%s (%s)", effort in any case; it showed "%s")' % (
+                    label, args.effort, found or "nothing")
+        lines.append("ACTUAL_MODEL: %s (%s)" % (found or "not found", verdict))
+    result = {"id": run_id, "vendor": args.vendor, "pool": pool, "model": args.model, "effort": args.effort, "status": status,
               "exit_code": code, "secs": secs, "actual_model": found, "model_match": matches if found or status in ("ok", "model_mismatch") else None,
               "read_only": args.read_only, "run_dir": run_dir}
     result["git_check"] = git_check
@@ -1075,11 +1137,11 @@ def main(argv):
     if status == "exhausted":
         evidence, epoch = hit
         until = datetime.fromtimestamp(epoch, timezone.utc) if epoch else start + timedelta(minutes=int(vcfg.get("cooldown_minutes", 60)))
-        update_exhausted(state, args.vendor, {"since": iso(start), "until": iso(until), "evidence": evidence, "source": "run.py " + run_id})
-        lines.append("EXHAUSTED: %s until %s (%s)" % (args.vendor, iso(until), evidence))
+        update_exhausted(state, pool, {"since": iso(start), "until": iso(until), "evidence": evidence, "source": "run.py " + run_id})
+        lines.append("EXHAUSTED: %s until %s (%s)" % (pool, iso(until), evidence))
         result["until"] = iso(until)
     elif status == "ok":
-        update_exhausted(state, args.vendor, None)
+        update_exhausted(state, pool, None)
     write_text(os.path.join(run_dir, "result.json"), json.dumps(result, indent=2) + "\n")
     if start_error:
         lines.append("ERROR: could not start the CLI (%s)" % start_error)

@@ -57,7 +57,7 @@ tagteam addresses these with a few mechanisms and keeps the rest as plain text a
 | Does | Does not (by decision) |
 |---|---|
 | Installs one rule file, one hook, two skills, worker definitions and the scripts into a project, and updates them without touching project policy or machine-local files | No daemon, server, GUI or message relay between sessions (each host's own follow-up tools are used) |
-| Chooses model and effort per role, substitutes another vendor when one is exhausted, keeps review independent of the author's vendor | No automatic change to `models.json`; a person or the orchestrator applies a proposal |
+| Chooses model and effort per role, substitutes another vendor (or an agy-served stand-in) when a quota is exhausted, keeps review independent of the author's maker | No automatic change to `models.json`; a person or the orchestrator applies a proposal |
 | Runs a worker through another vendor's CLI and verifies the model that answered | No cost accounting; `grading.caps` are relative ceilings used to order candidates, not budgets |
 | Proposes model-list and benchmark updates on a weekly schedule | No sandbox or security boundary against a hostile worker |
 | | No adapter for CLIs of other companies as workers (section 10), no uninstaller, no multi-user coordination beyond `Push mode` in AGENTS.md |
@@ -111,7 +111,7 @@ Notes:
   working directory, so the installer writes the guard's absolute path into `.codex/hooks.json` once and then keeps the
   file. Codex ties its trust to that path and to the hook definition, so the file is not rewritten on update (what to do
   after a move: manual section 1.2).
-- Review independence rests on the router (`--author-vendor`) and the orchestrator's duty to use it. There is no hook
+- Review independence (by maker) rests on the router (`--author-vendor`) and the orchestrator's duty to use it. There is no hook
   for it.
 
 ### 5.1 What is stopped on each host
@@ -243,9 +243,12 @@ give another grade.
 
 ### 7.3 Exhaustion
 
-A usage-limit message from a run, or a manual mark, writes the vendor and an `until` time to `exhausted.json` (manual
-section 5.3); the router takes the same grade from the next vendor. If no other vendor can review, the review is
-reported as incomplete (router exit 3) instead of relaxing independence.
+A usage-limit message from a run, or a manual mark, writes the quota (pool) and an `until` time to `exhausted.json` (manual
+section 5.3). agy has two quotas, Google's models (`google`) and the other companies' models it serves (`google-partner`),
+so the pool, not the vendor, is the unit. The router takes the same grade from a stand-in model (an `@agy` Claude, chosen
+only when the quota the slot wants is used up) or from the next vendor. Review independence is by maker, so a stand-in
+never reviews its own maker's work. If no other maker can review, the review is reported as incomplete (router exit 3)
+instead of relaxing independence.
 
 ## 8. Model-compensation rules
 

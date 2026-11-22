@@ -533,6 +533,14 @@ class RouteTest(RouteBase):
             if m["vendor"] == "google":
                 self.assertTrue(m.get("label"), mid)
             self.assertNotIn("bench", m, mid)
+            self.assertLessEqual(set(m), {"vendor", "grades", "label", "maker", "pool", "cli_id", "aa_slug", "fallback_only"}, mid)
+            self.assertIn(route.model_maker(m), data["vendors"], mid)
+            self.assertTrue(isinstance(route.model_pool(m), str) and route.model_pool(m), mid)
+            if "@" in mid:  # another maker's model through a vendor CLI: its CLI name and fallback-only status are explicit
+                self.assertTrue(m.get("cli_id") and "@" not in m["cli_id"], mid)
+                self.assertIs(m.get("fallback_only"), True, mid)
+                self.assertNotEqual(route.model_maker(m), m["vendor"], mid)
+                self.assertNotEqual(route.model_pool(m), m["vendor"], mid)
         for v, cfg in data["vendors"].items():
             self.assertTrue({"cli", "host", "model_arg", "cooldown_minutes"} <= set(cfg), v)
         self.assertEqual(set(data["hosts"]), set(route.HOSTS))
@@ -592,7 +600,8 @@ class LaunchTest(RouteBase):
         self.assertNotIn("also", self.route("read")[1]["launch"])
 
     def test_claude_desktop_other_vendor_is_run(self):
-        self.exhausted(claude={"since": PAST, "until": FUTURE, "evidence": "x", "source": "manual"})
+        self.exhausted(claude={"since": PAST, "until": FUTURE, "evidence": "x", "source": "manual"},
+                       **{"google-partner": {"since": PAST, "until": FUTURE, "evidence": "x", "source": "manual"}})
         r = self.assertPick(self.route("implement"), "gpt-6.1-sol", "medium", "run")
         self.assertNotIn("escalate", r["launch"])
 
@@ -656,7 +665,8 @@ class LaunchTest(RouteBase):
             launch = self.route(role, host="agy")[1]["launch"]
             self.assertEqual(launch["kind"], "run", role)
             self.assertNotIn("escalate", launch, role)
-        self.exhausted(google={"since": PAST, "until": FUTURE, "evidence": "x", "source": "manual"})
+        self.exhausted(google={"since": PAST, "until": FUTURE, "evidence": "x", "source": "manual"},
+                       **{"google-partner": {"since": PAST, "until": FUTURE, "evidence": "x", "source": "manual"}})
         r = self.route("implement", host="agy")[1]
         self.assertEqual((r["vendor"], r["launch"]["kind"]), ("openai", "run"))
 

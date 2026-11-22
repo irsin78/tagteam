@@ -15,7 +15,7 @@ are in the project you installed into. Commands are written `python3`; on Window
 | [2. Where things live](#2-where-things-live) | Which file holds what; which are committed; the state folder |
 | [3. Running a mission](#3-running-a-mission) | How a mission runs; when sessions open and what to do if the host refuses (3.1); worker definitions (3.2); Codex as orchestrator (3.3); agy as orchestrator (3.4) |
 | [4. Verification and review](#4-verification-and-review) | Who reviews; how a review is made read-only |
-| [5. The router](#5-the-router) | How a model is chosen (5.1); grades; pin or hide a model (5.2); mark a vendor exhausted (5.3) |
+| [5. The router](#5-the-router) | How a model is chosen (5.1); grades; pin or hide a model (5.2); mark a quota exhausted (5.3) |
 | [6. The role hook](#6-the-role-hook) | What the hook does; fix a wrong session role |
 | [7. The launcher](#7-the-launcher) | Run a worker on another vendor; read-only limits; git check; exit codes |
 | [8. Keeping the model list current](#8-keeping-the-model-list-current) | Collect, apply (8.1), schedule (8.2) and the machine cache (8.3) for model updates |
@@ -291,7 +291,7 @@ cannot keep the first role, so it denies git commit/push and delegation even for
 | `agy-models.jsonl` | hook (agy PreInvocation) | one line `{ts, cid, model}` each time an agy conversation's model changes: which half of the Orchestrator model did what |
 | `model-update.log` | the per-project job of an older install (macOS, Linux) | its output; the machine task logs to `~/.tagteam/weekly.log` (section 8.3), and `--unschedule` still deletes this file |
 | `backups/settings.json.<time>` | `install.py` | the original `.claude/settings.json`, copied before the installer changed it (section 1); never deleted |
-| `exhausted.json` | `run.py`, `route.py` | vendors temporarily unusable, with `until` |
+| `exhausted.json` | `run.py`, `route.py` | quotas (pools: `claude`, `openai`, `google`, `google-partner`) temporarily used up, with `until` |
 | `runs/<id>/` | `run.py` | one launcher run (section 7) |
 | `model-update.json` | `models_collect.py` | pending proposal (section 8) |
 | `model-update.applied` | `models_collect.py --mark-applied` | digest of the last handled proposal |
@@ -401,14 +401,15 @@ Details per operation and the limits: [hosts.md](../harness/skills/cycle/hosts.m
 
 ## 4. Verification and review
 
-**Every change gets a review by another vendor.** The one exception is the commit of a complete `tagteam-update` run
+**Every change gets a review by a model of another maker** (the company that built it; for a model run through another vendor's CLI, that company, not the CLI's vendor). The one exception is the commit of a complete `tagteam-update` run
 whose checks passed (AGENTS.md section 4, section 1.4 here); everything else is reviewed. AGENTS.md section 4 sets how: Tier 0 units are
 reviewed together in one batch, a Tier 1 unit once, a Tier 2 unit twice (review, fixes, second review). Operationally:
 
 - Fill in `Verification commands` in `## Project policy` with the exact commands and what counts as passing. Workers run
   the commands named in their brief.
-- A reviewer must be another vendor at the author's grade. Ask the router (section 5) with `--author-vendor` and
-  `--grade`. If it exits 3, report the review as incomplete rather than reviewing with the author's vendor.
+- A reviewer must be another maker at the author's grade. Ask the router (section 5) with `--author-vendor` (the author's
+  maker) and `--grade`. If it exits 3, report the review as incomplete rather than reviewing with the author's maker. A
+  Claude author is never reviewed by Claude, also not by a Claude model that agy serves (`@agy`, section 5).
 - **Read-only review.** The router adds `--read-only` only to a `run.py` launch, and the launcher passes it to the
   vendor CLI (limits: section 7). A native review session (a Claude or Codex subagent or session) gets no such setting from
   the router; its read-only behaviour comes from the brief and from the worker definition's tools, so state it in the brief.
@@ -430,11 +431,11 @@ orchestrator relays to you: `<role> -> <model> (<effort>, <vendor>, grade <g>) v
 |---|---|---|---|
 | `design` | A | no | judgement is the product |
 | `implement` | B | no | bounded units with a brief and checks |
-| `review` | A | yes | needs the author's grade, other vendor; `--author-vendor` required; pass `--grade` of the author's model and effort |
+| `review` | A | yes | needs the author's grade, other maker; `--author-vendor` (the author's maker) required; pass `--grade` of the author's model and effort |
 | `read` | C | yes | bulk reading; conclusions carry `path:line` evidence |
 | `translate` | B | no | vendors in the order google, openai, claude |
 
-With `--json` the result has `status`, `role`, `model`, `effort`, `vendor`, `grade`, `launch`, `ask_user`, `reason` and
+With `--json` the result has `status`, `role`, `model`, `effort`, `vendor`, `maker`, `pool`, `grade`, `launch`, `ask_user`, `reason` and
 `notice`. `launch.kind` is `session` (Claude Code desktop: `start_session` with that model and effort), `subagent` (a worker
 definition that fixes model and effort, or on Codex the `default` agent with `model` and `reasoning_effort`) or `run`
 (execute `launch.command`, a `run.py` call with `<PROMPT_FILE>` to fill in, run by the Python that runs the router; on Codex
@@ -455,6 +456,21 @@ that id (`not registered`): it can orchestrate, not be launched. On Claude hosts
 to `CLAUDE_EFFORT`; on other hosts it does not, since an agy started from Claude inherits that variable, and `ask_user` stays
 `null` when there is nothing to compare with.
 
+**Registry fields (`models.json`).** Each model has a `vendor` (the CLI that runs it), optionally:
+
+| Field | Meaning |
+|---|---|
+| `maker` | the company that built the model; default: the `vendor`. The unit of review independence |
+| `pool` | the quota the model draws on; default: the `vendor`. The key in `exhausted.json` |
+| `cli_id` | the name the vendor's CLI knows the model by; default: the id. `run.py` passes it, with the effort, through the vendor's `model_arg` |
+| `fallback_only` | `true`: the router never picks it in the normal way, only as a stand-in (below) |
+
+agy has **two quotas**: one for Google's models and one for other companies' models. The two Claude models agy serves from another
+company are registered as `claude-opus-5-5@agy` and `claude-sonnet-5-5@agy` (`vendor` google, `maker` claude, `pool`
+`google-partner`, `cli_id` the plain id, `fallback_only` true, grades from the same Artificial Analysis measurements as the
+Claude Code entries). agy is asked for `claude-opus-5-5-high` and the like. `gpt-oss-120b` stays unregistered: its index is
+too low (High 3.8) and agy offers it at medium only.
+
 **Grades.** A grade (S, A, B, C) belongs to a model **at an effort**: a table `grades` per model in `models.json`. The
 floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are in
 [design.md](design.md#7-grading-and-routing). The collector flags a model whose index and `grades` disagree (section 8).
@@ -464,9 +480,10 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
 1. **Vendor order.** From `hosts.<host>` in `models.json` (Claude host: claude, openai, google; Codex host: openai,
    claude, google), with plan `free` vendors moved last (a named plan, or google's inferred one: section 5.2). A role with its own `vendors` list in `models.json` (only
    `translate`: google, openai, claude) uses that list instead: it wins over the host order and is not reordered for `free`
-   plans. In both cases vendors with plan `none` are dropped, the author's vendor is dropped for a review, and vendors in
-   `exhausted.json` and vendors whose CLI is missing are skipped. The first vendor that has a candidate wins.
-2. **Candidates.** Every registered model and effort of that vendor whose `grades` entry equals the role's grade and that
+   plans. In both cases vendors with plan `none` are dropped, the author's maker is dropped for a review, and vendors whose
+   CLI is missing are skipped. A vendor whose own pool is in `exhausted.json` is skipped too, after the stand-in below.
+   The first vendor that has a candidate wins.
+2. **Candidates.** Every registered model (not `fallback_only`) and effort of that vendor whose `grades` entry equals the role's grade and that
    is usable: plan not `none`, not hidden by `models.<id>.enabled`, and listed in a fresh `available` list (no list, or a stale one, counts as offering
    everything: section 5.2). A model marked `"candidate": true` in `models.json` is never a candidate here; only a `roles.<role>.model`
    pin can select it.
@@ -479,7 +496,16 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
    launch becomes a `run.py` command. Without `--orchestrator-model` and `--orchestrator-effort` the notice adds "Check
    orchestrator cap."
 
-`reason` lists what happened: `default`, `substituted:<from>→<to>`, `plan_free_last:<vendor>`,
+**Stand-in models (`fallback_only`).** They are picked only when the quota a role slot wants is used up, never otherwise, so
+without an exhaustion the route table is as if they were not registered. When the pool `google` is exhausted and the role wants
+google (translation, work on the agy host), or the pool `claude` is exhausted and the role wants claude (design,
+implementation, reading on a Claude host), the router first looks for a same-grade `fallback_only` model (an `@agy` Claude)
+whose own pool is not exhausted and whose maker is allowed (never the author's maker in a review); the launch is then a
+`run.py` command through agy, not a session, and the notice says `claude exhausted until HH:MM UTC, substituted
+claude-opus-5-5@agy (google-partner quota)`. If there is none, or `google-partner` is exhausted as well, the router goes
+to the next vendor as before.
+
+`reason` lists what happened: `default`, `substituted:<from>→<to>` (a vendor, or the pool of a stand-in), `plan_free_last:<vendor>`,
 `author_vendor_excluded:<vendor>`, `exhausted_skip:<vendor>`, `cli_missing:<vendor>`, `native_model_cap`, `effort_clamped`,
 `user_override`, `agy_review_floor_A`, `override_below_floor`, `bench:local`, `bench:none`.
 
@@ -493,7 +519,8 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
 | `roles.<role>` | `model`, `effort`, `vendor`, `grade` to pin for a role |
 | `tasks.<name>` | `{about, base, vendor?, model?, effort?, grade?}`: a preference for one kind of work (for example web pages on one vendor), used by `route.py --task <name>` on top of the `base` role; an unusable preference falls back to the role and the result says `task_applied: false`. Session start lists each `about` |
 
-A pinned model is used when it is usable, its vendor is not exhausted, and it is not the author's vendor for a review. If
+A pinned model is used when it is usable, its pool is not exhausted, and it is not the author's maker for a review. A pin
+may name a `fallback_only` id such as `claude-sonnet-5-5@agy`: an explicit choice is allowed and needs no exhaustion. If
 the launch would go through `run.py` its vendor CLI must also be present; a native launch of the host's own vendor needs no
 check. Otherwise the router falls back to
 the normal choice and `reason` says why (`override_unusable`, `override_exhausted`, `override_same_vendor_as_author`,
@@ -510,13 +537,18 @@ check or `models_collect.py --write-available` refreshes it. Set `plans.google` 
 
 ### 5.3 Exhaustion
 
-A vendor with a usage limit is recorded in `exhausted.json`, and the router substitutes the same grade on another vendor.
+A quota with a usage limit is recorded in `exhausted.json`, and the router takes the same grade from a stand-in model (section
+5.1) or from another vendor. The keys are **pool names**: `claude`, `openai`, `google` (agy's Google models) and
+`google-partner` (the other companies' models agy serves). A `google` entry from an older file is the Google quota.
 
-    python3 .claude/tagteam/route.py --mark-exhausted VENDOR --evidence TEXT [--until ISO8601]
-    python3 .claude/tagteam/route.py --clear-exhausted VENDOR
+    python3 .claude/tagteam/route.py --mark-exhausted POOL --evidence TEXT [--until ISO8601]
+    python3 .claude/tagteam/route.py --clear-exhausted POOL
 
-Without `--until` the entry lasts `cooldown_minutes` of that vendor (60). The launcher records exhaustion itself when a run
-shows a usage-limit message, and clears the entry after a successful run.
+Without `--until` the entry lasts `cooldown_minutes` of the pool's vendor (60; a pool has no cooldown of its own). The
+launcher records exhaustion itself under the **pool of the model that ran** (`google-partner` for an `@agy` model; when agy's
+message does not say which quota it means, the pool of the model that was run) when a run shows a usage-limit message, and
+clears that pool's entry after a successful run. A message such as `You’ve hit your usage limit. ... try again at 4:14 AM.`
+(straight or curly apostrophe) sets `until` from that time, read as local time (a time that has passed today means tomorrow).
 
 ## 6. The role hook
 
@@ -548,7 +580,9 @@ Runs one worker through another vendor's CLI.
     python3 .claude/tagteam/run.py --status ID
     python3 .claude/tagteam/run.py --wait ID [--secs N]
 
-The router prints the first command ready to fill in; `--status` and `--wait` look a run up (below). Checks before the run (exit 2 on failure): the process is not itself a
+The router prints the first command ready to fill in; `--status` and `--wait` look a run up (below). A model that another vendor's CLI serves (`<name>@agy`) is registered under the CLI's vendor `google` and run as its `cli_id`;
+the `ACTUAL_MODEL` check reads agy's display name with the effort word in any letter case (`Gemini 4 Hydrogen (XHigh)` for
+`xhigh`). Checks before the run (exit 2 on failure): the process is not itself a
 launcher worker (`HARNESS_DELEGATE_RUN=1`), the model is registered for the vendor, the effort is one of its `grades`, a
 Google model has a `label`, the CLI exists, the prompt file is readable. The prompt gets the marker line `HARNESS ROLE:
 DELEGATE` on top if its first line is not already that, and the child runs with `HARNESS_DELEGATE_RUN=1`. The default
@@ -685,7 +719,7 @@ the name after `RUN` in the first line, and the lookup works from any folder of 
 | 0 | `ok` | |
 | 1 | `cli_failed` | CLI failed; an error that is not a usage-limit message (for example a short-lived authentication failure) is this, not exhaustion; run it again |
 | 2 | | usage, configuration or pre-run check |
-| 3 | `exhausted` | vendor exhausted |
+| 3 | `exhausted` | the model's quota (pool) exhausted |
 | 4 | `model_mismatch` | model differs or cannot be confirmed |
 | 5 | `timeout` | timeout |
 | 6 | `no_output` | the CLI exited cleanly with an empty answer (the report names any tools the CLI denied in headless mode); also `--status`/`--wait` on a run that ended without a report |
@@ -851,7 +885,7 @@ that folder and is made absolute once at the start of a run.
 | Router exit 3 or 4 | no vendor other than the author's can review at that grade (3), or no usable model (4) | start a review elsewhere or report it incomplete (3); check `plans`, `enabled`, `available`, `exhausted.json` (4); the result's `reason` names an inferred plan (`plan_inferred_free:google`) |
 | Notice says "Check orchestrator cap" | router was not told the orchestrator's model or effort | pass `--orchestrator-model` and `--orchestrator-effort` |
 | Launcher `model_mismatch` (4) | CLI used another model, or the model line was not found | read `runs/<id>/stderr.txt` and `cmd.json`; do not use the output as if it came from the requested model |
-| Launcher `exhausted` (3), `git_head_moved` (7), `wrote_files` (8) | usage limit; a worker committed; a read-only run wrote | wait for `until` or let the router use another vendor; read the `ERROR:` line and review the diff (section 7) |
+| Launcher `exhausted` (3), `git_head_moved` (7), `wrote_files` (8) | usage limit; a worker committed; a read-only run wrote | wait for `until` or let the router use a stand-in or another vendor; read the `ERROR:` line and review the diff (section 7) |
 | Launcher `control_plane_changed` (10) | a write run changed `.claude/`, `.codex/`, `.agents/`, `AGENTS.md`, `CLAUDE.md` or a hook file (the worker, or another process in the checkout) | read the `ERROR:` line; check `git status` and `git diff` of those paths, restore what is wrong (section 9.1), and do not edit them while a worker runs |
 | Launcher `refused` (12) | the worker answered `REFUSED: <reason>`: for example a hook or the sandbox blocked every tool, or the brief asked for something outside its limits | read the reason in the `ERROR:` line; fix the cause (a broken guard: `install.py --check`) or the brief, then run it again |
 | Launcher `hooks_not_run` (11) | a Codex worker's hooks wrote no role record: usually the project or its hooks are not trusted; or the hooks ran and could not write it (state folder) | run `codex` once in the project, trust it, then the hooks (`/hooks`, section 1.2); `install.py <project dir> --check --host codex --live`; review what the worker changed |

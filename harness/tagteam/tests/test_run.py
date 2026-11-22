@@ -478,6 +478,188 @@ class LauncherTests(RunTestBase):
         self.assertEqual(dict(run.PRIORITY)["wrote_files"], 8)
 
 
+PARTNER = {
+    "claude-opus-5-5@agy": {"vendor": "google", "maker": "claude", "pool": "google-partner", "cli_id": "claude-opus-5-5",
+                            "aa_slug": "claude-opus-5-5", "fallback_only": True, "label": "Claude Opus 5.5 (agy)",
+                            "grades": {"low": "B", "medium": "A", "high": "A"}},
+    "claude-sonnet-5-5@agy": {"vendor": "google", "maker": "claude", "pool": "google-partner", "cli_id": "claude-sonnet-5-5",
+                              "aa_slug": "claude-sonnet-5-5", "fallback_only": True, "label": "Claude Sonnet 5.5 (agy)",
+                              "grades": {"low": "C", "medium": "B", "high": "B"}},
+    "gemini-4-hydrogen": {"vendor": "google", "label": "Gemini 4 Hydrogen",
+                          "grades": {"low": "C", "medium": "B", "high": "A", "xhigh": "A"}},
+}
+
+
+class PartnerAndFixTests(RunTestBase):
+    """agy models of another maker (<id>@agy, own quota pool) and two launcher defects."""
+
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(FIXTURES, "models.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        cfg["models"].update(PARTNER)
+        self.cfg_dir = os.path.join(self.tmp.name, "cfg")
+        os.makedirs(self.cfg_dir)
+        with open(os.path.join(self.cfg_dir, "models.json"), "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        patcher = mock.patch.dict(os.environ, {"TAGTEAM_CONFIG_DIR": self.cfg_dir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def go_with(self, env, *a, **kw):
+        with mock.patch.dict(os.environ, env):
+            return self.go(*a, **kw)
+
+    def test_partner_model_runs_under_its_cli_id_and_matches(self):
+        code, out, _ = self.go_with({"FAKE_AGY_LABEL": "Claude Opus 5.5"}, "google", model="claude-opus-5-5@agy",
+                                    effort="high")
+        self.assertEqual(code, 0, out)
+        argv = self.recorded()["argv"]
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-5-5-high")
+        self.assertIn("(match)", out)
+        self.assertIn("status=ok", out)
+
+    def test_partner_model_whose_display_name_differs_is_a_mismatch(self):
+        code, out, _ = self.go_with({"FAKE_AGY_LABEL": "Claude Sonnet 5.5"}, "google", model="claude-opus-5-5@agy",
+                                    effort="high")
+        self.assertEqual(code, 4, out)
+        self.assertIn("MISMATCH, expected claude-opus-5-5@agy", out)
+        self.assertIn('agy should show "Claude Opus 5.5 (high)", effort in any case; it showed "Claude Sonnet 5.5 (High)"', out)
+
+    def test_partner_exhaustion_goes_to_its_pool_and_success_clears_only_that_pool(self):
+        env = {"FAKE_AGY_LABEL": "Claude Sonnet 5.5"}
+        code, out, _ = self.go_with(env, "google", "exhausted", model="claude-sonnet-5-5@agy", effort="low")
+        self.assertEqual(code, 3, out)
+        self.assertIn("EXHAUSTED: google-partner until ", out)
+        self.assertEqual(list(self.exhausted()["vendors"]), ["google-partner"])
+        self.assertEqual(last_result(self)["pool"], "google-partner")
+        self.go("google", "exhausted")  # a plain Google model: its own quota
+        self.assertEqual(sorted(self.exhausted()["vendors"]), ["google", "google-partner"])
+        self.assertEqual(self.go("google", "ok")[0], 0)  # clears google, leaves the partner quota
+        self.assertEqual(list(self.exhausted()["vendors"]), ["google-partner"])
+        self.assertEqual(self.go_with(env, "google", "ok", model="claude-sonnet-5-5@agy", effort="low")[0], 0)
+        self.assertEqual(self.exhausted()["vendors"], {})
+
+    def test_model_without_pool_uses_its_vendor(self):
+        self.assertEqual(run.pool_of({"vendor": "claude"}), "claude")
+        self.assertEqual(run.pool_of(PARTNER["claude-opus-5-5@agy"]), "google-partner")
+        self.assertEqual(run.cli_id_of("gpt-6.1-terra", {"vendor": "openai"}), "gpt-6.1-terra")
+        self.assertEqual(run.cli_id_of("claude-opus-5-5@agy", PARTNER["claude-opus-5-5@agy"]), "claude-opus-5-5")
+
+    def test_unregistered_partner_vendor_is_refused(self):
+        code, _, err = self.go("claude", model="claude-opus-5-5@agy", effort="high")
+        self.assertEqual(code, 2)
+        self.assertIn("not registered for vendor claude", err)
+
+    def test_agy_effort_label_is_compared_without_case(self):
+        env = {"FAKE_AGY_LABEL": "Gemini 4 Hydrogen", "FAKE_AGY_EFFORT": "XHigh"}  # the real display: Gemini 4 Hydrogen (XHigh)
+        code, out, _ = self.go_with(env, "google", model="gemini-4-hydrogen", effort="xhigh")
+        self.assertEqual(code, 0, out)
+        self.assertIn("ACTUAL_MODEL: Gemini 4 Hydrogen (XHigh) (match)", out)
+        for shown in ("Xhigh", "xhigh", "XHIGH"):
+            code, out, _ = self.go_with(dict(env, FAKE_AGY_EFFORT=shown), "google", model="gemini-4-hydrogen",
+                                        effort="xhigh")
+            self.assertEqual(code, 0, (shown, out))
+        code, out, _ = self.go_with(dict(env, FAKE_AGY_EFFORT="High"), "google", model="gemini-4-hydrogen", effort="xhigh")
+        self.assertEqual(code, 4, out)  # another effort is still a mismatch
+
+    def test_agy_label_matching(self):
+        match = run.agy_label_matches
+        self.assertTrue(match("Gemini 4 Hydrogen (XHigh)", "Gemini 4 Hydrogen", "xhigh"))
+        self.assertTrue(match("Gemini 3.8 Flash (Low)", "Gemini 3.8 Flash", "low"))
+        self.assertFalse(match("gemini 4 hydrogen (XHigh)", "Gemini 4 Hydrogen", "xhigh"))  # the name is case-sensitive
+        self.assertFalse(match("Gemini 4 Hydrogen (High)", "Gemini 4 Hydrogen", "xhigh"))
+        self.assertFalse(match("Gemini 4 Argon (XHigh)", "Gemini 4 Hydrogen", "xhigh"))
+        self.assertFalse(match("Gemini 4 Hydrogen", "Gemini 4 Hydrogen", "xhigh"))
+        self.assertEqual(run.agy_display("Claude Opus 5.5 (agy)"), "Claude Opus 5.5")
+        self.assertEqual(run.agy_display("Gemini 4 Hydrogen"), "Gemini 4 Hydrogen")
+
+    CODEX_LIMIT = ("You\u2019ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
+                   "https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 4:14 AM.")
+
+    def test_codex_limit_message_with_curly_apostrophe_is_exhausted(self):
+        self.assertTrue(run.OPENAI_EX.fullmatch("ERROR: " + self.CODEX_LIMIT))
+        self.assertTrue(run.OPENAI_EX.fullmatch("ERROR: " + self.CODEX_LIMIT.replace("\u2019", "'")))
+        self.assertTrue(run.CLAUDE_EX.fullmatch(self.CODEX_LIMIT))
+        now = datetime(2099, 1, 10, 3, 0).astimezone()  # before 4:14 AM: today
+        with mock.patch.object(run, "local_now", return_value=now):
+            code, out, _ = self.go("openai", "exhausted_codex")
+        self.assertEqual(code, 3, out)
+        want = datetime(2099, 1, 10, 4, 14).astimezone().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assertEqual(self.exhausted()["vendors"]["openai"]["until"], want)
+        self.assertIn("EXHAUSTED: openai until " + want, out)
+
+    def test_retry_time_already_past_means_tomorrow(self):
+        now = datetime(2099, 1, 10, 5, 0).astimezone()
+        got = run.retry_epoch("or try again at 4:14 AM.", now)
+        self.assertEqual(got, datetime(2099, 1, 11, 4, 14).astimezone().timestamp())
+
+    def test_retry_time_forms(self):
+        now = datetime(2099, 1, 10, 9, 0).astimezone()
+        for text, want in (("try again at 4:14 PM.", datetime(2099, 1, 10, 16, 14)),
+                           ("try again at 12:05 AM.", datetime(2099, 1, 11, 0, 5)),
+                           ("try again at 12:05 PM.", datetime(2099, 1, 10, 12, 5)),
+                           ("try again at Nov 5th, 2099 9:21 AM.", datetime(2099, 11, 5, 9, 21)),
+                           ("Try again at 11:59 pm", datetime(2099, 1, 10, 23, 59))):
+            self.assertEqual(run.retry_epoch(text, now), want.astimezone().timestamp(), text)
+        for text in ("try again later", "try again at 13:00 PM", "try again at 4:75 AM", "usage limit"):
+            self.assertIsNone(run.retry_epoch(text, now), text)
+
+    def test_a_failure_line_that_only_mentions_a_retry_time_is_not_exhausted(self):
+        line = "ERROR: connection reset by peer, try again at 4:14 AM."
+        self.assertFalse(run.OPENAI_EX.fullmatch(line))
+        self.assertIsNone(run.detect_exhausted("openai", 1, "", line + "\n", None))
+        self.assertIsNone(run.detect_exhausted("google", 1, "", line + "\n", None))
+        self.assertIsNone(run.detect_exhausted("claude", 1, "", "", {"is_error": True, "result": line}))
+
+    def new_york(self):
+        if not hasattr(time, "tzset"):
+            self.skipTest("time.tzset is not available")
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo("America/New_York")
+        except Exception:  # no zoneinfo or no tz data on this machine
+            self.skipTest("no time zone data")
+        old = os.environ.get("TZ")
+
+        def restore():
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+        self.addCleanup(restore)
+        os.environ["TZ"] = "America/New_York"
+        time.tzset()
+
+    def test_retry_time_in_the_repeated_hour_of_a_dst_change(self):
+        self.new_york()
+        # 2026-11-01: clocks go back at 2:00 EDT to 1:00 EST, so 1:15 AM happens twice
+        now = datetime(2026, 11, 1, 1, 40).astimezone()  # the first 1:40 (EDT)
+        self.assertEqual(now.utcoffset(), timedelta(hours=-4))
+        got = run.retry_epoch("or try again at 1:15 AM.", now)
+        self.assertEqual(got - now.timestamp(), 35 * 60)  # 1:15 EST, not the next day
+        later = datetime(2026, 11, 1, 1, 40, fold=1).astimezone()  # the second 1:40 (EST): both passes are over
+        self.assertEqual(run.retry_epoch("try again at 1:15 AM.", later) - later.timestamp(), 23 * 3600 + 35 * 60)
+
+    def test_retry_time_with_a_date_in_the_past_falls_back_to_the_cooldown(self):
+        now = datetime(2099, 1, 10, 9, 0).astimezone()
+        self.assertIsNone(run.retry_epoch("try again at Nov 5th, 2098 9:21 AM.", now))
+        self.assertIsNotNone(run.retry_epoch("try again at Jan 10th, 2099 9:21 AM.", now))
+        os.environ["FAKE_TRY_AGAIN"] = "Nov 5th, 2001 9:21 AM"
+        self.addCleanup(os.environ.pop, "FAKE_TRY_AGAIN", None)
+        code, out, _ = self.go("openai", "exhausted_codex")
+        self.assertEqual(code, 3, out)
+        item = self.exhausted()["vendors"]["openai"]
+        self.assertEqual((run.parse_iso(item["until"]) - run.parse_iso(item["since"])).total_seconds(), 3600)
+
+    def test_limit_without_a_time_keeps_the_cooldown(self):
+        code, _, _ = self.go("openai", "exhausted")
+        self.assertEqual(code, 3)
+        item = self.exhausted()["vendors"]["openai"]
+        self.assertEqual((run.parse_iso(item["until"]) - run.parse_iso(item["since"])).total_seconds(), 3600)
+
+
 @unittest.skipUnless(shutil.which("git"), "git not installed")
 class GitRepoBase(RunTestBase):
     def setUp(self):

@@ -102,7 +102,7 @@ Procedure: skill `cycle` (load it for any mission with more than one unit; files
 
 ## 4. Verification
 
-Every change is reviewed by another vendor; no tier skips review. The tier sets how
+Every change is reviewed by a model of another maker; no tier skips review. The tier sets how
 reviews are grouped and how deep they go (by consequence, not file count):
 - **Tier 0** - trivial, easily reverted: the affected checks; the review is batched,
   several Tier 0 units in one review at the next cut point.
@@ -112,7 +112,7 @@ reviews are grouped and how deep they go (by consequence, not file count):
   protection: regression checks and two deep reviews: one, the fixes, then a second
   review of the fixed result (another reviewer model when one is available).
 
-Reviewers use a different vendor than the author at the same grade; if none is
+Reviewers use a model of a different maker than the author at the same grade; if none is
 available, report "no independent review - incomplete" and do not mark the unit done.
 Findings go back to the worker that wrote the change. After its fixes the orchestrator
 checks the new diff against the findings (Tier 2: the second review does this). A

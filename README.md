@@ -1,7 +1,7 @@
 # tagteam
 
 A small harness for one developer who works with several coding-agent CLIs on the same project. One session, the
-*orchestrator*, splits the work. Worker sessions design, implement and read. A reviewer running on another vendor's model
+*orchestrator*, splits the work. Worker sessions design, implement and read. A reviewer running on a model of another maker
 checks the result. Only the orchestrator commits. Supported CLIs and their roles: [manual section
 1](docs/manual.md#1-install-and-update).
 

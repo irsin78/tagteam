@@ -111,6 +111,15 @@ agy is an orchestrator in its interactive mode only, with the built-in Orchestra
 harness is a `run.py` run (for vendor google, `agy -p`): one-shot, no follow-up. That is the harness's routing
 policy, not an agy limit. agy's own subagents are not harness roles (note 5).
 
+agy has two quotas: one for Google's models and one for the other companies' models it serves (Claude Opus and Sonnet,
+gpt-oss-120b). The harness records them as the pools `google` and `google-partner` in `exhausted.json`. The two Claude models
+are registered as stand-ins `claude-opus-5-5@agy` and `claude-sonnet-5-5@agy` (`maker` claude, `fallback_only`): the router
+picks one only when the pool `google` is exhausted for a google slot, or the vendor `claude` is exhausted for a Claude slot,
+and the launch is a `run.py` run through agy. A Claude author is never reviewed by `@agy` Claude (independence is by maker).
+An explicit role or task pin of an `@agy` id is allowed. gpt-oss-120b is not registered (its index is too low). Whether agy
+shows the `@agy` models as `Claude Opus 5.5 (High)` for the `ACTUAL_MODEL` check, and what agy says when
+`google-partner` runs out, are unconfirmed; record the first real answer here (manual section 5.1, 5.3).
+
 1. A headless `agy -p` parent waits at most three minutes for a background command, so it cannot collect a worker
    that runs for minutes; agy as the orchestrator is therefore interactive only. [host: agy 1.5.10 headless,
    Windows and Linux, measured 2026-11-18 / re-test after an agy update]

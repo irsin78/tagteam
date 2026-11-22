@@ -103,6 +103,10 @@ def openai(args, mode, model):
     header = {"wrong_model": "model: gpt-other-1\n", "no_model_field": ""}.get(mode, "model: %s\n" % model)
     if mode in ("exhausted", "exhausted_epoch"):
         emit(1, "", "ERROR: You've hit your usage limit.\n")
+    if mode == "exhausted_codex":  # the real codex wording: curly apostrophe, a local time to try again
+        emit(1, "", "ERROR: You\u2019ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
+                    "https://chatgpt.com/codex/settings/usage to purchase more credits or try again at %s.\n"
+             % os.environ.get("FAKE_TRY_AGAIN", "4:14 AM"))
     text = QUOTA_TEXT if mode == "quota_text_in_prompt" else answer()
     if last:
         with open(last, "w", encoding="utf-8") as fh:
@@ -114,11 +118,13 @@ def google(args, mode, model_arg):
     effort = opt(args, "--effort")
     base = model_arg[: -len(effort) - 1] if model_arg.endswith("-" + effort) else model_arg
     label = " ".join(w.capitalize() for w in base.split("-"))
+    label = os.environ.get("FAKE_AGY_LABEL") or label  # what agy shows, when the id alone does not give it
     if mode == "wrong_model":
         label = "Other Model"
     log = ["INFO model 'x' not in local config, defaulting"]
     if mode != "no_model_field":
-        log.append('INFO Propagating selected model override to backend: label="%s (%s)"' % (label, effort.capitalize()))
+        log.append('INFO Propagating selected model override to backend: label="%s (%s)"'
+                   % (label, os.environ.get("FAKE_AGY_EFFORT") or effort.capitalize()))
     with open(opt(args, "--log-file"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(log) + "\n")
     if mode in ("exhausted", "exhausted_epoch"):

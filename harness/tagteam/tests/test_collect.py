@@ -154,6 +154,44 @@ class CollectTest(unittest.TestCase):
         kinds = [(c["kind"], c.get("id") or c.get("model")) for c in mc.compare("google", listing, self.models, {})]
         self.assertIn(("new_model", self.ORCH), kinds)
 
+    PARTNER = {"vendor": "google", "maker": "claude", "pool": "google-partner", "cli_id": "claude-opus-5-5",
+               "aa_slug": "claude-opus-5-5", "fallback_only": True, "label": "Claude Opus 5.5 (agy)",
+               "grades": {"low": "B", "medium": "A", "high": "A"}}
+
+    def with_partner(self):
+        self.models["models"]["claude-opus-5-5@agy"] = dict(self.PARTNER)
+        for name in ("claude-opus-5-5", "claude-sonnet-5-5"):
+            (self.models.get("unregistered") or {}).get("google", {}).pop(name, None)
+
+    def google_changes(self, lines, had=()):
+        ids, info = self.agy_listing(*lines)
+        local = {"available": {"google": {"ids": list(had)}}}
+        return [(c["kind"], c.get("id") or c.get("model")) for c in
+                mc.compare("google", {"ids": ids, "models": info}, self.models, local)]
+
+    def test_agy_partner_listing_ids_match_the_registered_model(self):
+        self.with_partner()
+        lines = ["claude-opus-5-5-%s\tClaude Opus 5.5 (%s)" % (e, e.title()) for e in ("low", "medium", "high")]
+        had = ["claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high"]
+        kinds = self.google_changes(lines, had)
+        self.assertNotIn(("new_model", "claude-opus-5-5"), kinds)
+        self.assertEqual([k for k in kinds if "opus-5-5" in k[1]], [])  # all efforts offered, nothing new
+        # first sight of the efforts: reported under the registered id, with the ids agy lists
+        ids, info = self.agy_listing(*lines)
+        got = [c for c in mc.compare("google", {"ids": ids, "models": info}, self.models, {}) if "opus-5-5" in str(c)]
+        self.assertEqual([(c["kind"], c["model"], c["cli_ids"]) for c in got],
+                         [("now_available", "claude-opus-5-5@agy", sorted(had))])
+        # an effort the registration lists but agy does not offer
+        kinds = self.google_changes(lines[1:], had)
+        self.assertIn(("efforts_dropped", "claude-opus-5-5@agy"), kinds)
+        self.assertIn(("no_longer_available", "claude-opus-5-5@agy"), kinds)
+
+    def test_agy_partner_listing_without_registration_is_a_new_model(self):
+        lines = ["claude-opus-5-5-high\tClaude Opus 5.5 (High)"]
+        self.models["models"].pop("claude-opus-5-5@agy", None)
+        self.models.get("unregistered", {}).get("google", {}).pop("claude-opus-5-5", None)
+        self.assertIn(("new_model", "claude-opus-5-5"), self.google_changes(lines))
+
     def test_a_full_run_lists_the_orchestrator_as_available_but_proposes_nothing_for_it(self):
         path = os.path.join(self.tmp, "agy_orch.txt")
         with open(path, "w", encoding="utf-8") as f:
@@ -646,6 +684,28 @@ class BenchTest(CollectTest):
         self.assertEqual({(b["effort"], b["metric"], b["value"]) for b in out["gemini-4-carbon"]},
                          {("high", "index", 61.0), ("high", "cost_per_task", 3.0)})
         self.assertIn(("xhigh", "index", 50.0), {(b["effort"], b["metric"], b["value"]) for b in out["gemini-4-hydrogen"]})
+
+    def test_agy_partner_bench_comes_from_the_makers_aa_rows(self):
+        self.with_partner()
+        rows = [{"creator": "Anthropic", "base": "claude-opus-5-5", "effort": e, "name": "Claude Opus 5.5 (%s)" % e,
+                 "index": 50.0 + i, "cost": 2.0 + i, "release": "2020-01-01"} for i, e in enumerate(("low", "medium", "high"))]
+        now = mc.datetime(2099, 1, 10, tzinfo=mc.timezone.utc)
+        stored = {"claude-opus-5-5@agy": [self.entry("index", 40, "high")]}
+        got = mc.compare_bench("claude", rows, self.models, 5, now, stored)
+        mine = [c for c in got if c.get("model") == "claude-opus-5-5@agy"]
+        self.assertEqual([(c["kind"], c["vendor"], c["effort"], c["metric"]) for c in mine if c["kind"] == "bench_changed"],
+                         [("bench_changed", "google", "high", "index")])
+        self.assertTrue([c for c in mine if c["kind"] == "bench_added"])
+        self.assertNotIn("claude-opus-5-5", [c["id"] for c in got if c["kind"] == "new_model"])
+        # Google's own AA rows know nothing of it
+        google_rows = [dict(r, creator="Google") for r in rows]
+        self.assertFalse([c for c in mc.compare_bench("google", google_rows, self.models, 5, now, stored)
+                          if c.get("model") == "claude-opus-5-5@agy"])
+        out = mc.build_bench(self.models, rows, 5, "2099-01-10", {})["models"]
+        self.assertEqual({(b["effort"], b["metric"]) for b in out["claude-opus-5-5@agy"]},
+                         {(e, m) for e in ("low", "medium", "high") for m in ("index", "cost_per_task")})
+        self.assertEqual(mc.maker({"vendor": "google"}), "google")
+        self.assertEqual(mc.cli_id("x@agy", {"cli_id": "x"}), "x")
 
     def test_write_bench_keeps_other_sources_and_replaces_aa(self):
         self.write_bench()

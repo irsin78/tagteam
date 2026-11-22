@@ -68,6 +68,16 @@ ISO = "%Y-%m-%dT%H:%M:%SZ"
 DEFAULT_CLI = {"claude": "claude", "openai": "codex", "google": "agy"}
 
 
+def maker(m):
+    """The company that made the model: a model reached through another vendor's CLI names it."""
+    return m.get("maker") or m["vendor"]
+
+
+def cli_id(mid, m):
+    """The name the vendor CLI knows the model by (an id like claude-opus-5-5@agy has its own)."""
+    return m.get("cli_id") or mid
+
+
 def efforts_of(model):
     """Efforts a registered model offers: the keys of its grades table, in EFFORTS order."""
     keys = list(model.get("grades") or {})
@@ -264,24 +274,26 @@ def fetch_vendor(vendor, timeout, home):
 def compare(vendor, listing, models, local):
     changes = []
     registered = {k: m for k, m in models["models"].items() if m["vendor"] == vendor}
+    by_cli = {cli_id(k, m): k for k, m in registered.items()}  # what the CLI lists -> the registered id
     unreg = (models.get("unregistered") or {}).get(vendor) or {}
     orchestrators = models.get("orchestrators") or {}
     had = set(((local.get("available") or {}).get(vendor) or {}).get("ids") or [])
     ids, info = set(listing["ids"]), listing["models"]
     for base, i in info.items():
-        if base not in registered and base not in unreg and base not in orchestrators:
+        if base not in by_cli and base not in unreg and base not in orchestrators:
             changes.append({"kind": "new_model", "vendor": vendor, "id": base, "label": i["label"],
                             "efforts": sorted(i["efforts"], key=EFFORTS.index)})
     for mid, m in registered.items():
         arg = models["vendors"][vendor]["model_arg"]
-        cli_ids = sorted({arg.format(model=mid, effort=e) for e in efforts_of(m)})
+        cid = cli_id(mid, m)
+        cli_ids = sorted({arg.format(model=cid, effort=e) for e in efforts_of(m)})
         now = [c for c in cli_ids if c in ids and c not in had]
         gone = [c for c in cli_ids if c not in ids and c in had]
         for kind, found in (("now_available", now), ("no_longer_available", gone)):
             if found:
                 changes.append({"kind": kind, "vendor": vendor, "model": mid, "cli_ids": found})
-        if mid in info:
-            dropped = [e for e in efforts_of(m) if e not in info[mid]["efforts"]]
+        if cid in info:
+            dropped = [e for e in efforts_of(m) if e not in info[cid]["efforts"]]
             if dropped:
                 changes.append({"kind": "efforts_dropped", "vendor": vendor, "model": mid, "efforts": dropped})
         elif vendor == "openai" and not m.get("candidate") \
@@ -407,7 +419,7 @@ def compare_bench(vendor, entries, models, version, now, stored=None):
     by = {(e["base"], e["effort"]): e for e in mine}
     changes, known = [], set()
     for mid, m in models["models"].items():
-        if m["vendor"] != vendor:
+        if maker(m) != vendor:  # AA lists a model under its maker, also when another vendor's CLI serves it
             continue
         known.add(aa_slug(models, mid))
         if stored is None:
@@ -419,13 +431,13 @@ def compare_bench(vendor, entries, models, version, now, stored=None):
             have.add((b["effort"], b["metric"]))
             new = aa_value(by, models, mid, b["effort"], b["metric"])
             if new is not None and new != b.get("value"):
-                changes.append({"kind": "bench_changed", "vendor": vendor, "model": mid, "effort": b["effort"],
+                changes.append({"kind": "bench_changed", "vendor": m["vendor"], "model": mid, "effort": b["effort"],
                                 "metric": b["metric"], "old": b.get("value"), "new": new, "index_version": version})
         for effort in efforts_of(m):
             for metric in METRICS:
                 new = aa_value(by, models, mid, effort, metric)
                 if new is not None and (effort, metric) not in have:
-                    changes.append({"kind": "bench_added", "vendor": vendor, "model": mid, "effort": effort,
+                    changes.append({"kind": "bench_added", "vendor": m["vendor"], "model": mid, "effort": effort,
                                     "metric": metric, "new": new, "index_version": version})
     known |= {u.replace(".", "-") for u in (models.get("unregistered") or {}).get(vendor) or {}}
     cutoff = (now - timedelta(days=models.get("aa_new_model_days", 120))).strftime("%Y-%m-%d")
@@ -483,7 +495,7 @@ def build_bench(models, entries, version, today, old):
             continue
         by = {(e["base"], e["effort"]): e for e in entries if e["creator"] == creator}
         for mid, m in models["models"].items():
-            if m["vendor"] != vendor:
+            if maker(m) != vendor:
                 continue
             for effort in efforts_of(m):
                 for metric in METRICS:

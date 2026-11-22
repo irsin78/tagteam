@@ -9,6 +9,10 @@ An orchestrator in models.json "orchestrators" (agy's built-in model) is compare
 effort. Tasks (models.local.json "tasks") layer a per-task preference over the role's rules.
 
 Exit: 0 chosen, 2 usage or config error, 3 no independent reviewer (incomplete), 4 no model available.
+Maker vs pool: a model's `maker` (default: its vendor) is who built it, the independence unit of a review; its `pool`
+(default: its vendor) is the quota it draws on. exhausted.json keys are pool names. A model with `fallback_only` (agy's
+Claude models) is chosen only when the pool of the vendor the role wants is exhausted (see Router.pick, standin). The one exception, like `candidate`: a user or task pin of the model itself (models.local.json
+roles.<role>.model or tasks.<name>.model) is honored; its pool and maker checks still apply. A `vendor` pin never selects it.
 Config dir: next to this script (TAGTEAM_CONFIG_DIR in tests). Install root for the agent definitions: three
 folders above this script (TAGTEAM_ROOT in tests). State dir (exhausted.json): state.state_dir (TAGTEAM_STATE_DIR in tests).
 """
@@ -42,6 +46,26 @@ HOSTS = ["claude-desktop", "claude", "codex", "agy"]
 
 class ConfigError(Exception):
     pass
+
+
+def model_maker(model):
+    return model.get("maker") or model["vendor"]
+
+
+def model_pool(model):
+    return model.get("pool") or model["vendor"]
+
+
+def model_cli_id(mid, model):
+    return model.get("cli_id") or mid
+
+
+def pool_cooldowns(models):
+    """{pool name: cooldown minutes}: every vendor (its own pool) and every `pool` a model names."""
+    out = {v: cfg.get("cooldown_minutes", 60) for v, cfg in models["vendors"].items()}
+    for m in models["models"].values():
+        out.setdefault(model_pool(m), models["vendors"][m["vendor"]].get("cooldown_minutes", 60))
+    return out
 
 
 def now():
@@ -261,13 +285,15 @@ class Router:
 
     def pro_ids(self, vendor):
         """CLI ids that only a paid plan offers, from models.json: the vendor's built-in orchestrator ids and every effort of a
-        registered model that reaches PRO_GRADE at some effort. No model names are written here."""
+        registered model that reaches PRO_GRADE at some effort. A fallback_only model (another maker's, through this vendor's
+        CLI) is no evidence of this vendor's plan. No model names are written here."""
         ids = {o for o, info in (self.m.get("orchestrators") or {}).items() if info.get("vendor") == vendor}
         arg = self.m["vendors"][vendor]["model_arg"]
         for mid, model in self.m["models"].items():
             grades = model.get("grades") or {}
-            if model["vendor"] == vendor and any(GRADES.get(g, -1) >= GRADES[PRO_GRADE] for g in grades.values()):
-                ids |= {arg.format(model=mid, effort=e) for e in grades}
+            if model["vendor"] == vendor and not model.get("fallback_only") \
+                    and any(GRADES.get(g, -1) >= GRADES[PRO_GRADE] for g in grades.values()):
+                ids |= {arg.format(model=model_cli_id(mid, model), effort=e) for e in grades}
         return ids
 
     def available(self, vendor):
@@ -307,7 +333,8 @@ class Router:
         if enabled is not None:
             return bool(enabled)
         ids = self.available(v)[0]
-        return True if ids is None else self.m["vendors"][v]["model_arg"].format(model=mid, effort=effort) in ids
+        return True if ids is None else self.m["vendors"][v]["model_arg"].format(
+            model=model_cli_id(mid, model), effort=effort) in ids
 
     def model_effort(self, mid, spec, grade):
         """Effort for a user-pinned model: the user effort (clamped), else its lowest effort at the grade."""
@@ -379,8 +406,12 @@ class Router:
             order.append(v)
         return order
 
-    def pick(self, role, spec, vendor, grade, cap=(None, None), native=False):
+    def pick(self, role, spec, vendor, grade, cap=(None, None), native=False, standin=False, bar=None):
         """Best (model, effort, clamped) of this vendor whose grades[effort] is the role grade, or None.
+
+        Normal: the vendor's models that are not fallback_only. standin=True (the vendor's pool is exhausted): only
+        fallback_only models that run through this vendor's CLI or are made by it. Always skipped: a model whose pool is
+        exhausted and one made by `bar` (the author's maker, for independence).
 
         Tiers: 0 cost known and within caps[grade] -> highest index; 1 no cost, index known -> highest index;
         2 cost above the cap -> lowest cost; 3 nothing known -> defaults[vendor][grade], else the first candidate
@@ -389,7 +420,14 @@ class Router:
         want = spec.get("user_effort")
         cands = []
         for mid, m in self.m["models"].items():
-            if m["vendor"] != vendor or m.get("candidate"):
+            if m.get("candidate"):
+                continue
+            if standin:
+                if not m.get("fallback_only") or vendor not in (m["vendor"], model_maker(m)):
+                    continue
+            elif m["vendor"] != vendor or m.get("fallback_only"):
+                continue
+            if model_pool(m) in self.exh or (bar and model_maker(m) == bar):
                 continue
             for effort in model_efforts(m):
                 if m["grades"][effort] == grade and (not want or effort == want) and self.usable(mid, effort):
@@ -413,7 +451,8 @@ class Router:
         for tier in tiers:
             if tier:
                 return min(tier, key=lambda t: t[0])[1] + (False,)
-        wanted = ((self.m.get("defaults") or {}).get(vendor) or {}).get(grade) or []
+        owners = [vendor] + ([self.m["models"][c[0]]["vendor"] for c in cands] if standin else [])
+        wanted = [e for o in dict.fromkeys(owners) for e in (((self.m.get("defaults") or {}).get(o) or {}).get(grade) or [])]
         for entry in wanted:
             mid, _, effort = entry.rpartition(":")
             if (mid, effort) in cands:
@@ -557,9 +596,10 @@ class Router:
             return "unavailable:task"
         if self.plan(vendor) == "none":
             return "plan_none:" + vendor
-        if vendor in self.exh:
-            return "exhausted:" + vendor
-        if role == "review" and vendor == author:
+        quota, maker = (model_pool(self.m["models"][mid]), model_maker(self.m["models"][mid])) if mid else (vendor, vendor)
+        if quota in self.exh:
+            return "exhausted:" + quota
+        if role == "review" and maker == author:
             return "author_vendor"
         grade = spec["grade"]
         if mid:
@@ -569,7 +609,7 @@ class Router:
             if self.review_floor(role, host) and GRADES[self.m["models"][mid]["grades"][effort]] < GRADES["A"]:
                 return "agy_review_floor_A"
         else:
-            hit = self.pick(role, spec, vendor, grade, cap, False)
+            hit = self.pick(role, spec, vendor, grade, cap, False, False, author)
             if hit is None:
                 return "unavailable:" + vendor
             mid, effort = hit[0], hit[1]
@@ -594,9 +634,9 @@ class Router:
             pinned = (self.m["models"][um].get("grades") or {}).get(effort)
             if not self.usable(um, effort):
                 reason.append("override_unusable")
-            elif vendor in self.exh:
+            elif model_pool(self.m["models"][um]) in self.exh:
                 reason.append("override_exhausted")
-            elif role == "review" and vendor == author:
+            elif role == "review" and model_maker(self.m["models"][um]) == author:
                 reason.append("override_same_vendor_as_author")
             elif floor and GRADES[pinned] < GRADES["A"]:  # a pinned effort can land below the floor
                 reason.append("override_below_floor")
@@ -614,16 +654,29 @@ class Router:
             expected = order[0] if order else None
             for v in order:
                 cfg = self.m["vendors"][v]
-                if v in self.exh:
+                standin = v in self.exh
+                if standin:
                     reason.append("exhausted_skip:" + v)
                     until = parse_ts(self.exh[v]["until"]).strftime("%H:%M")
-                    notes.append("%s exhausted until %s UTC, substituted" % (v, until))
-                    continue
+                    # the vendor's pool is exhausted: first a same-grade fallback_only model (another pool), else the next vendor
+                    choice = self.pick(role, spec, v, grade, cap, False, True, author)
+                    if choice and self.cli_missing(role, choice[0], choice[1], host, cap):
+                        sub = self.m["models"][choice[0]]["vendor"]
+                        reason.append("cli_missing:" + sub)
+                        notes.append("%s CLI missing, substituted" % sub)
+                        choice = None
+                    if choice is None:
+                        notes.append("%s exhausted until %s UTC, substituted" % (v, until))
+                        continue
+                    notes.append("%s exhausted until %s UTC, substituted %s (%s quota)" % (
+                        v, until, choice[0], model_pool(self.m["models"][choice[0]])))
+                    reason.insert(0, "substituted:%s\u2192%s" % (expected, model_pool(self.m["models"][choice[0]])))
+                    break
                 if cfg["host"] != host_family(host) and not cli_present(v, cfg):
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
                     continue
-                choice = self.pick(role, spec, v, grade, cap, cfg["host"] == "claude" and host == "claude-desktop")
+                choice = self.pick(role, spec, v, grade, cap, cfg["host"] == "claude" and host == "claude-desktop", False, author)
                 if choice and self.cli_missing(role, choice[0], choice[1], host, cap):
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
@@ -669,18 +722,19 @@ class Router:
         elif ask is None:
             notice += " Pass --orchestrator-model/--orchestrator-effort so the router can compare."
         return {"status": "ok", "role": role, "host": host, "model": mid, "effort": effort, "vendor": vendor,
-                "grade": grade, "launch": launch, "ask_user": ask, "ask_reason": ask_reason,
-                "reason": reason, "notice": notice}, 0
+                "grade": grade, "maker": model_maker(model), "pool": model_pool(model), "launch": launch,
+                "ask_user": ask, "ask_reason": ask_reason, "reason": reason, "notice": notice}, 0
 
 
 def mark(args, models, path):
     v = args.mark_exhausted
-    if v not in models["vendors"]:
-        raise ConfigError("unknown vendor: %s" % v)
+    cooldowns = pool_cooldowns(models)
+    if v not in cooldowns:
+        raise ConfigError("unknown vendor or pool: %s (known: %s)" % (v, ", ".join(cooldowns)))
     if not args.evidence:
         raise ConfigError("--evidence is required with --mark-exhausted")
     t = now()
-    until = parse_ts(args.until) if args.until else t + timedelta(minutes=models["vendors"][v].get("cooldown_minutes", 60))
+    until = parse_ts(args.until) if args.until else t + timedelta(minutes=cooldowns[v])
     vendors = read_exhausted(path)
     vendors[v] = {"since": t.strftime(TS), "until": until.strftime(TS), "evidence": args.evidence[:200], "source": "manual"}
     write_exhausted(path, vendors)
@@ -692,15 +746,15 @@ def main(argv=None):
     ap.add_argument("--role", choices=ROLES)
     ap.add_argument("--task", metavar="NAME", help="a task from models.local.json; its base is the role")
     ap.add_argument("--host", choices=HOSTS)
-    ap.add_argument("--author-vendor")
+    ap.add_argument("--author-vendor", help="the author's maker (the company that built the model)")
     ap.add_argument("--author-model")
     ap.add_argument("--author-effort", choices=EFFORTS)
     ap.add_argument("--grade", choices=list(GRADES))
     ap.add_argument("--orchestrator-model")
     ap.add_argument("--orchestrator-effort", choices=EFFORTS)
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--mark-exhausted", metavar="VENDOR")
-    ap.add_argument("--clear-exhausted", metavar="VENDOR")
+    ap.add_argument("--mark-exhausted", metavar="POOL", help="a quota name: a vendor or a model pool such as google-partner")
+    ap.add_argument("--clear-exhausted", metavar="POOL")
     ap.add_argument("--evidence")
     ap.add_argument("--until")
     args = ap.parse_args(argv)
@@ -731,9 +785,9 @@ def main(argv=None):
             if args.author_model not in models["models"]:
                 raise ConfigError("unknown model: %s" % args.author_model)
             amodel = models["models"][args.author_model]
-            if author and author != amodel["vendor"]:
+            if author and author not in (model_maker(amodel), amodel["vendor"]):
                 raise ConfigError("--author-vendor %s does not match --author-model %s" % (author, args.author_model))
-            author = amodel["vendor"]
+            author = model_maker(amodel)  # independence is by maker: an agy-run Claude is a Claude author
             if not grade and args.author_effort:
                 if args.author_effort not in amodel["grades"]:
                     raise ConfigError("%s has no effort %s" % (args.author_model, args.author_effort))
