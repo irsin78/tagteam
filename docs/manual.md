@@ -335,8 +335,8 @@ them to the shipped values.
 | Claude | `designer` | `opus`, high | Read, Grep, Glob, Write; writes one design document |
 | Claude | `implementer` | `sonnet`, high | Read, Write, Edit, Bash, Grep, Glob |
 | Claude | `reader` | `haiku`, high | Read, Grep, Glob, Bash; read-only |
-| Codex | `designer` | `gpt-6.1-sol`, xhigh | `.codex/agents/designer.toml`; writes one design document |
-| Codex | `implementer` | `gpt-6.1-sol`, medium | `.codex/agents/implementer.toml` |
+| Codex | `designer` | `gpt-6.2-sol`, medium | `.codex/agents/designer.toml`; writes one design document |
+| Codex | `implementer` | `gpt-6.2-sol`, low | `.codex/agents/implementer.toml` |
 | Codex | `reader` | `gpt-6.1-terra`, low | `.codex/agents/reader.toml` |
 
 A review by another vendor goes through the launcher (section 7); the router says which to use (`launch.kind`, section 5).
@@ -492,6 +492,12 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
    grade: highest index; no cost but an index: highest index; cost above the cap: lowest cost; nothing known: the first
    usable entry of `defaults.<vendor>.<grade>`, else the first model in `models.json` at its lowest effort. Values come from
    `bench.local.json` at exactly that effort.
+   **Upgrade.** The pick can then move to a cell of a higher grade of the same vendor (same candidate rules) when its index is
+   not lower than the pick's, its cost is at most `grading.upgrade_cost_ratio` (committed: 1.5) times the pick's cost and within the
+   role grade's cap, and both cells have a known index and cost. Among several, the highest index wins, then the lowest cost,
+   then `models.json` order. No upgrade when you fix the effort (`roles.<role>.effort`) or when the pick has no index or cost; a
+   ratio of 0 or none switches it off. The result keeps the role's grade and its `reason` lists `upgrade:<model>:<effort>`. A review
+   is therefore "the author's grade or higher, another maker".
 4. **Orchestrator cap.** A native Claude session may not use a model listed earlier in `models.json` than the
    orchestrator's (earlier means stronger) or a higher effort. Candidates inside the cap are preferred; if none is, the
    launch becomes a `run.py` command. Without `--orchestrator-model` and `--orchestrator-effort` the notice adds "Check

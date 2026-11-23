@@ -112,7 +112,8 @@ reviews are grouped and how deep they go (by consequence, not file count):
   protection: regression checks and two deep reviews: one, the fixes, then a second
   review of the fixed result (another reviewer model when one is available).
 
-Reviewers use a model of a different maker than the author at the same grade; if none is
+Reviewers use a model of a different maker than the author at least at the author's grade (the router may take a
+higher-grade model of about the same cost); if none is
 available, report "no independent review - incomplete" and do not mark the unit done.
 Findings go back to the worker that wrote the change. After its fixes the orchestrator
 checks the new diff against the findings (Tier 2: the second review does this). A

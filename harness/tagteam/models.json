@@ -2,8 +2,8 @@
   "schema": 1,
   "updated": "2026-11-21",
   "aa_new_model_days": 120,
-  "_order": "Models are listed most capable first within a vendor: an earlier model is stronger than a later one of the same vendor (route.py uses this for the orchestrator cap and as the last tie-break). Grades are per (model, effort) and follow grading.floors applied to Artificial Analysis index values. A model may carry `min_plan` (free, pro or ultra; default free: the lowest plan of its vendor that offers it; route.py never picks a model whose min_plan is above the vendor's plan, named in models.local.json plans or, for google, inferred from the available list), `maker` (who built it, default its vendor: the unit of review independence), `pool` (the quota it draws on, default its vendor), `cli_id` (the name the vendor CLI knows, default the id) and `fallback_only` (chosen only when the pool of the vendor the role wants is exhausted: agy's Claude models, ids ending @agy; the one exception is a user pin of that model id in models.local.json roles or tasks, whose pool and maker checks still apply). Without bench.local.json the route takes the first usable entry of defaults[vendor][grade], else the first model in this order at its lowest effort of that grade.",
-  "grading": {"floors": {"S": 54, "A": 48, "B": 30}, "caps": {"S": 10, "A": 4, "B": 2, "C": 0.2}},
+  "_order": "Only the newest version of a model family is registered (an older one goes to `unregistered`, superseded). Models are listed most capable first within a vendor: an earlier model is stronger than a later one of the same vendor (route.py uses this for the orchestrator cap and as the last tie-break). Grades are per (model, effort) and follow grading.floors applied to Artificial Analysis index values. A model may carry `min_plan` (free, pro or ultra; default free: the lowest plan of its vendor that offers it; route.py never picks a model whose min_plan is above the vendor's plan, named in models.local.json plans or, for google, inferred from the available list), `maker` (who built it, default its vendor: the unit of review independence), `pool` (the quota it draws on, default its vendor), `cli_id` (the name the vendor CLI knows, default the id) and `fallback_only` (chosen only when the pool of the vendor the role wants is exhausted: agy's Claude models, ids ending @agy; the one exception is a user pin of that model id in models.local.json roles or tasks, whose pool and maker checks still apply). After the grade is chosen, grading.upgrade_cost_ratio lets the route take a higher-grade cell of the same vendor when its index is not lower and its cost is at most that ratio times the chosen cell's cost and within the role's cap (needs bench.local.json; the result keeps the role's grade). Without bench.local.json the route takes the first usable entry of defaults[vendor][grade], else the first model in this order at its lowest effort of that grade.",
+  "grading": {"floors": {"S": 54, "A": 48, "B": 30}, "caps": {"S": 10, "A": 4, "B": 2, "C": 0.2}, "upgrade_cost_ratio": 1.5},
   "vendors": {
     "claude": {"cli": "claude", "host": "claude", "model_arg": "{model}", "aa_creator": "Anthropic", "cooldown_minutes": 60},
     "openai": {"cli": "codex", "host": "codex", "model_arg": "{model}", "aa_creator": "OpenAI", "cooldown_minutes": 60},
@@ -30,13 +30,13 @@
       "C": ["claude-haiku-5-5:high"]
     },
     "openai": {
-      "S": ["gpt-6.2-sol:high", "gpt-6.2-astra:medium", "gpt-6-astra:high"],
-      "A": ["gpt-6.2-sol:medium", "gpt-6.1-sol:xhigh", "gpt-6.1-sol:high"],
-      "B": ["gpt-6.1-sol:medium", "gpt-6.1-terra:high"],
+      "S": ["gpt-6.2-sol:high", "gpt-6.2-astra:medium"],
+      "A": ["gpt-6.2-sol:medium"],
+      "B": ["gpt-6.2-sol:low", "gpt-6.1-terra:high"],
       "C": ["gpt-6.1-terra:low", "gpt-6-luna:medium"]
     },
     "google": {
-      "S": ["gemini-4-carbon:high"],
+      "S": ["gemini-4-neon:medium", "gemini-4-carbon:high"],
       "A": ["gemini-4-hydrogen:xhigh", "gemini-4-hydrogen:high", "gemini-4-argon:high", "claude-opus-5-5@agy:medium"],
       "B": ["gemini-4-hydrogen:medium", "gemini-4-argon:medium", "gemini-3.8-flash:medium", "claude-sonnet-5-5@agy:medium"],
       "C": ["gemini-3.8-flash:low", "gemini-4-hydrogen:low", "claude-sonnet-5-5@agy:low"]
@@ -48,10 +48,12 @@
       "claude-opus-5": "superseded by a registered newer version 2026-11-17"
     },
     "openai": {
-      "gpt-6-sol": "no benchmark in hand 2026-11-17",
-      "gpt-5.6-sol": "no benchmark in hand 2026-11-17",
-      "gpt-5.6-terra": "no benchmark in hand 2026-11-17",
-      "gpt-5.6-luna": "no benchmark in hand 2026-11-17"
+      "gpt-6-astra": "superseded by a registered newer version 2026-11-23",
+      "gpt-6.1-sol": "superseded by a registered newer version 2026-11-23",
+      "gpt-6-sol": "superseded by a registered newer version 2026-11-23",
+      "gpt-5.6-sol": "superseded by a registered newer version 2026-11-23",
+      "gpt-5.6-terra": "superseded by a registered newer version 2026-11-23",
+      "gpt-5.6-luna": "superseded by a registered newer version 2026-11-23"
     },
     "google": {
       "claude-sonnet-4-6": "other vendor's model through agy breaks vendor independence",
@@ -87,12 +89,6 @@
     },
     "gpt-6.2-sol": {
       "vendor": "openai", "grades": {"low": "B", "medium": "A", "high": "S", "xhigh": "S", "max": "S"}
-    },
-    "gpt-6-astra": {
-      "vendor": "openai", "grades": {"low": "B", "medium": "A", "high": "S", "xhigh": "S", "max": "S"}
-    },
-    "gpt-6.1-sol": {
-      "vendor": "openai", "grades": {"low": "B", "medium": "B", "high": "A", "xhigh": "A"}
     },
     "gpt-6.1-terra": {
       "vendor": "openai", "grades": {"low": "C", "medium": "B", "high": "B", "xhigh": "B"}

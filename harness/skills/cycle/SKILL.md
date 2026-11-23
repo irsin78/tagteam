@@ -123,7 +123,7 @@ latest message, not in edits to earlier context.
 
 ## 6. Verification and cross-vendor review (AGENTS.md section 4)
 
-- Every unit gets a review by another vendor at the same grade (router `--role review`);
+- Every unit gets a review by another vendor at least at the author's grade (router `--role review`);
   the tier sets when and how deep: Tier 1 when the unit returns, Tier 2 twice (review,
   fixes, second review) before anything builds on it, Tier 0 batched at a cut point.
 - Cut points: before the next unit builds on a result, and before merging a branch. At

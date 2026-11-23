@@ -38,8 +38,8 @@ claude-desktop/review/claude/-/- gpt-6.2-sol:medium:run
 claude-desktop/review/claude/-/cap gpt-6.2-sol:medium:run
 claude-desktop/review/claude/S/- gpt-6.2-sol:high:run
 claude-desktop/review/claude/S/cap gpt-6.2-sol:high:run
-claude-desktop/review/claude/B/- gpt-6.1-sol:medium:run
-claude-desktop/review/claude/B/cap gpt-6.1-sol:medium:run
+claude-desktop/review/claude/B/- gpt-6.2-sol:low:run
+claude-desktop/review/claude/B/cap gpt-6.2-sol:low:run
 claude-desktop/review/openai/-/- claude-fable-5-2:low:session
 claude-desktop/review/openai/-/cap claude-fable-5-2:low:run
 claude-desktop/review/openai/S/- claude-fable-5-2:high:session
@@ -80,8 +80,8 @@ claude/review/claude/-/- gpt-6.2-sol:medium:run
 claude/review/claude/-/cap gpt-6.2-sol:medium:run
 claude/review/claude/S/- gpt-6.2-sol:high:run
 claude/review/claude/S/cap gpt-6.2-sol:high:run
-claude/review/claude/B/- gpt-6.1-sol:medium:run
-claude/review/claude/B/cap gpt-6.1-sol:medium:run
+claude/review/claude/B/- gpt-6.2-sol:low:run
+claude/review/claude/B/cap gpt-6.2-sol:low:run
 claude/review/openai/-/- claude-fable-5-2:low:run
 claude/review/openai/-/cap claude-fable-5-2:low:run
 claude/review/openai/S/- claude-fable-5-2:high:run
@@ -110,20 +110,20 @@ codex/design/-/-/- gpt-6.2-sol:medium:subagent
 codex/design/-/-/cap gpt-6.2-sol:medium:subagent
 codex/design/-/S/- gpt-6.2-sol:high:subagent
 codex/design/-/S/cap gpt-6.2-sol:high:subagent
-codex/design/-/B/- gpt-6.1-sol:medium:subagent
-codex/design/-/B/cap gpt-6.1-sol:medium:subagent
-codex/implement/-/-/- gpt-6.1-sol:medium:subagent
-codex/implement/-/-/cap gpt-6.1-sol:medium:subagent
+codex/design/-/B/- gpt-6.2-sol:low:subagent
+codex/design/-/B/cap gpt-6.2-sol:low:subagent
+codex/implement/-/-/- gpt-6.2-sol:low:subagent
+codex/implement/-/-/cap gpt-6.2-sol:low:subagent
 codex/implement/-/S/- gpt-6.2-sol:high:subagent
 codex/implement/-/S/cap gpt-6.2-sol:high:subagent
-codex/implement/-/B/- gpt-6.1-sol:medium:subagent
-codex/implement/-/B/cap gpt-6.1-sol:medium:subagent
+codex/implement/-/B/- gpt-6.2-sol:low:subagent
+codex/implement/-/B/cap gpt-6.2-sol:low:subagent
 codex/review/claude/-/- gpt-6.2-sol:medium:run
 codex/review/claude/-/cap gpt-6.2-sol:medium:run
 codex/review/claude/S/- gpt-6.2-sol:high:run
 codex/review/claude/S/cap gpt-6.2-sol:high:run
-codex/review/claude/B/- gpt-6.1-sol:medium:run
-codex/review/claude/B/cap gpt-6.1-sol:medium:run
+codex/review/claude/B/- gpt-6.2-sol:low:run
+codex/review/claude/B/cap gpt-6.2-sol:low:run
 codex/review/openai/-/- claude-fable-5-2:low:run
 codex/review/openai/-/cap claude-fable-5-2:low:run
 codex/review/openai/S/- claude-fable-5-2:high:run
@@ -134,14 +134,14 @@ codex/review/google/-/- gpt-6.2-sol:medium:run
 codex/review/google/-/cap gpt-6.2-sol:medium:run
 codex/review/google/S/- gpt-6.2-sol:high:run
 codex/review/google/S/cap gpt-6.2-sol:high:run
-codex/review/google/B/- gpt-6.1-sol:medium:run
-codex/review/google/B/cap gpt-6.1-sol:medium:run
+codex/review/google/B/- gpt-6.2-sol:low:run
+codex/review/google/B/cap gpt-6.2-sol:low:run
 codex/read/-/-/- gpt-6.1-terra:low:subagent
 codex/read/-/-/cap gpt-6.1-terra:low:subagent
 codex/read/-/S/- gpt-6.2-sol:high:subagent
 codex/read/-/S/cap gpt-6.2-sol:high:subagent
-codex/read/-/B/- gpt-6.1-sol:medium:subagent
-codex/read/-/B/cap gpt-6.1-sol:medium:subagent
+codex/read/-/B/- gpt-6.2-sol:low:subagent
+codex/read/-/B/cap gpt-6.2-sol:low:subagent
 codex/translate/-/-/- gemini-4-hydrogen:medium:run
 codex/translate/-/-/cap gemini-4-hydrogen:medium:run
 codex/translate/-/S/- gpt-6.2-sol:high:subagent
@@ -351,8 +351,14 @@ class PlanNamedTest(PlanBase):
             with self.subTest(named):
                 self.local({"plans": {"google": named}})
                 code, r = self.go("--role", "design", "--grade", "S", "--json", "--host", "agy")
-                self.assertEqual((code, r["model"], r["effort"]), (0, CARBON, "high"))
+                # no bench: defaults.google.S puts gemini-4-neon:medium before Carbon
+                self.assertEqual((code, r["model"], r["effort"]), (0, "gemini-4-neon", "medium"))
                 self.assertNotIn("plan_free_last:google", r["reason"])
+                self.bench({"gemini-4-neon": [self.b("index", 55, "medium"), self.b("cost_per_task", 2.0, "medium")],
+                            CARBON: [self.b("index", 60, "high"), self.b("cost_per_task", 3.0, "high")]})
+                code, r = self.go("--role", "design", "--grade", "S", "--json", "--host", "agy")
+                self.assertEqual((code, r["model"], r["effort"]), (0, CARBON, "high"))
+                os.remove(os.path.join(self.cfg, "bench.local.json"))
         for named in ("pro", "free"):
             with self.subTest(named):
                 self.local({"plans": {"google": named}})
@@ -509,6 +515,10 @@ class TableUnchangedTest(PlanBase):
     def ultra(self):
         return dict(self.pro(), **self.parse(ULTRA_DIFF_TEXT))
 
+    def ultra_named(self):
+        """Named ultra with no list: neon is offered too and heads defaults.google.S, so Carbon is chosen only by the bench."""
+        return {k: v.replace("gemini-4-carbon:high", "gemini-4-neon:medium") for k, v in self.ultra().items()}
+
     def test_frozen_tables_are_sound(self):
         self.assertEqual(len(self.pro()), 168)
         self.assertNotIn(CARBON, "".join(self.pro().values()))
@@ -525,7 +535,7 @@ class TableUnchangedTest(PlanBase):
                    dict(self.pro(), **self.parse(OPENAI_EXHAUSTED_DIFF)), exhausted=("openai",))
 
     def test_named_max_without_a_list_offers_carbon(self):
-        self.check({"plans": {"google": "max"}}, self.ultra())
+        self.check({"plans": {"google": "max"}}, self.ultra_named())
 
     def test_fresh_list_with_carbon_is_ultra(self):
         self.check({"available": {"google": {"checked": today(), "ids": PRO_IDS + CARBON_IDS}}}, self.ultra())

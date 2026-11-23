@@ -446,19 +446,8 @@ class Router:
             order.append(v)
         return order
 
-    def pick(self, role, spec, vendor, grade, cap=(None, None), native=False, standin=False, bar=None):
-        """Best (model, effort, clamped) of this vendor whose grades[effort] is the role grade, or None.
-
-        Normal: the vendor's models that are not fallback_only. standin=True (the vendor's pool is exhausted): only
-        fallback_only models that run through this vendor's CLI or are made by it. Always skipped: a model whose pool is
-        exhausted and one made by `bar` (the author's maker, for independence).
-
-        Tiers: 0 cost known and within caps[grade] -> highest index; 1 no cost, index known -> highest index;
-        2 cost above the cap -> lowest cost; 3 nothing known -> defaults[vendor][grade], else the first candidate
-        (models.json order, lowest effort). A later tier is used only when the earlier ones are empty.
-        """
-        want = spec.get("user_effort")
-        cands = []
+    def cells(self, vendor, standin, bar):
+        """Every usable (model, effort, grade) this vendor may offer: the candidate filters of pick and upgrade, in one place."""
         for mid, m in self.m["models"].items():
             if m.get("candidate"):
                 continue
@@ -470,8 +459,65 @@ class Router:
             if model_pool(m) in self.exh or (bar and model_maker(m) == bar):
                 continue
             for effort in model_efforts(m):
-                if m["grades"][effort] == grade and (not want or effort == want) and self.usable(mid, effort):
-                    cands.append((mid, effort))
+                if self.usable(mid, effort):
+                    yield mid, effort, m["grades"][effort]
+
+    def upgrade(self, base, grade, vendor, cap, native, standin, bar):
+        """A (model, effort, False) of a strictly higher grade than `grade` that costs little more than `base`, else None.
+
+        Needs grading.upgrade_cost_ratio > 0 and a known index and cost for base. The cell must be a candidate of the same
+        filters as pick (and, native, within the orchestrator cap: its effort also when its model is unknown), have an index >= base's, a cost <= base's cost * ratio and
+        <= caps[grade], both known. Best: highest index, then lowest cost, then models.json order. The grade stays the role's."""
+        grading = self.m.get("grading") or {}
+        ratio = num(grading.get("upgrade_cost_ratio"))
+        base_index, base_cost = self.bench(base[0], "index", base[1]), self.bench(base[0], "cost_per_task", base[1])
+        if not ratio or ratio <= 0 or base_index is None or base_cost is None:
+            return None
+        limit = (grading.get("caps") or {}).get(grade)
+        best = None
+        for mid, effort, g in self.cells(vendor, standin, bar):
+            if GRADES[g] <= GRADES[grade] or (native and any(cap) and self.over_cap(mid, effort, *cap)):
+                continue
+            index, cost = self.bench(mid, "index", effort), self.bench(mid, "cost_per_task", effort)
+            if index is None or cost is None or index < base_index or cost > base_cost * ratio \
+                    or (limit is not None and cost > limit):
+                continue
+            key = (-index, cost, self.order[mid])
+            if best is None or key < best[0]:
+                best = (key, (mid, effort, False))
+        return best[1] if best else None
+
+    def pick(self, role, spec, vendor, grade, cap=(None, None), native=False, standin=False, bar=None):
+        """(model, effort, clamped) of this vendor for the role grade, or None: pick_grade, then upgrade (not when the user
+        fixed the effort). An upgraded cell has a higher grade than `grade`; _route reports it as `upgrade:<model>:<effort>`."""
+        base = self.pick_grade(role, spec, vendor, grade, cap, native, standin, bar)
+        if base and not spec.get("user_effort"):
+            return self.upgrade(base, grade, vendor, cap, native, standin, bar) or base
+        return base
+
+    def launchable(self, role, spec, vendor, grade, cap, native, standin, bar, host):
+        """pick, but an upgraded cell whose CLI is missing gives way to the exact-grade cell when that one can launch."""
+        choice = self.pick(role, spec, vendor, grade, cap, native, standin, bar)
+        if choice and self.cli_missing(role, choice[0], choice[1], host, cap):
+            base = self.pick_grade(role, spec, vendor, grade, cap, native, standin, bar)
+            if base and base[:2] != choice[:2] and not self.cli_missing(role, base[0], base[1], host, cap):
+                return base
+        return choice
+
+    def pick_grade(self, role, spec, vendor, grade, cap=(None, None), native=False, standin=False, bar=None):
+        """Best (model, effort, clamped) of this vendor whose grades[effort] is the role grade, or None.
+
+        Normal: the vendor's models that are not fallback_only. standin=True (the vendor's pool is exhausted): only
+        fallback_only models that run through this vendor's CLI or are made by it. Always skipped: a model whose pool is
+        exhausted and one made by `bar` (the author's maker, for independence).
+
+        Tiers: 0 cost known and within caps[grade] -> highest index; 1 no cost, index known -> highest index;
+        2 cost above the cap -> lowest cost; 3 nothing known -> defaults[vendor][grade], else the first candidate
+        (models.json order, lowest effort). A later tier is used only when the earlier ones are empty.
+        """
+        want = spec.get("user_effort")
+        cands = [(mid, effort) for mid, effort, g in self.cells(vendor, standin, bar)
+                 if g == grade and (not want or effort == want)]
         if native and cap[0] in self.m["models"]:
             within = [c for c in cands if not self.over_cap(c[0], c[1], *cap)]
             cands = within or cands
@@ -701,7 +747,7 @@ class Router:
                     reason.append("exhausted_skip:" + v)
                     until = parse_ts(self.exh[v]["until"]).strftime("%H:%M")
                     # the vendor's pool is exhausted: first a same-grade fallback_only model (another pool), else the next vendor
-                    choice = self.pick(role, spec, v, grade, cap, False, True, author)
+                    choice = self.launchable(role, spec, v, grade, cap, False, True, author, host)
                     if choice and self.cli_missing(role, choice[0], choice[1], host, cap):
                         sub = self.m["models"][choice[0]]["vendor"]
                         reason.append("cli_missing:" + sub)
@@ -718,7 +764,8 @@ class Router:
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
                     continue
-                choice = self.pick(role, spec, v, grade, cap, cfg["host"] == "claude" and host == "claude-desktop", False, author)
+                choice = self.launchable(role, spec, v, grade, cap, cfg["host"] == "claude" and host == "claude-desktop", False,
+                                         author, host)
                 if choice and self.cli_missing(role, choice[0], choice[1], host, cap):
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
@@ -741,6 +788,9 @@ class Router:
         if clamped:
             reason.append("effort_clamped")
         grade = model["grades"][effort]
+        if "user_override" not in reason and GRADES[grade] > GRADES[spec["grade"]]:
+            reason.append("upgrade:%s:%s" % (mid, effort))  # the result keeps the role's grade
+            grade = spec["grade"]
         known = any(self.bench(mid, metric, effort) is not None for metric in ("index", "cost_per_task"))
         reason.append("bench:local" if known else "bench:none")
         launch = self.make_launch(role, mid, effort, host, cap, reason)

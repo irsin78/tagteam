@@ -217,7 +217,7 @@ Artificial Analysis index at that effort:
 | B | 30 | 2 |
 | C | below B | 0.2 |
 
-The floors and ceilings are `grading.floors` and `grading.caps`, our own settings, not vendor figures. The benchmark values
+The floors and ceilings are `grading.floors` and `grading.caps`, our own settings, not vendor figures. `grading.upgrade_cost_ratio` is a third one: after the pick for a grade, the router may take a strictly higher-grade cell of the same vendor whose index is not lower, whose cost is at most that ratio times the pick's and within the grade's cap, and whose index and cost are both known (highest index, then lowest cost, then registry order). It does not apply when the user fixes the effort. The grade a role asks for is therefore a floor, not an exact match. The benchmark values
 themselves live only in the machine-local `bench.local.json` and are not committed. `grades` are the committed result of
 applying the floors, so routing works without benchmark data; the collector reports `grade_changed` when fresh values would
 give another grade.
