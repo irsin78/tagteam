@@ -472,6 +472,12 @@ company are registered as `claude-opus-5-5@agy` and `claude-sonnet-5-5@agy` (`ve
 Claude Code entries). agy is asked for `claude-opus-5-5-high` and the like. `gpt-oss-120b` stays unregistered: its index is
 too low (High 3.8) and agy offers it at medium only.
 
+Optionally a vendor in `models.json` has `max_effort` (`low`, `medium`, `high`, `xhigh` or `max`; committed: `openai` is `high`): the
+router drops that vendor's models' cells above that effort, both as candidates and as upgrade targets. A subscription quota is
+spent by effort (how long the model reasons), not by the Artificial Analysis cost per task that the pick reads, so a vendor whose
+tasks are cheap at every effort would otherwise be sent to its highest efforts. An effort you fix yourself (`roles.<role>.effort`,
+a task's `effort`) is honoured even above the limit. Any other word is a configuration error (exit 2).
+
 **Grades.** A grade (S, A, B, C) belongs to a model **at an effort**: a table `grades` per model in `models.json`. The
 floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are in
 [design.md](design.md#7-grading-and-routing). The collector flags a model whose index and `grades` disagree (section 8).
@@ -484,7 +490,7 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
    plans. In both cases vendors with plan `none` are dropped, the author's maker is dropped for a review, and vendors whose
    CLI is missing are skipped. A vendor whose own pool is in `exhausted.json` is skipped too, after the stand-in below.
    The first vendor that has a candidate wins.
-2. **Candidates.** Every registered model (not `fallback_only`) and effort of that vendor whose `grades` entry equals the role's grade and that
+2. **Candidates.** Every registered model (not `fallback_only`) and effort of that vendor whose `grades` entry equals the role's grade, not above the vendor's `max_effort` (below) unless you fixed that effort, and that
    is usable: plan not `none` and not below the model's `min_plan` (section 5.2), not hidden by `models.<id>.enabled`, and listed in a fresh `available` list (no list, or a stale one, counts as offering
    everything: section 5.2). A model marked `"candidate": true` in `models.json` is never a candidate here; only a `roles.<role>.model`
    pin can select it.

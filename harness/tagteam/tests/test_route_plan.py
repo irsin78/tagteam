@@ -21,6 +21,8 @@ EXH = {"since": "2020-01-01T00:00:00Z", "evidence": "x", "source": "manual"}
 
 # Frozen from the router before plan gating (tagteam template 038353d: route.py and models.json), fresh Pro-class google list,
 # every host, role, author, grade (default, S, B) and orchestrator cap (none, Sonnet low): `host/role/author/grade/cap model:effort:launch`.
+# Regenerated for the grading floors S 57.85 / A 46.5 / B 32.5 (floors-ceiling): the only changed cells are the S picks of openai, which
+# moved from gpt-6.2-sol high (now A) to gpt-6.2-astra high; plan gating is unchanged.
 FROZEN_PRO_LIST = """
 claude-desktop/design/-/-/- claude-fable-5-2:low:session
 claude-desktop/design/-/-/cap claude-fable-5-2:low:run
@@ -36,8 +38,8 @@ claude-desktop/implement/-/B/- claude-sonnet-5-5:high:session
 claude-desktop/implement/-/B/cap claude-sonnet-5-5:high:run
 claude-desktop/review/claude/-/- gpt-6.2-sol:medium:run
 claude-desktop/review/claude/-/cap gpt-6.2-sol:medium:run
-claude-desktop/review/claude/S/- gpt-6.2-sol:high:run
-claude-desktop/review/claude/S/cap gpt-6.2-sol:high:run
+claude-desktop/review/claude/S/- gpt-6.2-astra:high:run
+claude-desktop/review/claude/S/cap gpt-6.2-astra:high:run
 claude-desktop/review/claude/B/- gpt-6.2-sol:low:run
 claude-desktop/review/claude/B/cap gpt-6.2-sol:low:run
 claude-desktop/review/openai/-/- claude-fable-5-2:low:session
@@ -60,8 +62,8 @@ claude-desktop/read/-/B/- claude-sonnet-5-5:high:session
 claude-desktop/read/-/B/cap claude-sonnet-5-5:high:run
 claude-desktop/translate/-/-/- gemini-4-hydrogen:medium:run
 claude-desktop/translate/-/-/cap gemini-4-hydrogen:medium:run
-claude-desktop/translate/-/S/- gpt-6.2-sol:high:run
-claude-desktop/translate/-/S/cap gpt-6.2-sol:high:run
+claude-desktop/translate/-/S/- gpt-6.2-astra:high:run
+claude-desktop/translate/-/S/cap gpt-6.2-astra:high:run
 claude-desktop/translate/-/B/- gemini-4-hydrogen:medium:run
 claude-desktop/translate/-/B/cap gemini-4-hydrogen:medium:run
 claude/design/-/-/- claude-fable-5-2:low:run
@@ -78,8 +80,8 @@ claude/implement/-/B/- claude-sonnet-5-5:high:subagent
 claude/implement/-/B/cap claude-sonnet-5-5:high:subagent
 claude/review/claude/-/- gpt-6.2-sol:medium:run
 claude/review/claude/-/cap gpt-6.2-sol:medium:run
-claude/review/claude/S/- gpt-6.2-sol:high:run
-claude/review/claude/S/cap gpt-6.2-sol:high:run
+claude/review/claude/S/- gpt-6.2-astra:high:run
+claude/review/claude/S/cap gpt-6.2-astra:high:run
 claude/review/claude/B/- gpt-6.2-sol:low:run
 claude/review/claude/B/cap gpt-6.2-sol:low:run
 claude/review/openai/-/- claude-fable-5-2:low:run
@@ -102,26 +104,26 @@ claude/read/-/B/- claude-sonnet-5-5:high:run
 claude/read/-/B/cap claude-sonnet-5-5:high:run
 claude/translate/-/-/- gemini-4-hydrogen:medium:run
 claude/translate/-/-/cap gemini-4-hydrogen:medium:run
-claude/translate/-/S/- gpt-6.2-sol:high:run
-claude/translate/-/S/cap gpt-6.2-sol:high:run
+claude/translate/-/S/- gpt-6.2-astra:high:run
+claude/translate/-/S/cap gpt-6.2-astra:high:run
 claude/translate/-/B/- gemini-4-hydrogen:medium:run
 claude/translate/-/B/cap gemini-4-hydrogen:medium:run
 codex/design/-/-/- gpt-6.2-sol:medium:subagent
 codex/design/-/-/cap gpt-6.2-sol:medium:subagent
-codex/design/-/S/- gpt-6.2-sol:high:subagent
-codex/design/-/S/cap gpt-6.2-sol:high:subagent
+codex/design/-/S/- gpt-6.2-astra:high:subagent
+codex/design/-/S/cap gpt-6.2-astra:high:subagent
 codex/design/-/B/- gpt-6.2-sol:low:subagent
 codex/design/-/B/cap gpt-6.2-sol:low:subagent
 codex/implement/-/-/- gpt-6.2-sol:low:subagent
 codex/implement/-/-/cap gpt-6.2-sol:low:subagent
-codex/implement/-/S/- gpt-6.2-sol:high:subagent
-codex/implement/-/S/cap gpt-6.2-sol:high:subagent
+codex/implement/-/S/- gpt-6.2-astra:high:subagent
+codex/implement/-/S/cap gpt-6.2-astra:high:subagent
 codex/implement/-/B/- gpt-6.2-sol:low:subagent
 codex/implement/-/B/cap gpt-6.2-sol:low:subagent
 codex/review/claude/-/- gpt-6.2-sol:medium:run
 codex/review/claude/-/cap gpt-6.2-sol:medium:run
-codex/review/claude/S/- gpt-6.2-sol:high:run
-codex/review/claude/S/cap gpt-6.2-sol:high:run
+codex/review/claude/S/- gpt-6.2-astra:high:run
+codex/review/claude/S/cap gpt-6.2-astra:high:run
 codex/review/claude/B/- gpt-6.2-sol:low:run
 codex/review/claude/B/cap gpt-6.2-sol:low:run
 codex/review/openai/-/- claude-fable-5-2:low:run
@@ -132,38 +134,38 @@ codex/review/openai/B/- claude-sonnet-5-5:high:run
 codex/review/openai/B/cap claude-sonnet-5-5:high:run
 codex/review/google/-/- gpt-6.2-sol:medium:run
 codex/review/google/-/cap gpt-6.2-sol:medium:run
-codex/review/google/S/- gpt-6.2-sol:high:run
-codex/review/google/S/cap gpt-6.2-sol:high:run
+codex/review/google/S/- gpt-6.2-astra:high:run
+codex/review/google/S/cap gpt-6.2-astra:high:run
 codex/review/google/B/- gpt-6.2-sol:low:run
 codex/review/google/B/cap gpt-6.2-sol:low:run
 codex/read/-/-/- gpt-6.1-terra:low:subagent
 codex/read/-/-/cap gpt-6.1-terra:low:subagent
-codex/read/-/S/- gpt-6.2-sol:high:subagent
-codex/read/-/S/cap gpt-6.2-sol:high:subagent
+codex/read/-/S/- gpt-6.2-astra:high:subagent
+codex/read/-/S/cap gpt-6.2-astra:high:subagent
 codex/read/-/B/- gpt-6.2-sol:low:subagent
 codex/read/-/B/cap gpt-6.2-sol:low:subagent
 codex/translate/-/-/- gemini-4-hydrogen:medium:run
 codex/translate/-/-/cap gemini-4-hydrogen:medium:run
-codex/translate/-/S/- gpt-6.2-sol:high:subagent
-codex/translate/-/S/cap gpt-6.2-sol:high:subagent
+codex/translate/-/S/- gpt-6.2-astra:high:subagent
+codex/translate/-/S/cap gpt-6.2-astra:high:subagent
 codex/translate/-/B/- gemini-4-hydrogen:medium:run
 codex/translate/-/B/cap gemini-4-hydrogen:medium:run
 agy/design/-/-/- gemini-4-hydrogen:xhigh:run
 agy/design/-/-/cap gemini-4-hydrogen:xhigh:run
-agy/design/-/S/- gpt-6.2-sol:high:run
-agy/design/-/S/cap gpt-6.2-sol:high:run
+agy/design/-/S/- gpt-6.2-astra:high:run
+agy/design/-/S/cap gpt-6.2-astra:high:run
 agy/design/-/B/- gemini-4-hydrogen:medium:run
 agy/design/-/B/cap gemini-4-hydrogen:medium:run
 agy/implement/-/-/- gemini-4-hydrogen:medium:run
 agy/implement/-/-/cap gemini-4-hydrogen:medium:run
-agy/implement/-/S/- gpt-6.2-sol:high:run
-agy/implement/-/S/cap gpt-6.2-sol:high:run
+agy/implement/-/S/- gpt-6.2-astra:high:run
+agy/implement/-/S/cap gpt-6.2-astra:high:run
 agy/implement/-/B/- gemini-4-hydrogen:medium:run
 agy/implement/-/B/cap gemini-4-hydrogen:medium:run
 agy/review/claude/-/- gemini-4-hydrogen:xhigh:run
 agy/review/claude/-/cap gemini-4-hydrogen:xhigh:run
-agy/review/claude/S/- gpt-6.2-sol:high:run
-agy/review/claude/S/cap gpt-6.2-sol:high:run
+agy/review/claude/S/- gpt-6.2-astra:high:run
+agy/review/claude/S/cap gpt-6.2-astra:high:run
 agy/review/claude/B/- gemini-4-hydrogen:xhigh:run
 agy/review/claude/B/cap gemini-4-hydrogen:xhigh:run
 agy/review/openai/-/- gemini-4-hydrogen:xhigh:run
@@ -174,20 +176,20 @@ agy/review/openai/B/- gemini-4-hydrogen:xhigh:run
 agy/review/openai/B/cap gemini-4-hydrogen:xhigh:run
 agy/review/google/-/- gpt-6.2-sol:medium:run
 agy/review/google/-/cap gpt-6.2-sol:medium:run
-agy/review/google/S/- gpt-6.2-sol:high:run
-agy/review/google/S/cap gpt-6.2-sol:high:run
+agy/review/google/S/- gpt-6.2-astra:high:run
+agy/review/google/S/cap gpt-6.2-astra:high:run
 agy/review/google/B/- gpt-6.2-sol:medium:run
 agy/review/google/B/cap gpt-6.2-sol:medium:run
 agy/read/-/-/- gemini-3.8-flash:low:run
 agy/read/-/-/cap gemini-3.8-flash:low:run
-agy/read/-/S/- gpt-6.2-sol:high:run
-agy/read/-/S/cap gpt-6.2-sol:high:run
+agy/read/-/S/- gpt-6.2-astra:high:run
+agy/read/-/S/cap gpt-6.2-astra:high:run
 agy/read/-/B/- gemini-4-hydrogen:medium:run
 agy/read/-/B/cap gemini-4-hydrogen:medium:run
 agy/translate/-/-/- gemini-4-hydrogen:medium:run
 agy/translate/-/-/cap gemini-4-hydrogen:medium:run
-agy/translate/-/S/- gpt-6.2-sol:high:run
-agy/translate/-/S/cap gpt-6.2-sol:high:run
+agy/translate/-/S/- gpt-6.2-astra:high:run
+agy/translate/-/S/cap gpt-6.2-astra:high:run
 agy/translate/-/B/- gemini-4-hydrogen:medium:run
 agy/translate/-/B/cap gemini-4-hydrogen:medium:run
 """
@@ -282,6 +284,38 @@ agy/translate/-/S/- gemini-4-carbon:high:run
 agy/translate/-/S/cap gemini-4-carbon:high:run
 """
 
+# differences from FROZEN_PRO_LIST when google is named max with no list (Carbon and Neon offered; Neon heads defaults.google.A and S)
+ULTRA_NAMED_DIFF_TEXT = """
+claude-desktop/translate/-/S/- gemini-4-neon:high:run
+claude-desktop/translate/-/S/cap gemini-4-neon:high:run
+claude/translate/-/S/- gemini-4-neon:high:run
+claude/translate/-/S/cap gemini-4-neon:high:run
+codex/translate/-/S/- gemini-4-neon:high:run
+codex/translate/-/S/cap gemini-4-neon:high:run
+agy/design/-/-/- gemini-4-neon:medium:run
+agy/design/-/-/cap gemini-4-neon:medium:run
+agy/design/-/S/- gemini-4-neon:high:run
+agy/design/-/S/cap gemini-4-neon:high:run
+agy/implement/-/S/- gemini-4-neon:high:run
+agy/implement/-/S/cap gemini-4-neon:high:run
+agy/review/claude/-/- gemini-4-neon:medium:run
+agy/review/claude/-/cap gemini-4-neon:medium:run
+agy/review/claude/S/- gemini-4-neon:high:run
+agy/review/claude/S/cap gemini-4-neon:high:run
+agy/review/claude/B/- gemini-4-neon:medium:run
+agy/review/claude/B/cap gemini-4-neon:medium:run
+agy/review/openai/-/- gemini-4-neon:medium:run
+agy/review/openai/-/cap gemini-4-neon:medium:run
+agy/review/openai/S/- gemini-4-neon:high:run
+agy/review/openai/S/cap gemini-4-neon:high:run
+agy/review/openai/B/- gemini-4-neon:medium:run
+agy/review/openai/B/cap gemini-4-neon:medium:run
+agy/read/-/S/- gemini-4-neon:high:run
+agy/read/-/S/cap gemini-4-neon:high:run
+agy/translate/-/S/- gemini-4-neon:high:run
+agy/translate/-/S/cap gemini-4-neon:high:run
+"""
+
 
 def today():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -351,10 +385,10 @@ class PlanNamedTest(PlanBase):
             with self.subTest(named):
                 self.local({"plans": {"google": named}})
                 code, r = self.go("--role", "design", "--grade", "S", "--json", "--host", "agy")
-                # no bench: defaults.google.S puts gemini-4-neon:medium before Carbon
-                self.assertEqual((code, r["model"], r["effort"]), (0, "gemini-4-neon", "medium"))
+                # no bench: defaults.google.S puts gemini-4-neon:high before Carbon
+                self.assertEqual((code, r["model"], r["effort"]), (0, "gemini-4-neon", "high"))
                 self.assertNotIn("plan_free_last:google", r["reason"])
-                self.bench({"gemini-4-neon": [self.b("index", 55, "medium"), self.b("cost_per_task", 2.0, "medium")],
+                self.bench({"gemini-4-neon": [self.b("index", 59, "high"), self.b("cost_per_task", 2.0, "high")],
                             CARBON: [self.b("index", 60, "high"), self.b("cost_per_task", 3.0, "high")]})
                 code, r = self.go("--role", "design", "--grade", "S", "--json", "--host", "agy")
                 self.assertEqual((code, r["model"], r["effort"]), (0, CARBON, "high"))
@@ -473,8 +507,11 @@ class AcceptanceTwoTest(PlanBase):
 
     def test_carbon_stays_unpicked_when_the_list_does_not_offer_it_at_that_effort(self):
         self.local({"available": {"google": {"ids": PRO_IDS + ["gemini-4-carbon-low"]}}})
+        self.bench({CARBON: [self.b("index", 54.2, "low"), self.b("cost_per_task", 3.0, "low")]})
+        code, r = self.go("--role", "design", "--grade", "A", "--json", "--host", "agy")
+        self.assertEqual((code, r["model"], r["effort"]), (0, CARBON, "low"))  # Carbon low is grade A
         code, r = self.go("--role", "design", "--grade", "S", "--json", "--host", "agy")
-        self.assertEqual((code, r["model"], r["effort"]), (0, CARBON, "low"))
+        self.assertNotEqual(r["model"], CARBON)  # the list offers no S effort of Carbon
 
 
 class TableUnchangedTest(PlanBase):
@@ -516,8 +553,8 @@ class TableUnchangedTest(PlanBase):
         return dict(self.pro(), **self.parse(ULTRA_DIFF_TEXT))
 
     def ultra_named(self):
-        """Named ultra with no list: neon is offered too and heads defaults.google.S, so Carbon is chosen only by the bench."""
-        return {k: v.replace("gemini-4-carbon:high", "gemini-4-neon:medium") for k, v in self.ultra().items()}
+        """Named ultra with no list: neon is offered too and heads defaults.google.A and S, so Carbon is chosen only by the bench."""
+        return dict(self.pro(), **self.parse(ULTRA_NAMED_DIFF_TEXT))
 
     def test_frozen_tables_are_sound(self):
         self.assertEqual(len(self.pro()), 168)

@@ -285,6 +285,9 @@ class Router:
         self.m, self.local, self.exh, self.bench_data = models, local, exhausted, bench or {}
         self.root = root or root_dir()
         self.order = {mid: i for i, mid in enumerate(models["models"])}
+        for name, cfg in (models.get("vendors") or {}).items():
+            if isinstance(cfg, dict) and "max_effort" in cfg and cfg["max_effort"] not in EFFORTS:
+                raise ConfigError("vendors.%s.max_effort must be one of %s" % (name, ", ".join(EFFORTS)))
 
     def bench(self, mid, metric, effort):
         """Artificial Analysis value at exactly this effort, else None (other efforts would skew comparisons)."""
@@ -377,11 +380,12 @@ class Router:
             model=model_cli_id(mid, model), effort=effort) in ids
 
     def model_effort(self, mid, spec, grade):
-        """Effort for a user-pinned model: the user effort (clamped), else its lowest effort at the grade."""
+        """Effort for a user-pinned model: the user effort (clamped), else its lowest effort at the grade within the vendor's
+        max_effort (its highest allowed effort when none reaches the grade)."""
         model = self.m["models"][mid]
         if spec.get("user_effort"):
             return clamp_effort(model, spec["user_effort"])
-        efforts = model_efforts(model)
+        efforts = [e for e in model_efforts(model) if not self.too_high(model, e)] or model_efforts(model)[:1]
         for ok in (lambda g: g == grade, lambda g: GRADES[g] > GRADES[grade]):
             hit = [e for e in efforts if ok(model["grades"][e])]
             if hit:
@@ -446,8 +450,15 @@ class Router:
             order.append(v)
         return order
 
-    def cells(self, vendor, standin, bar):
-        """Every usable (model, effort, grade) this vendor may offer: the candidate filters of pick and upgrade, in one place."""
+    def too_high(self, m, effort, allow=None):
+        """True when the model's vendor sets max_effort and `effort` is above it (the effort the user fixed, `allow`, is exempt)."""
+        top = ((self.m.get("vendors") or {}).get(m["vendor"]) or {}).get("max_effort")
+        return bool(top) and effort != allow and EFFORTS.index(effort) > EFFORTS.index(top)
+
+    def cells(self, vendor, standin, bar, allow=None):
+        """Every usable (model, effort, grade) this vendor may offer: the candidate filters of pick and upgrade, in one place.
+
+        A vendor's optional max_effort drops its cells above that effort, except the effort `allow` (the user's own)."""
         for mid, m in self.m["models"].items():
             if m.get("candidate"):
                 continue
@@ -459,7 +470,7 @@ class Router:
             if model_pool(m) in self.exh or (bar and model_maker(m) == bar):
                 continue
             for effort in model_efforts(m):
-                if self.usable(mid, effort):
+                if not self.too_high(m, effort, allow) and self.usable(mid, effort):
                     yield mid, effort, m["grades"][effort]
 
     def upgrade(self, base, grade, vendor, cap, native, standin, bar):
@@ -516,7 +527,7 @@ class Router:
         (models.json order, lowest effort). A later tier is used only when the earlier ones are empty.
         """
         want = spec.get("user_effort")
-        cands = [(mid, effort) for mid, effort, g in self.cells(vendor, standin, bar)
+        cands = [(mid, effort) for mid, effort, g in self.cells(vendor, standin, bar, want)
                  if g == grade and (not want or effort == want)]
         if native and cap[0] in self.m["models"]:
             within = [c for c in cands if not self.over_cap(c[0], c[1], *cap)]

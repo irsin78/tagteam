@@ -37,7 +37,7 @@ class RegistryTest(PartnerBase):
     def test_the_registration_matches_the_design(self):
         data = shipped()
         for mid, vendor_grades in (("claude-opus-5-5@agy", {"low": "B", "medium": "A", "high": "A"}),
-                                   ("claude-sonnet-5-5@agy", {"low": "C", "medium": "B", "high": "B"})):
+                                   ("claude-sonnet-5-5@agy", {"low": "C", "medium": "C", "high": "B"})):
             m = data["models"][mid]
             self.assertEqual((m["vendor"], m["maker"], m["pool"], m["cli_id"], m["fallback_only"]),
                              ("google", "claude", "google-partner", mid.split("@")[0], True))
@@ -117,7 +117,7 @@ def shutil_copy_back(cfg):
 class SubstituteTest(PartnerBase):
     def test_google_exhausted_translation_and_agy_implementation_go_to_the_partner(self):
         self.exh("google")
-        r = self.assertPick(self.route("translate"), "claude-sonnet-5-5@agy", "medium", "run")
+        r = self.assertPick(self.route("translate"), "claude-sonnet-5-5@agy", "high", "run")
         self.assertEqual((r["vendor"], r["maker"], r["pool"], r["grade"]), ("google", "claude", "google-partner", "B"))
         self.assertEqual(r["reason"][0], "substituted:google\u2192google-partner")
         self.assertIn("exhausted_skip:google", r["reason"])
@@ -126,7 +126,7 @@ class SubstituteTest(PartnerBase):
         cmd = r["launch"]["command"]
         self.assertEqual((cmd[cmd.index("--vendor") + 1], cmd[cmd.index("--model") + 1]), ("google", "claude-sonnet-5-5@agy"))
         self.assertEqual(r["launch"].get("escalate"), None)
-        r = self.assertPick(self.route("implement", host="agy"), "claude-sonnet-5-5@agy", "medium", "run")
+        r = self.assertPick(self.route("implement", host="agy"), "claude-sonnet-5-5@agy", "high", "run")
         self.assertEqual(r["grade"], "B")
         r = self.assertPick(self.route("design", host="agy"), "claude-opus-5-5@agy", "medium", "run")
         self.assertEqual(r["grade"], "A")
@@ -161,7 +161,7 @@ class SubstituteTest(PartnerBase):
                 cmd = design["launch"]["command"]
                 self.assertEqual((cmd[cmd.index("--vendor") + 1], cmd[cmd.index("--model") + 1], cmd[cmd.index("--effort") + 1]),
                                  ("google", "claude-opus-5-5@agy", "medium"))
-                self.assertPick(self.route("implement", host=host), "claude-sonnet-5-5@agy", "medium", "run")
+                self.assertPick(self.route("implement", host=host), "claude-sonnet-5-5@agy", "high", "run")
                 self.assertPick(self.route("read", host=host), "claude-sonnet-5-5@agy", "low", "run")
         # the native session cap does not apply to an agy run; ask_user is still judged against the orchestrator
         r = self.route("design", "--orchestrator-model", "claude-haiku-5-5", "--orchestrator-effort", "low")[1]
@@ -186,7 +186,7 @@ class SubstituteTest(PartnerBase):
         self.assertIn("openai exhausted until", r["notice"])
         self.assertNotIn("quota)", r["notice"])
         self.exh("claude", "openai")
-        r = self.assertPick(self.route("implement", host="codex"), "claude-sonnet-5-5@agy", "medium", "run")  # claude's place comes first
+        r = self.assertPick(self.route("implement", host="codex"), "claude-sonnet-5-5@agy", "high", "run")  # claude's place comes first
         self.assertTrue(r["launch"]["escalate"])  # a sandboxed Codex needs approval for any run.py
         self.assertIn("exhausted_skip:openai", r["reason"])
         self.assertIn("exhausted_skip:claude", r["reason"])
@@ -269,7 +269,7 @@ class SubstituteTest(PartnerBase):
 
     def test_only_a_pin_of_the_model_itself_selects_a_partner_without_exhaustion(self):
         self.local({"roles": {"implement": {"model": "claude-sonnet-5-5@agy"}}})
-        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5@agy", "medium", "run")
+        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5@agy", "high", "run")
         self.assertIn("user_override", r["reason"])
         self.local({"tasks": {"p": {"about": "x", "base": "implement", "model": "claude-sonnet-5-5@agy"}}})
         code, r = self.go("--task", "p", "--json")

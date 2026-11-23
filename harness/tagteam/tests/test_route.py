@@ -159,7 +159,7 @@ class RouteTest(RouteBase):
         self.local({"roles": {"implement": {"model": "claude-opus-5-5", "effort": "xhigh"}}})
         r = self.assertPick(self.route("implement"), "claude-opus-5-5", "xhigh")
         self.assertEqual(r["reason"], ["user_override", "bench:none"])
-        self.assertEqual(r["grade"], "S")  # grade of the chosen pair, not of the role
+        self.assertEqual(r["grade"], "A")  # grade of the chosen pair, not of the role
         self.local({"roles": {"implement": {"model": "claude-opus-5-5"}}})
         self.assertPick(self.route("implement"), "claude-opus-5-5", "low")  # lowest effort at the grade
         self.local({"roles": {"implement": {"model": "claude-opus-5-5"}},
@@ -213,7 +213,7 @@ class RouteTest(RouteBase):
         self.local({"plans": {"claude": "none"}})
         self.assertPick(self.route("implement"), "gpt-6.2-sol", "low", "run")
         self.local({"plans": {"openai": "free"}})
-        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gemini-4-hydrogen", "xhigh", "run")
+        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gemini-4-neon", "medium", "run")
         self.assertIn("plan_free_last:openai", r["reason"])
         self.local({"plans": {"google": "free"}})
         self.assertPick(self.route("translate"), "gemini-4-hydrogen", "medium", "run")
@@ -223,6 +223,11 @@ class RouteTest(RouteBase):
     def agy_implement(self, local):
         self.local(local)
         return self.route("implement", host="agy")[1]
+
+    def agy_read(self, local):
+        """Flash is grade C at every effort, so a flash-only list offers the read role (C), not implement (B)."""
+        self.local(local)
+        return self.route("read", host="agy")[1]
 
     def test_no_plans_means_availability_decides(self):
         r = self.agy_implement({})  # nothing in models.local.json: every vendor with a CLI is usable, google first on agy
@@ -236,8 +241,8 @@ class RouteTest(RouteBase):
 
     def test_pro_and_max_are_the_same_plan(self):
         for plan in ("pro", "max"):
-            r = self.agy_implement({"plans": {"google": plan, "openai": plan}, "available": self.FLASH_ONLY})
-            self.assertPick((0, r), "gemini-3.8-flash", "medium")  # named: not inferred free, google stays first
+            r = self.agy_read({"plans": {"google": plan, "openai": plan}, "available": self.FLASH_ONLY})
+            self.assertPick((0, r), "gemini-3.8-flash", "low")  # named: not inferred free, google stays first
             self.assertNotIn("plan_free_last:google", r["reason"])
 
     def test_google_is_inferred_free_when_its_list_has_no_pro_model(self):
@@ -250,7 +255,7 @@ class RouteTest(RouteBase):
         for ids in (["gemini-3.8-flash-high", "gemini-4-argon-high"], ["gemini-3.8-flash-high", "gemini-4-hydrogen-low"],
                     ["gemini-3.8-flash-high", "gemini-pro-orchestrator-neon"], ["gemini-3.8-flash-high", "gemini-pro-orchestrator-g1-pro"]):
             with self.subTest(ids):
-                r = self.agy_implement({"available": {"google": {"ids": ids}}})
+                r = self.agy_read({"available": {"google": {"ids": ids}}})
                 self.assertNotIn("plan_free_last:google", r["reason"])
                 self.assertNotIn("plan_inferred_free:google", r["reason"])
                 self.assertEqual(r["vendor"], "google")
@@ -280,10 +285,10 @@ class RouteTest(RouteBase):
             return json.load(f)
 
     def test_an_explicit_plan_wins_over_the_inference(self):
-        r = self.agy_implement({"plans": {"google": "pro"}, "available": self.FLASH_ONLY})
+        r = self.agy_read({"plans": {"google": "pro"}, "available": self.FLASH_ONLY})
         self.assertEqual(r["vendor"], "google")
         self.assertNotIn("plan_inferred_free:google", r["reason"])
-        r = self.agy_implement({"plans": {"google": "free"}, "available": self.FLASH_ONLY})  # named free: last, not "inferred"
+        r = self.agy_read({"plans": {"google": "free"}, "available": self.FLASH_ONLY})  # named free: last, not "inferred"
         self.assertIn("plan_free_last:google", r["reason"])
         self.assertNotIn("plan_inferred_free:google", r["reason"])
 
@@ -363,18 +368,20 @@ class RouteTest(RouteBase):
 
     def test_available_and_enabled(self):
         self.local({"available": {"openai": {"ids": ["gpt-6.1-terra"]}}})
-        self.assertPick(self.route("review", "--author-vendor", "claude"), "gemini-4-hydrogen", "xhigh")
+        self.assertPick(self.route("review", "--author-vendor", "claude"), "gemini-4-neon", "medium")
         self.local({"available": {"openai": {"ids": ["gpt-6.1-terra"]}},
                     "models": {"gpt-6.2-sol": {"enabled": True}}})
         self.assertPick(self.route("review", "--author-vendor", "claude"), "gpt-6.2-sol", "medium")
         self.local({"available": {"google": {"ids": ["gemini-3.8-flash-low"]}}})
         self.assertPick(self.route("translate"), "gpt-6.2-sol", "low")  # no B pair offered by google
         self.local({"available": {"google": {"ids": ["gemini-3.8-flash-medium"]}}})
-        self.assertPick(self.route("translate"), "gemini-3.8-flash", "medium")  # defaults entries unusable: next one
+        self.assertPick(self.route("translate"), "gpt-6.2-sol", "low")  # flash medium is C now: no B pair offered by google
+        self.local({"available": {"google": {"ids": ["gemini-4-neon-low"]}}})
+        self.assertPick(self.route("translate"), "gemini-4-neon", "low")  # defaults entries unusable: next one
 
     def test_exhausted_substitution(self):
         self.exhausted(openai={"since": PAST, "until": FUTURE, "evidence": "x", "source": "manual"})
-        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gemini-4-hydrogen", "xhigh")
+        r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gemini-4-neon", "medium")
         self.assertIn("exhausted_skip:openai", r["reason"])
         self.assertTrue(any(c.startswith("substituted:openai") for c in r["reason"]))
         self.assertIn("openai exhausted until", r["notice"])
@@ -400,13 +407,15 @@ class RouteTest(RouteBase):
         self.local({"roles": {"implement": {"effort": "low"}}})
         self.assertPick(self.route("implement"), "claude-opus-5-5", "low")  # Opus low is the only B pair at low
         self.local({"roles": {"design": {"effort": "max"}}})
-        code, r = self.route("design")  # nothing is A at max
+        self.assertPick(self.route("design"), "claude-sonnet-5-5", "max")  # Sonnet max is the A pair at max
+        self.local({"roles": {"read": {"effort": "max"}}})
+        code, r = self.route("read")  # nothing is C at max
         self.assertEqual((code, r["status"]), (4, "none"))
         self.local({"roles": {"implement": {"effort": "bogus"}}})
         self.assertEqual(self.route("implement")[0], 2)
 
     def test_grade_letters(self):
-        r = self.assertPick(self.route("design", "--grade", "S", host="codex"), "gpt-6.2-sol", "high", "subagent")
+        r = self.assertPick(self.route("design", "--grade", "S", host="codex"), "gpt-6.2-astra", "high", "subagent")
         self.assertEqual(r["grade"], "S")
         self.assertPick(self.route("design", "--grade", "S"), "claude-fable-5-2", "high")
         r = self.assertPick(self.route("review", "--author-vendor", "claude", "--grade", "C"), "gpt-6.1-terra", "low")
@@ -420,7 +429,7 @@ class RouteTest(RouteBase):
 
     def test_cli_missing(self):
         env = {"TAGTEAM_CLI_CLAUDE": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}
-        r = self.assertPick(self.route("review", "--author-vendor", "claude", env=env), "gemini-4-hydrogen", "xhigh")
+        r = self.assertPick(self.route("review", "--author-vendor", "claude", env=env), "gemini-4-neon", "medium")
         self.assertIn("cli_missing:openai", r["reason"])
         self.assertPick(self.route("implement", host="codex", env=env), "gpt-6.2-sol", "low", "subagent")  # no CLI needed
 
@@ -466,7 +475,7 @@ class RouteTest(RouteBase):
         r = self.assertPick(self.route("implement"), "gpt-6.1-terra", "medium", "run")
         self.assertIn("user_override", r["reason"])
         env = {"TAGTEAM_CLI_CLAUDE": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}  # no codex
-        r = self.assertPick(self.route("implement", env=env), "claude-sonnet-5-5", "medium")  # the pinned effort still limits candidates
+        r = self.assertPick(self.route("implement", env=env), "gemini-4-hydrogen", "medium")  # the pinned effort still limits candidates (claude has no B pair at medium)
         self.assertIn("cli_missing:openai", r["reason"])
         self.assertNotIn("user_override", r["reason"])
 
@@ -474,7 +483,7 @@ class RouteTest(RouteBase):
         self.models_edit(lambda d: d["models"]["claude-sonnet-5-5"].update(candidate=True))
         self.assertPick(self.route("implement"), "claude-haiku-5-5", "max")
         self.local({"roles": {"implement": {"model": "claude-sonnet-5-5"}}})
-        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")
+        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")  # its lowest effort at grade B
         self.assertEqual(r["reason"], ["user_override", "bench:none"])
 
     # the tiers of pick(), with synthetic numbers (the B cost cap is 2)
@@ -495,9 +504,9 @@ class RouteTest(RouteBase):
         self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")
 
     def test_tier0_beats_tier1(self):
-        self.bench({"claude-sonnet-5-5": [self.b("index", 31, "medium"), self.b("cost_per_task", 1.0, "medium")],
+        self.bench({"claude-sonnet-5-5": [self.b("index", 31, "high"), self.b("cost_per_task", 1.0, "high")],
                     "claude-haiku-5-5": [self.b("index", 45, "max")]})
-        self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")
+        self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")
 
     def test_tier1_index_without_cost_beats_tier2(self):
         self.bench({"claude-sonnet-5-5": [self.b("index", 38, "high"), self.b("cost_per_task", 5.0, "high")],
@@ -508,9 +517,10 @@ class RouteTest(RouteBase):
 
     def test_tier2_lowest_cost_when_all_over_cap(self):
         self.bench({"claude-sonnet-5-5": [self.b("index", 40, "high"), self.b("cost_per_task", 5.0, "high"),
-                                          self.b("index", 33, "medium"), self.b("cost_per_task", 3.0, "medium")],
-                    "claude-haiku-5-5": [self.b("index", 31, "max"), self.b("cost_per_task", 4.0, "max")]})
-        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "medium")
+                                          ],
+                    "claude-haiku-5-5": [self.b("index", 33, "xhigh"), self.b("cost_per_task", 3.0, "xhigh"),
+                                         self.b("index", 31, "max"), self.b("cost_per_task", 4.0, "max")]})
+        r = self.assertPick(self.route("implement"), "claude-haiku-5-5", "xhigh")
         self.assertIn("bench:local", r["reason"])
 
     def test_tier3_uses_defaults_then_order(self):
@@ -863,8 +873,8 @@ class AgyHostTest(RouteBase):
 
     def test_orchestrator_is_compared_as_argon_high(self):
         code, r = self.go("--role", "design", "--json", "--host", "agy", "--orchestrator-model", self.ORCH)
-        # the pick (Hydrogen xhigh) is listed before Argon in google's models: stronger than the assumed pair
-        self.assertEqual((code, r["model"], r["effort"], r["ask_user"]), (0, "gemini-4-hydrogen", "xhigh", True))
+        # the pick (Neon medium) is listed before Argon in google's models: stronger than the assumed pair
+        self.assertEqual((code, r["model"], r["effort"], r["ask_user"]), (0, "gemini-4-neon", "medium", True))
         self.assertIn("listed before", r["ask_reason"])
         self.assertIn("compared as gemini-4-argon high", r["notice"])
         self.assertIn("Ask the user", r["notice"])
@@ -873,10 +883,10 @@ class AgyHostTest(RouteBase):
         self.assertNotIn("escalate", r["launch"])
 
     def test_the_assumption_comes_from_compare_as(self):
-        self.models_edit(lambda d: d["orchestrators"][self.ORCH].update(compare_as="gemini-4-hydrogen:xhigh"))
+        self.models_edit(lambda d: d["orchestrators"][self.ORCH].update(compare_as="gemini-4-neon:medium"))
         code, r = self.go("--role", "design", "--json", "--host", "agy", "--orchestrator-model", self.ORCH)
         self.assertEqual((code, r["ask_user"]), (0, False))
-        self.assertIn("compared as gemini-4-hydrogen xhigh", r["notice"])
+        self.assertIn("compared as gemini-4-neon medium", r["notice"])
 
     def test_the_note_is_added_to_every_result_and_only_for_an_orchestrator(self):
         for role in ("implement", "read", "translate"):
@@ -1129,12 +1139,12 @@ class TaskTest(RouteBase):
         r = self.assertPick(self.task("sharp"), "claude-fable-5-2", "low")
         self.assertEqual((r["grade"], r["task_applied"]), ("A", True))
         self.tasks(sharp={"vendor": "openai", "grade": "S"})
-        self.assertPick(self.task("sharp"), "gpt-6.2-sol", "high")
+        self.assertPick(self.task("sharp"), "gpt-6.2-astra", "high")
 
     def test_grade_only_task_ignores_the_role_effort_pin(self):
         self.local({"roles": {"implement": {"effort": "max"}},
                     "tasks": {"sharp": {"about": "x", "base": "implement", "grade": "A"}}})
-        r = self.assertPick(self.task("sharp"), "claude-fable-5-2", "low")  # A at max does not exist; the table decides
+        r = self.assertPick(self.task("sharp"), "claude-fable-5-2", "low")  # the pin is dropped with the grade change; the table decides
         self.assertTrue(r["task_applied"])
         self.assertPick(self.route("implement"), "claude-haiku-5-5", "max")  # without the task the pin stays
         # a pinned model and effort: the grade picks the effort of that model

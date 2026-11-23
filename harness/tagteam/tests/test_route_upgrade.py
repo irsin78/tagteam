@@ -120,12 +120,12 @@ class UpgradeTest(RouteBase):
         self.assertFalse([x for x in r["reason"] if x.startswith("upgrade")])
 
     def test_review_takes_an_equal_or_stronger_cell(self):
-        # a grade A review by claude's pool: the S cell (fable medium) costs about the same as the A anchor
+        # a grade A review by claude's pool: the S cell (fable high) costs about the same as the A anchor
         self.bench({"claude-opus-5-5": [self.b("index", 50, "medium"), self.b("cost_per_task", 3.0, "medium")],
-                    "claude-fable-5-2": [self.b("index", 58, "medium"), self.b("cost_per_task", 4.0, "medium")]})
-        r = self.assertPick(self.route("review", "--author-vendor", "openai"), "claude-fable-5-2", "medium")
+                    "claude-fable-5-2": [self.b("index", 62, "high"), self.b("cost_per_task", 4.0, "high")]})
+        r = self.assertPick(self.route("review", "--author-vendor", "openai"), "claude-fable-5-2", "high")
         self.assertEqual(r["grade"], "A")
-        self.assertIn("upgrade:claude-fable-5-2:medium", r["reason"])
+        self.assertIn("upgrade:claude-fable-5-2:high", r["reason"])
 
 
     def test_native_effort_cap_holds_with_an_unknown_orchestrator_model(self):

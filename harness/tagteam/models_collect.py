@@ -442,7 +442,7 @@ def compare_bench(vendor, entries, models, version, now, stored=None):
                                     "metric": metric, "new": new, "index_version": version})
     known |= {u.replace(".", "-") for u in (models.get("unregistered") or {}).get(vendor) or {}}
     cutoff = (now - timedelta(days=models.get("aa_new_model_days", 120))).strftime("%Y-%m-%d")
-    floors = (models.get("grading") or {}).get("floors") or {"S": 54, "A": 48, "B": 30}
+    floors = (models.get("grading") or {}).get("floors") or {"S": 57.85, "A": 46.5, "B": 32.5}
     groups = {}
     for e in mine:
         if e["base"] not in known:
@@ -574,6 +574,9 @@ def load_config(cdir):
             raise ValueError("models.json: model %s needs a known vendor and a grades table" % mid)
     if any(not isinstance(v, dict) or "model_arg" not in v for v in models["vendors"].values()):
         raise ValueError("models.json: every vendor needs a model_arg")
+    for name, v in models["vendors"].items():
+        if "max_effort" in v and v["max_effort"] not in EFFORTS:
+            raise ValueError("models.json: vendors.%s.max_effort must be one of %s" % (name, ", ".join(EFFORTS)))
     orchestrators = models.get("orchestrators", {})
     if not isinstance(orchestrators, dict):
         raise ValueError("models.json: 'orchestrators' must be an object")
