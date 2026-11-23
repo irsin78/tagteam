@@ -36,7 +36,7 @@ class PartnerBase(RouteBase):
 class RegistryTest(PartnerBase):
     def test_the_registration_matches_the_design(self):
         data = shipped()
-        for mid, vendor_grades in (("claude-opus-5-5@agy", {"low": "B", "medium": "A", "high": "A"}),
+        for mid, vendor_grades in (("claude-opus-5-5@agy", {"low": "B", "medium": "B", "high": "A"}),
                                    ("claude-sonnet-5-5@agy", {"low": "C", "medium": "C", "high": "B"})):
             m = data["models"][mid]
             self.assertEqual((m["vendor"], m["maker"], m["pool"], m["cli_id"], m["fallback_only"]),
@@ -117,18 +117,18 @@ def shutil_copy_back(cfg):
 class SubstituteTest(PartnerBase):
     def test_google_exhausted_translation_and_agy_implementation_go_to_the_partner(self):
         self.exh("google")
-        r = self.assertPick(self.route("translate"), "claude-sonnet-5-5@agy", "high", "run")
+        r = self.assertPick(self.route("translate"), "claude-opus-5-5@agy", "medium", "run")
         self.assertEqual((r["vendor"], r["maker"], r["pool"], r["grade"]), ("google", "claude", "google-partner", "B"))
         self.assertEqual(r["reason"][0], "substituted:google\u2192google-partner")
         self.assertIn("exhausted_skip:google", r["reason"])
-        self.assertRegex(r["notice"], r"google exhausted until \d\d:\d\d UTC, substituted claude-sonnet-5-5@agy "
+        self.assertRegex(r["notice"], r"google exhausted until \d\d:\d\d UTC, substituted claude-opus-5-5@agy "
                                       r"\(google-partner quota\)\.")
         cmd = r["launch"]["command"]
-        self.assertEqual((cmd[cmd.index("--vendor") + 1], cmd[cmd.index("--model") + 1]), ("google", "claude-sonnet-5-5@agy"))
+        self.assertEqual((cmd[cmd.index("--vendor") + 1], cmd[cmd.index("--model") + 1]), ("google", "claude-opus-5-5@agy"))
         self.assertEqual(r["launch"].get("escalate"), None)
-        r = self.assertPick(self.route("implement", host="agy"), "claude-sonnet-5-5@agy", "high", "run")
+        r = self.assertPick(self.route("implement", host="agy"), "claude-opus-5-5@agy", "medium", "run")
         self.assertEqual(r["grade"], "B")
-        r = self.assertPick(self.route("design", host="agy"), "claude-opus-5-5@agy", "medium", "run")
+        r = self.assertPick(self.route("design", host="agy"), "claude-opus-5-5@agy", "high", "run")
         self.assertEqual(r["grade"], "A")
         r = self.assertPick(self.route("read", host="agy"), "claude-sonnet-5-5@agy", "low", "run")
         self.assertEqual(r["grade"], "C")
@@ -152,7 +152,7 @@ class SubstituteTest(PartnerBase):
         self.exh("claude")
         for host in ("claude-desktop", "claude"):
             with self.subTest(host):
-                design = self.assertPick(self.route("design", host=host), "claude-opus-5-5@agy", "medium", "run")
+                design = self.assertPick(self.route("design", host=host), "claude-opus-5-5@agy", "high", "run")
                 self.assertEqual((design["vendor"], design["maker"], design["pool"]), ("google", "claude", "google-partner"))
                 self.assertNotIn("native_model_cap", design["reason"])
                 self.assertNotIn("escalate", design["launch"])
@@ -160,8 +160,8 @@ class SubstituteTest(PartnerBase):
                 self.assertIn("substituted claude-opus-5-5@agy (google-partner quota)", design["notice"])
                 cmd = design["launch"]["command"]
                 self.assertEqual((cmd[cmd.index("--vendor") + 1], cmd[cmd.index("--model") + 1], cmd[cmd.index("--effort") + 1]),
-                                 ("google", "claude-opus-5-5@agy", "medium"))
-                self.assertPick(self.route("implement", host=host), "claude-sonnet-5-5@agy", "high", "run")
+                                 ("google", "claude-opus-5-5@agy", "high"))
+                self.assertPick(self.route("implement", host=host), "claude-opus-5-5@agy", "medium", "run")
                 self.assertPick(self.route("read", host=host), "claude-sonnet-5-5@agy", "low", "run")
         # the native session cap does not apply to an agy run; ask_user is still judged against the orchestrator
         r = self.route("design", "--orchestrator-model", "claude-haiku-5-5", "--orchestrator-effort", "low")[1]
@@ -179,21 +179,21 @@ class SubstituteTest(PartnerBase):
         self.assertEqual(self.route("implement", host="agy")[1]["model"], "gemini-4-hydrogen")
         # only openai exhausted: nothing is registered as a stand-in for it, so the next vendor's own model is used
         self.exh("openai")
-        r = self.assertPick(self.route("implement", host="codex"), "claude-sonnet-5-5", "high", "run")
+        r = self.assertPick(self.route("implement", host="codex"), "claude-opus-5-5", "medium", "run")
         self.assertEqual((r["vendor"], r["pool"]), ("claude", "claude"))
         self.assertIn("exhausted_skip:openai", r["reason"])
         self.assertEqual(r["reason"][0], "substituted:openai\u2192claude")
         self.assertIn("openai exhausted until", r["notice"])
         self.assertNotIn("quota)", r["notice"])
         self.exh("claude", "openai")
-        r = self.assertPick(self.route("implement", host="codex"), "claude-sonnet-5-5@agy", "high", "run")  # claude's place comes first
+        r = self.assertPick(self.route("implement", host="codex"), "claude-opus-5-5@agy", "medium", "run")  # claude's place comes first
         self.assertTrue(r["launch"]["escalate"])  # a sandboxed Codex needs approval for any run.py
         self.assertIn("exhausted_skip:openai", r["reason"])
         self.assertIn("exhausted_skip:claude", r["reason"])
         self.assertEqual(r["reason"][0], "substituted:openai\u2192google-partner")
         self.assertIn("openai exhausted until", r["notice"])
         self.assertIn("claude exhausted until", r["notice"])
-        self.assertIn("substituted claude-sonnet-5-5@agy (google-partner quota)", r["notice"])
+        self.assertIn("substituted claude-opus-5-5@agy (google-partner quota)", r["notice"])
         self.exh("claude", "openai", "google-partner")
         self.assertPick(self.route("implement", host="codex"), "gemini-4-hydrogen", "medium")
 
@@ -225,8 +225,9 @@ class SubstituteTest(PartnerBase):
 
     def test_enabled_false_removes_a_partner(self):
         self.exh("google")
-        self.local({"models": {"claude-sonnet-5-5@agy": {"enabled": False}}})
-        self.assertPick(self.route("implement", host="agy"), "claude-opus-5-5@agy", "low")
+        self.assertPick(self.route("implement", host="agy"), "claude-opus-5-5@agy", "medium")
+        self.local({"models": {"claude-opus-5-5@agy": {"enabled": False}}})
+        self.assertPick(self.route("implement", host="agy"), "claude-sonnet-5-5@agy", "high")
 
     def test_bench_orders_the_partner_candidates(self):
         self.exh("google")
@@ -310,11 +311,11 @@ class IndependenceTest(PartnerBase):
 
     def test_the_agy_claude_can_review_a_non_claude_author(self):
         self.exh("claude")
-        r = self.assertPick(self.route("review", "--author-vendor", "google"), "claude-opus-5-5@agy", "medium", "run")
+        r = self.assertPick(self.route("review", "--author-vendor", "google"), "claude-opus-5-5@agy", "high", "run")
         self.assertEqual((r["maker"], r["pool"]), ("claude", "google-partner"))
         self.assertIn("claude exhausted until", r["notice"])
         # an openai author may be reviewed by it too
-        self.assertPick(self.route("review", "--author-vendor", "openai"), "claude-opus-5-5@agy", "medium")
+        self.assertPick(self.route("review", "--author-vendor", "openai"), "claude-opus-5-5@agy", "high")
 
     def test_claude_author_with_claude_and_google_exhausted_is_reviewed_by_openai_or_incomplete(self):
         self.exh("claude", "google")
@@ -388,7 +389,7 @@ class ExhaustedKeysTest(PartnerBase):
 
     def test_the_old_google_key_still_means_the_google_models(self):
         self.exhausted(google=E)  # a file written before pools existed
-        self.assertEqual(self.route("translate")[1]["model"], "claude-sonnet-5-5@agy")
+        self.assertEqual(self.route("translate")[1]["model"], "claude-opus-5-5@agy")
         self.assertEqual(self.go("--mark-exhausted", "google", "--evidence", "x", "--until", FUTURE)[0], 0)
         self.assertEqual(list(self.read()), ["google"])
 

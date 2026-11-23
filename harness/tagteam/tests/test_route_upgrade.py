@@ -1,5 +1,5 @@
 """Upgrade rule: after the grade is chosen, a higher-grade cell of the same vendor at about the same cost replaces it
-(grading.upgrade_cost_ratio, committed 1.5). Synthetic numbers; the implement role is grade B with a cost cap of 2."""
+(grading.upgrade_cost_ratio, committed 1.5). Synthetic numbers; the implement role is grade B with a cost cap of 2.5."""
 import os
 import sys
 import unittest
@@ -22,10 +22,10 @@ class UpgradeTest(RouteBase):
         models = {SONNET: anchor if anchor is not None else self.anchor}
         opus = []
         if opus_index is not None:
-            opus.append(self.b("index", opus_index, "medium"))
+            opus.append(self.b("index", opus_index, "high"))
         if opus_cost is not None:
-            opus.append(self.b("cost_per_task", opus_cost, "medium"))
-        models[OPUS] = opus  # opus medium: grade A, one grade above the role
+            opus.append(self.b("cost_per_task", opus_cost, "high"))
+        models[OPUS] = opus  # opus high: grade A, one grade above the role (opus medium is grade B)
         models.update(extra or {})
         self.bench(models)
 
@@ -34,9 +34,9 @@ class UpgradeTest(RouteBase):
 
     def test_upgrades_to_higher_grade_within_ratio(self):
         self.set_bench()
-        r = self.assertPick(self.route("implement"), OPUS, "medium")
+        r = self.assertPick(self.route("implement"), OPUS, "high")
         self.assertEqual(r["grade"], "B")  # the role's grade, not the cell's
-        self.assertIn("upgrade:%s:medium" % OPUS, r["reason"])
+        self.assertIn("upgrade:%s:high" % OPUS, r["reason"])
         self.assertIn("grade B", r["notice"])
 
     def test_no_upgrade_without_ratio(self):
@@ -51,19 +51,19 @@ class UpgradeTest(RouteBase):
         self.set_bench(opus_index=34)
         self.assertPick(self.route("implement"), SONNET, "high")
         self.set_bench(opus_index=35)  # equal index is enough
-        self.assertPick(self.route("implement"), OPUS, "medium")
+        self.assertPick(self.route("implement"), OPUS, "high")
 
     def test_no_upgrade_cost_ratio_exceeded(self):
         self.set_bench(opus_cost=1.6)
         self.assertPick(self.route("implement"), SONNET, "high")
         self.set_bench(opus_cost=1.5)  # exactly the ratio is allowed
-        self.assertPick(self.route("implement"), OPUS, "medium")
+        self.assertPick(self.route("implement"), OPUS, "high")
 
     def test_no_upgrade_over_role_cap(self):
+        self.set_bench(anchor=[self.b("index", 35, "high"), self.b("cost_per_task", 1.8, "high")], opus_cost=2.6)
+        self.assertPick(self.route("implement"), SONNET, "high")  # 2.6 is within 1.8 * 1.5 but above the B cap 2.5
         self.set_bench(anchor=[self.b("index", 35, "high"), self.b("cost_per_task", 1.8, "high")], opus_cost=2.5)
-        self.assertPick(self.route("implement"), SONNET, "high")  # 2.5 is within 1.8 * 1.5 but above the B cap 2
-        self.set_bench(anchor=[self.b("index", 35, "high"), self.b("cost_per_task", 1.8, "high")], opus_cost=2.0)
-        self.assertPick(self.route("implement"), OPUS, "medium")
+        self.assertPick(self.route("implement"), OPUS, "high")
 
     def test_no_upgrade_unknown_cell_values(self):
         self.set_bench(opus_cost=None)
@@ -76,8 +76,9 @@ class UpgradeTest(RouteBase):
         self.assertPick(self.route("implement"), SONNET, "high")
         self.set_bench(anchor=[self.b("cost_per_task", 1.0, "high")])
         self.assertPick(self.route("implement"), SONNET, "high")
-        self.set_bench(anchor=[])
-        self.assertPick(self.route("implement"), SONNET, "high")
+        self.set_bench(anchor=[])  # no scored B cell: the default B pick (Opus medium) stands, nothing to upgrade from
+        r = self.assertPick(self.route("implement"), OPUS, "medium")
+        self.assertFalse([x for x in r["reason"] if x.startswith("upgrade")])
 
     def test_no_upgrade_when_user_gives_effort(self):
         self.set_bench()
@@ -93,11 +94,11 @@ class UpgradeTest(RouteBase):
         self.assertFalse([x for x in r["reason"] if x.startswith("upgrade")])
         # an orchestrator on Opus high takes it
         r = self.assertPick(self.route("implement", "--orchestrator-model", OPUS, "--orchestrator-effort", "high"),
-                            OPUS, "medium", "session")
-        self.assertIn("upgrade:%s:medium" % OPUS, r["reason"])
+                            OPUS, "high", "session")
+        self.assertIn("upgrade:%s:high" % OPUS, r["reason"])
         # not native (host claude): the cap does not filter upgrades
         self.assertPick(self.route("implement", "--orchestrator-model", SONNET, "--orchestrator-effort", "high",
-                                   host="claude"), OPUS, "medium")
+                                   host="claude"), OPUS, "high")
 
     def test_no_downgrade_and_only_strictly_higher_grade(self):
         # haiku max is grade B like the anchor, with a better index at the same cost: tier 0 picks it, no upgrade happens
@@ -110,7 +111,7 @@ class UpgradeTest(RouteBase):
         self.set_bench(opus_index=41, opus_cost=1.4, extra=extra)
         self.assertPick(self.route("implement"), SONNET, "xhigh")  # same index, lower cost
         self.set_bench(opus_index=42, opus_cost=1.4, extra=extra)
-        self.assertPick(self.route("implement"), OPUS, "medium")  # higher index wins over cost
+        self.assertPick(self.route("implement"), OPUS, "high")  # higher index wins over cost
 
     def test_user_model_override_is_not_an_upgrade(self):
         self.set_bench()
@@ -121,7 +122,7 @@ class UpgradeTest(RouteBase):
 
     def test_review_takes_an_equal_or_stronger_cell(self):
         # a grade A review by claude's pool: the S cell (fable high) costs about the same as the A anchor
-        self.bench({"claude-opus-5-5": [self.b("index", 50, "medium"), self.b("cost_per_task", 3.0, "medium")],
+        self.bench({"claude-opus-5-5": [self.b("index", 50, "high"), self.b("cost_per_task", 3.0, "high")],
                     "claude-fable-5-2": [self.b("index", 62, "high"), self.b("cost_per_task", 4.0, "high")]})
         r = self.assertPick(self.route("review", "--author-vendor", "openai"), "claude-fable-5-2", "high")
         self.assertEqual(r["grade"], "A")
@@ -137,10 +138,13 @@ class UpgradeTest(RouteBase):
 
     def test_upgrade_without_its_cli_gives_way_to_the_launchable_anchor(self):
         self.set_bench()
-        env = {"TAGTEAM_CLI_OPENAI": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}  # no claude CLI: opus medium would need run.py
+        env = {"TAGTEAM_CLI_OPENAI": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}  # no claude CLI: opus high would need run.py
+        # the shipped implementer definition pins Opus medium; pin the anchor (Sonnet high) so it launches as a subagent
+        self.edit_file(".claude/agents/implementer.md", "model: claude-opus-5-5", "model: claude-sonnet-5-5")
+        self.edit_file(".claude/agents/implementer.md", "effort: medium", "effort: high")
         r = self.assertPick(self.route("implement", host="claude", env=env), SONNET, "high", "subagent")
         self.assertFalse([x for x in r["reason"] if x.startswith("upgrade")])
-        self.assertPick(self.route("implement", host="claude"), OPUS, "medium", "run")  # with the CLI it upgrades
+        self.assertPick(self.route("implement", host="claude"), OPUS, "high", "run")  # with the CLI it upgrades
 
 
 if __name__ == "__main__":

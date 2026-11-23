@@ -531,12 +531,12 @@ class BenchTest(CollectTest):
         self.assertEqual(got, ["S", "A", "A", "B", "B", "C", "C"])
 
     def test_grade_changed_from_local_bench(self):
-        # synthetic values: fable high 40 falls to B (table says S); terra xhigh 49 rises to A (table says B);
+        # synthetic values: fable high 40 falls to B (table says S); terra xhigh 50 rises to A (table says B);
         # sonnet high 35 stays B; haiku has no score
         self.write_local_bench({
             "claude-fable-5-2": [self.entry("index", 40, "high")],
             "claude-sonnet-5-5": [self.entry("index", 35, "high")],
-            "gpt-6.1-terra": [self.entry("index", 49, "xhigh"), self.entry("cost_per_task", 0.2, "xhigh")]})
+            "gpt-6.1-terra": [self.entry("index", 50, "xhigh"), self.entry("cost_per_task", 0.2, "xhigh")]})
         _, prop = self.collect()
         got = {(c["model"], c["effort"]): c for c in self.by(prop, "grade_changed")}
         self.assertEqual(sorted(got), [("claude-fable-5-2", "high"), ("gpt-6.1-terra", "xhigh")])
@@ -548,20 +548,20 @@ class BenchTest(CollectTest):
         self.assertFalse(self.by(prop, "grade_changed"))  # no bench file, no grade changes
 
     def test_grade_changed_uses_fresh_aa_values(self):
-        # stored terra xhigh 45 matches the table (B); the fresh AA value 49 moves it to A
+        # stored terra xhigh 45 matches the table (B); the fresh AA value 50 moves it to A
         self.write_local_bench({"gpt-6.1-terra": [self.entry("index", 45, "xhigh")]})
         pages = [aa_fixture(1), aa_fixture(2)]
         for page in pages:
             for row in page["data"]:
                 if row["slug"] == "gpt-6-1-terra-xhigh":
-                    row["evaluations"]["artificial_analysis_intelligence_index"] = 49.0
+                    row["evaluations"]["artificial_analysis_intelligence_index"] = 50.0
         _, prop = self.run_aa(pages=pages)
         got = [(c["model"], c["effort"], c["old"], c["new"], c["index"]) for c in self.by(prop, "grade_changed")]
-        self.assertIn(("gpt-6.1-terra", "xhigh", "B", "A", 49.0), got)
+        self.assertIn(("gpt-6.1-terra", "xhigh", "B", "A", 50.0), got)
 
     def test_non_list_bench_entry_does_not_crash(self):
         with open(os.path.join(self.cfg, "bench.local.json"), "w", encoding="utf-8") as f:
-            json.dump({"models": {"claude-opus-5-5": 5, "gpt-6.1-terra": [self.entry("index", 49, "xhigh")]}}, f)
+            json.dump({"models": {"claude-opus-5-5": 5, "gpt-6.1-terra": [self.entry("index", 50, "xhigh")]}}, f)
         code, prop = self.collect()
         self.assertEqual(code, 0)
         self.assertEqual([c["model"] for c in self.by(prop, "grade_changed")], ["gpt-6.1-terra"])

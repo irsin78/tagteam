@@ -1,8 +1,8 @@
 ---
 name: implementer
 description: "Implementation worker. Implements one assigned unit within its file scope and runs the checks named in the brief. Each run costs tokens for the brief, re-reading code and checking the result, so use it for units that need design-free but non-trivial work; do the change directly when it is a few lines. Not for design, review or wide reading."
-model: claude-sonnet-5-5
-effort: high
+model: claude-opus-5-5
+effort: medium
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

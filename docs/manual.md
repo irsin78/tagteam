@@ -333,7 +333,7 @@ them to the shipped values.
 | Host | Name | Model, effort | Tools or limits |
 |---|---|---|---|
 | Claude | `designer` | `opus`, high | Read, Grep, Glob, Write; writes one design document |
-| Claude | `implementer` | `sonnet`, high | Read, Write, Edit, Bash, Grep, Glob |
+| Claude | `implementer` | `opus`, medium | Read, Write, Edit, Bash, Grep, Glob |
 | Claude | `reader` | `haiku`, high | Read, Grep, Glob, Bash; read-only |
 | Codex | `designer` | `gpt-6.2-sol`, medium | `.codex/agents/designer.toml`; writes one design document |
 | Codex | `implementer` | `gpt-6.2-sol`, low | `.codex/agents/implementer.toml` |

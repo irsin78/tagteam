@@ -21,21 +21,23 @@ EXH = {"since": "2020-01-01T00:00:00Z", "evidence": "x", "source": "manual"}
 
 # Frozen from the router before plan gating (tagteam template 038353d: route.py and models.json), fresh Pro-class google list,
 # every host, role, author, grade (default, S, B) and orchestrator cap (none, Sonnet low): `host/role/author/grade/cap model:effort:launch`.
-# Regenerated for the grading floors S 57.85 / A 46.5 / B 32.5 (floors-ceiling): the only changed cells are the S picks of openai, which
-# moved from gpt-6.2-sol high (now A) to gpt-6.2-astra high; plan gating is unchanged.
+# Regenerated for the grading floors S 57.85 / A 49.05 / B 32.5 and B cap 2.5 (b-class-opus): the only changed cells are the claude
+# B picks, which moved from claude-sonnet-5-5 high to claude-opus-5-5 medium (Opus medium, cost 2.45, is now grade B and fits the cap);
+# before that (floors-ceiling, S 57.85 / A 46.5 / B 32.5) the S picks of openai moved from gpt-6.2-sol high to gpt-6.2-astra high;
+# plan gating is unchanged.
 FROZEN_PRO_LIST = """
 claude-desktop/design/-/-/- claude-fable-5-2:low:session
 claude-desktop/design/-/-/cap claude-fable-5-2:low:run
 claude-desktop/design/-/S/- claude-fable-5-2:high:session
 claude-desktop/design/-/S/cap claude-fable-5-2:high:run
-claude-desktop/design/-/B/- claude-sonnet-5-5:high:session
-claude-desktop/design/-/B/cap claude-sonnet-5-5:high:run
-claude-desktop/implement/-/-/- claude-sonnet-5-5:high:session
-claude-desktop/implement/-/-/cap claude-sonnet-5-5:high:run
+claude-desktop/design/-/B/- claude-opus-5-5:medium:session
+claude-desktop/design/-/B/cap claude-opus-5-5:medium:run
+claude-desktop/implement/-/-/- claude-opus-5-5:medium:session
+claude-desktop/implement/-/-/cap claude-opus-5-5:medium:run
 claude-desktop/implement/-/S/- claude-fable-5-2:high:session
 claude-desktop/implement/-/S/cap claude-fable-5-2:high:run
-claude-desktop/implement/-/B/- claude-sonnet-5-5:high:session
-claude-desktop/implement/-/B/cap claude-sonnet-5-5:high:run
+claude-desktop/implement/-/B/- claude-opus-5-5:medium:session
+claude-desktop/implement/-/B/cap claude-opus-5-5:medium:run
 claude-desktop/review/claude/-/- gpt-6.2-sol:medium:run
 claude-desktop/review/claude/-/cap gpt-6.2-sol:medium:run
 claude-desktop/review/claude/S/- gpt-6.2-astra:high:run
@@ -46,20 +48,20 @@ claude-desktop/review/openai/-/- claude-fable-5-2:low:session
 claude-desktop/review/openai/-/cap claude-fable-5-2:low:run
 claude-desktop/review/openai/S/- claude-fable-5-2:high:session
 claude-desktop/review/openai/S/cap claude-fable-5-2:high:run
-claude-desktop/review/openai/B/- claude-sonnet-5-5:high:session
-claude-desktop/review/openai/B/cap claude-sonnet-5-5:high:run
+claude-desktop/review/openai/B/- claude-opus-5-5:medium:session
+claude-desktop/review/openai/B/cap claude-opus-5-5:medium:run
 claude-desktop/review/google/-/- claude-fable-5-2:low:session
 claude-desktop/review/google/-/cap claude-fable-5-2:low:run
 claude-desktop/review/google/S/- claude-fable-5-2:high:session
 claude-desktop/review/google/S/cap claude-fable-5-2:high:run
-claude-desktop/review/google/B/- claude-sonnet-5-5:high:session
-claude-desktop/review/google/B/cap claude-sonnet-5-5:high:run
+claude-desktop/review/google/B/- claude-opus-5-5:medium:session
+claude-desktop/review/google/B/cap claude-opus-5-5:medium:run
 claude-desktop/read/-/-/- claude-haiku-5-5:high:session
 claude-desktop/read/-/-/cap claude-sonnet-5-5:low:session
 claude-desktop/read/-/S/- claude-fable-5-2:high:session
 claude-desktop/read/-/S/cap claude-fable-5-2:high:run
-claude-desktop/read/-/B/- claude-sonnet-5-5:high:session
-claude-desktop/read/-/B/cap claude-sonnet-5-5:high:run
+claude-desktop/read/-/B/- claude-opus-5-5:medium:session
+claude-desktop/read/-/B/cap claude-opus-5-5:medium:run
 claude-desktop/translate/-/-/- gemini-4-hydrogen:medium:run
 claude-desktop/translate/-/-/cap gemini-4-hydrogen:medium:run
 claude-desktop/translate/-/S/- gpt-6.2-astra:high:run
@@ -70,14 +72,14 @@ claude/design/-/-/- claude-fable-5-2:low:run
 claude/design/-/-/cap claude-fable-5-2:low:run
 claude/design/-/S/- claude-fable-5-2:high:run
 claude/design/-/S/cap claude-fable-5-2:high:run
-claude/design/-/B/- claude-sonnet-5-5:high:run
-claude/design/-/B/cap claude-sonnet-5-5:high:run
-claude/implement/-/-/- claude-sonnet-5-5:high:subagent
-claude/implement/-/-/cap claude-sonnet-5-5:high:subagent
+claude/design/-/B/- claude-opus-5-5:medium:run
+claude/design/-/B/cap claude-opus-5-5:medium:run
+claude/implement/-/-/- claude-opus-5-5:medium:subagent
+claude/implement/-/-/cap claude-opus-5-5:medium:subagent
 claude/implement/-/S/- claude-fable-5-2:high:run
 claude/implement/-/S/cap claude-fable-5-2:high:run
-claude/implement/-/B/- claude-sonnet-5-5:high:subagent
-claude/implement/-/B/cap claude-sonnet-5-5:high:subagent
+claude/implement/-/B/- claude-opus-5-5:medium:subagent
+claude/implement/-/B/cap claude-opus-5-5:medium:subagent
 claude/review/claude/-/- gpt-6.2-sol:medium:run
 claude/review/claude/-/cap gpt-6.2-sol:medium:run
 claude/review/claude/S/- gpt-6.2-astra:high:run
@@ -88,20 +90,20 @@ claude/review/openai/-/- claude-fable-5-2:low:run
 claude/review/openai/-/cap claude-fable-5-2:low:run
 claude/review/openai/S/- claude-fable-5-2:high:run
 claude/review/openai/S/cap claude-fable-5-2:high:run
-claude/review/openai/B/- claude-sonnet-5-5:high:run
-claude/review/openai/B/cap claude-sonnet-5-5:high:run
+claude/review/openai/B/- claude-opus-5-5:medium:run
+claude/review/openai/B/cap claude-opus-5-5:medium:run
 claude/review/google/-/- claude-fable-5-2:low:run
 claude/review/google/-/cap claude-fable-5-2:low:run
 claude/review/google/S/- claude-fable-5-2:high:run
 claude/review/google/S/cap claude-fable-5-2:high:run
-claude/review/google/B/- claude-sonnet-5-5:high:run
-claude/review/google/B/cap claude-sonnet-5-5:high:run
+claude/review/google/B/- claude-opus-5-5:medium:run
+claude/review/google/B/cap claude-opus-5-5:medium:run
 claude/read/-/-/- claude-haiku-5-5:high:subagent
 claude/read/-/-/cap claude-haiku-5-5:high:subagent
 claude/read/-/S/- claude-fable-5-2:high:run
 claude/read/-/S/cap claude-fable-5-2:high:run
-claude/read/-/B/- claude-sonnet-5-5:high:run
-claude/read/-/B/cap claude-sonnet-5-5:high:run
+claude/read/-/B/- claude-opus-5-5:medium:run
+claude/read/-/B/cap claude-opus-5-5:medium:run
 claude/translate/-/-/- gemini-4-hydrogen:medium:run
 claude/translate/-/-/cap gemini-4-hydrogen:medium:run
 claude/translate/-/S/- gpt-6.2-astra:high:run
@@ -130,8 +132,8 @@ codex/review/openai/-/- claude-fable-5-2:low:run
 codex/review/openai/-/cap claude-fable-5-2:low:run
 codex/review/openai/S/- claude-fable-5-2:high:run
 codex/review/openai/S/cap claude-fable-5-2:high:run
-codex/review/openai/B/- claude-sonnet-5-5:high:run
-codex/review/openai/B/cap claude-sonnet-5-5:high:run
+codex/review/openai/B/- claude-opus-5-5:medium:run
+codex/review/openai/B/cap claude-opus-5-5:medium:run
 codex/review/google/-/- gpt-6.2-sol:medium:run
 codex/review/google/-/cap gpt-6.2-sol:medium:run
 codex/review/google/S/- gpt-6.2-astra:high:run
@@ -216,14 +218,14 @@ codex/design/-/-/- claude-fable-5-2:low:run
 codex/design/-/-/cap claude-fable-5-2:low:run
 codex/design/-/S/- claude-fable-5-2:high:run
 codex/design/-/S/cap claude-fable-5-2:high:run
-codex/design/-/B/- claude-sonnet-5-5:high:run
-codex/design/-/B/cap claude-sonnet-5-5:high:run
-codex/implement/-/-/- claude-sonnet-5-5:high:run
-codex/implement/-/-/cap claude-sonnet-5-5:high:run
+codex/design/-/B/- claude-opus-5-5:medium:run
+codex/design/-/B/cap claude-opus-5-5:medium:run
+codex/implement/-/-/- claude-opus-5-5:medium:run
+codex/implement/-/-/cap claude-opus-5-5:medium:run
 codex/implement/-/S/- claude-fable-5-2:high:run
 codex/implement/-/S/cap claude-fable-5-2:high:run
-codex/implement/-/B/- claude-sonnet-5-5:high:run
-codex/implement/-/B/cap claude-sonnet-5-5:high:run
+codex/implement/-/B/- claude-opus-5-5:medium:run
+codex/implement/-/B/cap claude-opus-5-5:medium:run
 codex/review/claude/-/- gemini-4-hydrogen:xhigh:run
 codex/review/claude/-/cap gemini-4-hydrogen:xhigh:run
 codex/review/claude/S/- exit3
@@ -234,14 +236,14 @@ codex/review/google/-/- claude-fable-5-2:low:run
 codex/review/google/-/cap claude-fable-5-2:low:run
 codex/review/google/S/- claude-fable-5-2:high:run
 codex/review/google/S/cap claude-fable-5-2:high:run
-codex/review/google/B/- claude-sonnet-5-5:high:run
-codex/review/google/B/cap claude-sonnet-5-5:high:run
+codex/review/google/B/- claude-opus-5-5:medium:run
+codex/review/google/B/cap claude-opus-5-5:medium:run
 codex/read/-/-/- claude-haiku-5-5:high:run
 codex/read/-/-/cap claude-haiku-5-5:high:run
 codex/read/-/S/- claude-fable-5-2:high:run
 codex/read/-/S/cap claude-fable-5-2:high:run
-codex/read/-/B/- claude-sonnet-5-5:high:run
-codex/read/-/B/cap claude-sonnet-5-5:high:run
+codex/read/-/B/- claude-opus-5-5:medium:run
+codex/read/-/B/cap claude-opus-5-5:medium:run
 codex/translate/-/S/- claude-fable-5-2:high:run
 codex/translate/-/S/cap claude-fable-5-2:high:run
 agy/design/-/S/- claude-fable-5-2:high:run

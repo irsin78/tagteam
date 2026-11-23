@@ -127,7 +127,7 @@ class RouteTest(RouteBase):
         self.assertIn("host=claude-desktop", r["notice"])
         self.assertEqual(r["grade"], "A")
         self.assertEqual(r["launch"], {"kind": "session", "model": "claude-fable-5-2", "effort": "low"})
-        self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high", "session")
+        self.assertPick(self.route("implement"), "claude-opus-5-5", "medium", "session")
         r = self.assertPick(self.route("review", "--author-vendor", "claude"), "gpt-6.2-sol", "medium", "run")
         self.assertIn("--read-only", r["launch"]["command"])
         self.assertNotIn("escalate", r["launch"])
@@ -358,10 +358,16 @@ class RouteTest(RouteBase):
         # a later model is not over the cap; Fable keeps its place
         self.assertPick(self.route("design", "--orchestrator-model", "claude-fable-5-2",
                                    "--orchestrator-effort", "xhigh"), "claude-fable-5-2", "low", "session")
-        # effort above the orchestrator's is over the cap even for the same model
+        # a model earlier in models.json than the orchestrator's is over the cap (Opus medium is the B pick; Sonnet is later)
+        r = self.assertPick(self.route("implement", "--orchestrator-model", "claude-sonnet-5-5",
+                                       "--orchestrator-effort", "low"), "claude-opus-5-5", "medium", "run")
+        self.assertIn("native_model_cap", r["reason"])
+        # effort above the orchestrator's is over the cap even for the same model (only Sonnet high is B at high effort)
+        self.local({"roles": {"implement": {"effort": "high"}}})
         r = self.assertPick(self.route("implement", "--orchestrator-model", "claude-sonnet-5-5",
                                        "--orchestrator-effort", "low"), "claude-sonnet-5-5", "high", "run")
         self.assertIn("native_model_cap", r["reason"])
+        self.local({})
         # within the cap beats the default order: Opus low fits an Opus low orchestrator
         self.assertPick(self.route("implement", "--orchestrator-model", "claude-opus-5-5",
                                    "--orchestrator-effort", "low"), "claude-opus-5-5", "low", "session")
@@ -423,7 +429,7 @@ class RouteTest(RouteBase):
         self.assertPick(self.route("implement", "--grade", "A"), "claude-fable-5-2", "low")
         self.assertEqual(self.go("--role", "design", "--grade", "D")[0], 2)
         self.local({"roles": {"read": {"grade": "B"}}})
-        self.assertPick(self.route("read"), "claude-sonnet-5-5", "high")
+        self.assertPick(self.route("read"), "claude-opus-5-5", "medium")
         self.local({"roles": {"read": {"grade": "Z"}}})
         self.assertEqual(self.route("read")[0], 2)
 
@@ -452,13 +458,13 @@ class RouteTest(RouteBase):
     def test_broken_exhausted_file_is_empty(self):
         with open(self.exh_path, "w") as f:
             f.write("{nope")
-        self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")
+        self.assertPick(self.route("implement"), "claude-opus-5-5", "medium")
 
     def test_malformed_exhausted_shapes_are_empty(self):
         for body in ('{"schema":1,"vendors":["bad"]}', '[1]', '{"vendors":{"openai":"bad"}}'):
             with self.subTest(body), open(self.exh_path, "w") as f:
                 f.write(body)
-            self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")
+            self.assertPick(self.route("implement"), "claude-opus-5-5", "medium")
 
     def test_cap_to_run_checks_cli(self):
         env = {"TAGTEAM_CLI_OPENAI": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}
@@ -471,22 +477,24 @@ class RouteTest(RouteBase):
         self.assertNotIn("user_override", r["reason"])
 
     def test_pinned_remote_model_checks_cli(self):
-        self.local({"roles": {"implement": {"model": "gpt-6.1-terra", "effort": "medium"}}})
-        r = self.assertPick(self.route("implement"), "gpt-6.1-terra", "medium", "run")
+        self.local({"roles": {"implement": {"model": "gpt-6.1-terra", "effort": "high"}}})
+        r = self.assertPick(self.route("implement"), "gpt-6.1-terra", "high", "run")
         self.assertIn("user_override", r["reason"])
         env = {"TAGTEAM_CLI_CLAUDE": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}  # no codex
-        r = self.assertPick(self.route("implement", env=env), "gemini-4-hydrogen", "medium")  # the pinned effort still limits candidates (claude has no B pair at medium)
+        # the pinned effort still limits candidates: without it claude's default B pick would be Opus medium
+        r = self.assertPick(self.route("implement", env=env), "claude-sonnet-5-5", "high")
         self.assertIn("cli_missing:openai", r["reason"])
         self.assertNotIn("user_override", r["reason"])
 
     def test_candidate_skipped_by_default_but_selectable(self):
         self.models_edit(lambda d: d["models"]["claude-sonnet-5-5"].update(candidate=True))
+        self.local({"models": {"claude-opus-5-5": {"enabled": False}}})  # Opus medium would take the B pick before Sonnet
         self.assertPick(self.route("implement"), "claude-haiku-5-5", "max")
-        self.local({"roles": {"implement": {"model": "claude-sonnet-5-5"}}})
+        self.local({"models": {"claude-opus-5-5": {"enabled": False}}, "roles": {"implement": {"model": "claude-sonnet-5-5"}}})
         r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")  # its lowest effort at grade B
         self.assertEqual(r["reason"], ["user_override", "bench:none"])
 
-    # the tiers of pick(), with synthetic numbers (the B cost cap is 2)
+    # the tiers of pick(), with synthetic numbers (the B cost cap is 2.5)
     def test_tier0_best_index_within_cost_cap(self):
         self.bench({"claude-sonnet-5-5": [self.b("index", 40, "high"), self.b("cost_per_task", 1.0, "high"),
                                           self.b("index", 35, "medium"), self.b("cost_per_task", 0.5, "medium")],
@@ -526,7 +534,7 @@ class RouteTest(RouteBase):
     def test_tier3_uses_defaults_then_order(self):
         # scores exist only for pairs of other grades or other efforts: the B pairs are unscored
         self.bench({"claude-sonnet-5-5": [self.b("index", 70, "max"), self.b("cost_per_task", 1.0, "low")]})
-        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")
+        r = self.assertPick(self.route("implement"), "claude-opus-5-5", "medium")
         self.assertIn("bench:none", r["reason"])
         # defaults gone: first model in models.json order at its lowest effort of the grade
         self.models_edit(lambda d: d.pop("defaults"))
@@ -542,7 +550,7 @@ class RouteTest(RouteBase):
     def test_bench_uses_only_the_actual_effort(self):
         # sonnet at low is C: a score there must not make it a B candidate
         self.bench({"claude-sonnet-5-5": [self.b("index", 99, "low"), self.b("cost_per_task", 0.01, "low")]})
-        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")
+        r = self.assertPick(self.route("implement"), "claude-opus-5-5", "medium")
         self.assertIn("bench:none", r["reason"])
 
     def test_cost_cap_follows_grade(self):
@@ -556,7 +564,7 @@ class RouteTest(RouteBase):
             with self.subTest(text):
                 with open(os.path.join(self.cfg, "bench.local.json"), "w", encoding="utf-8") as f:
                     f.write(text)
-                r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")
+                r = self.assertPick(self.route("implement"), "claude-opus-5-5", "medium")
                 self.assertIn("bench:none", r["reason"])
 
     def test_one_registered_version_per_model_family(self):
@@ -646,13 +654,13 @@ class LaunchTest(RouteBase):
     """Host x vendor x definition: how each pick is launched (design 2.3.3)."""
 
     def test_claude_desktop_session_adds_a_matching_subagent(self):
-        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high", "session")
+        r = self.assertPick(self.route("implement"), "claude-opus-5-5", "medium", "session")
         self.assertEqual(r["launch"]["also"], {"kind": "subagent", "host": "claude", "agent": "implementer"})
         r = self.assertPick(self.route("read"), "claude-haiku-5-5", "high", "session")
         self.assertEqual(r["launch"]["also"]["agent"], "reader")
         r = self.assertPick(self.route("design"), "claude-fable-5-2", "low", "session")  # designer pins opus: no match
         self.assertNotIn("also", r["launch"])
-        self.edit_file(".claude/agents/implementer.md", "effort: high", "effort: low")
+        self.edit_file(".claude/agents/implementer.md", "effort: medium", "effort: low")
         self.assertNotIn("also", self.route("implement")[1]["launch"])
         os.remove(os.path.join(self.root, ".claude/agents/reader.md"))
         self.assertNotIn("also", self.route("read")[1]["launch"])
@@ -664,20 +672,20 @@ class LaunchTest(RouteBase):
         self.assertNotIn("escalate", r["launch"])
 
     def test_claude_cli_host(self):
-        r = self.assertPick(self.route("implement", host="claude"), "claude-sonnet-5-5", "high", "subagent")
+        r = self.assertPick(self.route("implement", host="claude"), "claude-opus-5-5", "medium", "subagent")
         self.assertEqual(r["launch"], {"kind": "subagent", "host": "claude", "agent": "implementer"})
         self.assertEqual(self.route("read", host="claude")[1]["launch"]["agent"], "reader")
         # the definition cannot set effort: a pick that differs from the pin goes through run.py
         self.assertPick(self.route("design", host="claude"), "claude-fable-5-2", "low", "run")
-        self.edit_file(".claude/agents/implementer.md", "effort: high", "effort: low")
-        self.assertPick(self.route("implement", host="claude"), "claude-sonnet-5-5", "high", "run")
-        self.edit_file(".claude/agents/implementer.md", "effort: low", "effort: high")
+        self.edit_file(".claude/agents/implementer.md", "effort: medium", "effort: low")
+        self.assertPick(self.route("implement", host="claude"), "claude-opus-5-5", "medium", "run")
+        self.edit_file(".claude/agents/implementer.md", "effort: low", "effort: medium")
         self.assertEqual(kinds(self.route("implement", host="claude")[1])[0], "subagent")
         # an alias cannot be compared with a model id: never a match
-        self.edit_file(".claude/agents/implementer.md", "model: claude-sonnet-5-5", "model: sonnet")
-        self.assertPick(self.route("implement", host="claude"), "claude-sonnet-5-5", "high", "run")
+        self.edit_file(".claude/agents/implementer.md", "model: claude-opus-5-5", "model: opus")
+        self.assertPick(self.route("implement", host="claude"), "claude-opus-5-5", "medium", "run")
         os.remove(os.path.join(self.root, ".claude/agents/implementer.md"))
-        self.assertPick(self.route("implement", host="claude"), "claude-sonnet-5-5", "high", "run")
+        self.assertPick(self.route("implement", host="claude"), "claude-opus-5-5", "medium", "run")
         # other vendors, and roles without a definition: run, no escalate
         r = self.assertPick(self.route("review", "--author-vendor", "claude", host="claude"), "gpt-6.2-sol", "medium", "run")
         self.assertNotIn("escalate", r["launch"])
@@ -704,7 +712,7 @@ class LaunchTest(RouteBase):
         self.assertTrue(r["launch"]["escalate"])
         # every run on a Codex host asks for escalation, whatever the vendor
         self.local({"plans": {"openai": "none"}})
-        r = self.assertPick(self.route("implement", host="codex"), "claude-sonnet-5-5", "high", "run")
+        r = self.assertPick(self.route("implement", host="codex"), "claude-opus-5-5", "medium", "run")
         self.assertTrue(r["launch"]["escalate"])
 
     def test_a_definition_whose_instructions_quote_other_settings_does_not_match(self):
@@ -741,7 +749,7 @@ class LaunchTest(RouteBase):
 
     def test_orchestrator_cap_applies_to_sessions_only(self):
         cap = ("--orchestrator-model", "claude-haiku-5-5", "--orchestrator-effort", "low")
-        r = self.assertPick(self.route("implement", *cap), "claude-sonnet-5-5", "high", "run")
+        r = self.assertPick(self.route("implement", *cap), "claude-opus-5-5", "medium", "run")
         self.assertIn("native_model_cap", r["reason"])
         for host in ("claude", "codex", "agy"):
             r = self.route("implement", *cap, host=host)[1]
@@ -751,9 +759,9 @@ class LaunchTest(RouteBase):
 
     def test_a_missing_cli_is_checked_only_for_run(self):
         env = {"TAGTEAM_CLI_OPENAI": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}  # no claude CLI
-        self.assertPick(self.route("implement", env=env), "claude-sonnet-5-5", "high", "session")
-        self.assertPick(self.route("implement", host="claude", env=env), "claude-sonnet-5-5", "high", "subagent")
-        self.edit_file(".claude/agents/implementer.md", "effort: high", "effort: low")
+        self.assertPick(self.route("implement", env=env), "claude-opus-5-5", "medium", "session")
+        self.assertPick(self.route("implement", host="claude", env=env), "claude-opus-5-5", "medium", "subagent")
+        self.edit_file(".claude/agents/implementer.md", "effort: medium", "effort: low")
         r = self.assertPick(self.route("implement", host="claude", env=env), "gpt-6.2-sol", "low", "run")
         self.assertIn("cli_missing:claude", r["reason"])
 
@@ -1150,12 +1158,12 @@ class TaskTest(RouteBase):
         # a pinned model and effort: the grade picks the effort of that model
         self.local({"roles": {"implement": {"model": "claude-opus-5-5", "effort": "xhigh"}},
                     "tasks": {"sharp": {"about": "x", "base": "implement", "grade": "A"}}})
-        r = self.assertPick(self.task("sharp"), "claude-opus-5-5", "medium")
+        r = self.assertPick(self.task("sharp"), "claude-opus-5-5", "high")
         self.assertEqual((r["grade"], r["task_applied"]), ("A", True))
         # an explicit task effort still wins over the role pin
         self.local({"roles": {"implement": {"effort": "max"}},
-                    "tasks": {"sharp": {"about": "x", "base": "implement", "grade": "A", "effort": "high"}}})
-        self.assertPick(self.task("sharp"), "claude-opus-5-5", "high")
+                    "tasks": {"sharp": {"about": "x", "base": "implement", "grade": "A", "effort": "xhigh"}}})
+        self.assertPick(self.task("sharp"), "claude-opus-5-5", "xhigh")
 
     def test_task_layer_goes_over_role_pins(self):
         self.local({"roles": {"implement": {"model": "claude-opus-5-5", "effort": "xhigh"}},
@@ -1272,7 +1280,7 @@ class TaskTest(RouteBase):
         r = self.route("implement")[1]
         self.assertNotIn("task", r)
         self.assertNotIn("task_applied", r)
-        self.assertEqual(r["model"], "claude-sonnet-5-5")
+        self.assertEqual(r["model"], "claude-opus-5-5")
 
 
 if __name__ == "__main__":
