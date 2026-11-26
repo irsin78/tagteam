@@ -88,6 +88,11 @@ a worker's report, measured 2026-11-17 / re-test after a host update]
   This applies to sessions and subagents only. A `run` worker is one-shot: for a later unit,
   launch it again with a fresh brief that carries the context it needs. If the pool runs short, tell the user in one line which worker is needed and why, and
   continue independent work.
+- For sessions and subagents, prefer a follow-up when the worker already has useful context, above all for findings
+  on its own change: reuse can save the file reads. Consider a fresh worker when a short brief would be cheaper than
+  carrying a long, mostly unrelated history: after a long idle time a cache miss can make a large history more
+  expensive to process, and compaction can omit details the next unit needs. The launch and refusal rules above
+  apply to that new worker.
 - A `run` worker may outlast the shell's wait. agy hands a command to the background after about ten seconds and
   delivers its output as a completion notice when it ends; wait for that notice, or call `run.py --wait <id>`
   (within nine seconds; exit 9 means still running) and repeat. Never end the turn without the result.
