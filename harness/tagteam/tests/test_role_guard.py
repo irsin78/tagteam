@@ -722,6 +722,18 @@ class RoleGuardTest(GuardCase):
         self.assertEqual(r.stdout.strip().splitlines(), [pending(), "TAGTEAM: pin design - bad\\ud800 (hosts: codex)",
                                                          "TAGTEAM: pin implement - effort high (hosts: all)"])
 
+    def test_session_start_lines_are_utf8_whatever_the_console_encoding(self):
+        about = "\ud55c\uae00 about"  # non-ASCII text, written as escapes
+        self.local({"tasks": {"html": {"about": about, "base": "implement"}}})
+        for enc in ("ascii", "cp949", "utf-8"):
+            e = dict(os.environ, TAGTEAM_STATE_DIR=self.state, TAGTEAM_CONFIG_DIR=self.cfg, PYTHONIOENCODING=enc)
+            e.pop("HARNESS_DELEGATE_RUN", None)
+            r = subprocess.run([sys.executable, GUARD, "SessionStart"], input=json.dumps({"session_id": "u-" + enc}).encode(),
+                               capture_output=True, env=e, timeout=30)
+            self.assertEqual((r.returncode, r.stderr), (0, b""), enc)
+            self.assertIn("TAGTEAM: task html - %s (route.py --task html)" % about,
+                          r.stdout.decode("utf-8").splitlines(), enc)
+
     def test_pin_notice_comes_after_the_task_lines(self):
         self.local({"tasks": {"html": {"about": "pages", "base": "implement"}},
                     "roles": {"implement": {"effort": "high"}}})

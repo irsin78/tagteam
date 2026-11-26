@@ -238,8 +238,22 @@ def session_start_lines(payload, host):
 
 
 def on_session_start(payload, host):
-    for line in session_start_lines(payload, host):
-        print(line)
+    emit_lines(session_start_lines(payload, host))
+
+
+def emit_lines(lines):
+    """Print the lines as UTF-8 whatever the console code page is: the host reads hook output as UTF-8, and on Windows
+    Python would write a redirected stdout in the ANSI code page, which garbles a non-ASCII task `about`."""
+    data = "".join(line + "\n" for line in lines).encode("utf-8", "backslashreplace")
+    if sys.stdout is None:  # no stdout at all: nothing to tell, as print() would do
+        return
+    buf = getattr(sys.stdout, "buffer", None)
+    if buf is None:  # stdout replaced by a text-only stream
+        sys.stdout.write(data.decode("utf-8"))
+        return
+    sys.stdout.flush()
+    buf.write(data)
+    buf.flush()
 
 
 def model_update_notice(payload):
