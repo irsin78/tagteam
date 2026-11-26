@@ -35,6 +35,8 @@ import state  # noqa: E402  (same folder)
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 GRADES = {"C": 0, "B": 1, "A": 2, "S": 3}
 ROLES = ["design", "implement", "review", "read", "translate"]
+# Roles that go to the host vendor's models: another vendor only through exhaustion, a task or a role pin with `hosts`.
+PINNED_ROLES = ("design", "implement", "read")
 TS = "%Y-%m-%dT%H:%M:%SZ"
 # Vendors whose plan is inferred from their CLI's available list when models.local.json names none (see Router.plan): a fresh
 # list with an id of a min_plan=ultra model means ultra, one with a Pro-class id pro, any other free; no fresh list at all
@@ -392,12 +394,13 @@ class Router:
                 return hit[0], False
         return efforts[-1], False
 
-    def spec(self, role, grade, task=None):
+    def spec(self, role, grade, task=None, host=None):
         spec = dict(self.m["roles"][role])
-        lr = (self.local.get("roles") or {}).get(role) or {}
+        lr = self.role_pin(role, host)[0]  # the role-level entry, filtered by host before the task's keys are merged
         for key in ("model", "vendor"):
             if lr.get(key):
                 spec["user_" + key] = lr[key]
+                spec["pin_origin"] = "role"  # who chose user_model/user_vendor: the role pin or (below) the task
         if lr.get("grade"):
             spec["grade"] = lr["grade"]
         if lr.get("effort"):
@@ -406,6 +409,8 @@ class Router:
             if task.get("model") or task.get("vendor"):
                 for key in ("user_model", "user_vendor", "user_effort"):
                     spec.pop(key, None)
+                spec["task_choice"] = True  # the task picks the vendor: the host vendor keeps no special place
+                spec["pin_origin"] = "task"
             if task.get("model"):
                 spec["user_model"] = task["model"]
                 spec["user_vendor"] = self.m["models"][task["model"]]["vendor"]
@@ -420,13 +425,13 @@ class Router:
         if grade:
             spec["grade"] = grade
         for key, table in (("user_model", self.m["models"]), ("user_vendor", self.m["vendors"]), ("grade", GRADES)):
-            if spec.get(key) and spec[key] not in table:
+            if spec.get(key) and (not isinstance(spec[key], str) or spec[key] not in table):
                 raise ConfigError("unknown %s: %s" % (key, spec[key]))
         if spec.get("user_effort") and spec["user_effort"] not in EFFORTS:
             raise ConfigError("unknown effort: %s" % spec["user_effort"])
         return spec
 
-    def vendor_order(self, spec, host, author, reason):
+    def vendor_order(self, spec, host, author, reason, role=None):
         pinned = [spec["user_vendor"]] if spec.get("user_vendor") else []
         explicit = spec.get("vendors")
         rest = list(explicit or self.m["hosts"][host])
@@ -434,11 +439,16 @@ class Router:
             if self.available(v)[1]:
                 reason.append("available_stale:" + v)
         if not explicit:
+            # a pinned role keeps the host vendor in its place even on a free plan (unless a task chose the vendor);
+            # it is still reported as inferred free when it is
+            keep = self.host_vendor(host) if role in PINNED_ROLES and not spec.get("task_choice") else None
             free = [v for v in rest if self.plan(v) == "free" and v not in pinned]
             for v in free:
-                reason.append("plan_free_last:" + v)
+                if v != keep:
+                    reason.append("plan_free_last:" + v)
                 if self.inferred_free(v):
                     reason.append("plan_inferred_free:" + v)
+            free = [v for v in free if v != keep]
             rest = [v for v in rest if v not in free] + free
         order = []
         for v in pinned + rest:
@@ -646,22 +656,82 @@ class Router:
         return model, effort, None
 
     def route(self, role, host, author=None, grade=None, orch_model=None, orch_effort=None, task=None, task_name=None):
+        if role != "review":
+            author = None  # the author's vendor is excluded only from a review; other roles keep the host order
         orch_model, orch_effort, assumed = self.orchestrator(host, orch_model, orch_effort)
         result, code = self.route_task(role, host, author, grade, orch_model, orch_effort, task, task_name)
         if assumed:
             result["notice"] += " " + assumed
+        skipped = self.role_pin(role, host)[1]
+        if skipped:
+            result.setdefault("reason", []).append("pin_other_vendor:" + role)
+            result["notice"] += " roles.%s pin (%s) not applied on host %s: add hosts to apply it." % (role, skipped, host)
+        if code == 0 and role in PINNED_ROLES:
+            # "host vendor model" is decided by the result's vendor (whose CLI runs it), not its maker: on agy an @agy
+            # Claude stand-in (vendor google, maker claude) is a host vendor model, on a Claude host it is not
+            hv = self.host_vendor(host)
+            result["off_host_vendor"] = result["vendor"] != hv
+            if result["off_host_vendor"]:
+                cause = {"role": "roles.%s pin in models.local.json" % role, "task": "task %s" % task_name}.get(
+                    result["off_cause"], result["off_cause"]) or "no usable %s model" % hv  # never an empty cause
+                result["off_host_cause"] = cause
+                result["notice"] += " Not the host vendor (%s): %s." % (hv, cause)
+        result.pop("off_cause", None)
         return result, code
+
+    def host_vendor(self, host):
+        """The first vendor of models.json hosts.<host>: the vendor whose models design, implement and read default to."""
+        return self.m["hosts"][host][0]
+
+    def role_pin(self, role, host):
+        """(entry, skipped): the models.local.json roles.<role> entry that applies on this host, and the pinned model or vendor
+        when the whole entry is not applied because it names another vendor than the host's (else None).
+
+        With `hosts` the entry applies on those hosts only (elsewhere it is ignored silently). Without it, a pinned role's entry
+        that names a model or vendor of another vendor than the host vendor is not applied; an entry with only effort or grade,
+        and any review or translate entry, applies everywhere. host None applies the entry as written."""
+        roles = self.local.get("roles") or {}
+        lr = (roles.get(role) if isinstance(roles, dict) else None) or {}
+        if not isinstance(lr, dict):
+            raise ConfigError("roles.%s in models.local.json is not an object" % role)
+        if "hosts" in lr:
+            hosts = lr["hosts"]
+            if not isinstance(hosts, list) or any(h not in HOSTS for h in hosts):
+                raise ConfigError("roles.%s.hosts must be a list of host names (%s): %r" % (role, ", ".join(HOSTS), hosts))
+        if host is None:
+            return lr, None
+        if "hosts" in lr:
+            return (lr if host in lr["hosts"] else {}), None
+        if role in PINNED_ROLES and (lr.get("model") or lr.get("vendor")):
+            # another vendor's entry: a recognized model of another vendor, or a recognized other vendor. Only the recognized
+            # values decide; an entry kept here with an unknown value reaches spec()'s error (unless a task replaces it)
+            mid, vendor = lr.get("model"), lr.get("vendor")
+            mid = mid if isinstance(mid, str) and mid in self.m["models"] else None
+            vendor = vendor if isinstance(vendor, str) and vendor in self.m["vendors"] else None
+            vendors = {v for v in (self.m["models"][mid]["vendor"] if mid else None, vendor) if v}
+            if vendors - {self.host_vendor(host)}:
+                return {}, mid or vendor
+        return lr, None
 
     def route_task(self, role, host, author, grade, orch_model, orch_effort, task, task_name):
         if not task:
-            return self._route(role, host, author, self.spec(role, grade), orch_model, orch_effort)
-        spec = self.spec(role, grade, task)
+            return self._route(role, host, author, self.spec(role, grade, host=host), orch_model, orch_effort)
+        spec = self.spec(role, grade, task, host)
         result, code = self._route(role, host, author, spec, orch_model, orch_effort)
         if code == 0 and self.honors(task, result, self.review_floor(role, host)):
             result.update({"task": task_name, "task_applied": True})
+            if role in PINNED_ROLES and result["vendor"] != self.host_vendor(host):
+                # the task's cause, unless the base role's own route lands on the same vendor (then the base's cause holds,
+                # e.g. a stand-in forced by the host vendor's exhaustion); a failed base route means the task found it
+                try:  # a role entry the task replaced may be invalid on its own: then there is no base route
+                    base, bcode = self._route(role, host, author, self.spec(role, grade, host=host), orch_model, orch_effort)
+                except ConfigError:
+                    base, bcode = {}, 2
+                same = bcode == 0 and base["vendor"] == result["vendor"]
+                result["off_cause"] = base["off_cause"] if same else "task"
             return result, code
         cause = self.task_cause(role, host, author, spec, task, (orch_model, orch_effort), result)
-        base, code = self._route(role, host, author, self.spec(role, grade), orch_model, orch_effort)
+        base, code = self._route(role, host, author, self.spec(role, grade, host=host), orch_model, orch_effort)
         base.setdefault("reason", []).append("task_fallback:" + cause)
         base["notice"] += " task %s preference unusable (%s), routed as %s." % (task_name, cause, role)
         base.update({"task": task_name, "task_applied": False})
@@ -723,7 +793,8 @@ class Router:
             notes.append("agy host: review grade raised from %s to A" % grade)
             grade = spec["grade"] = "A"
         cap = (orch_model, orch_effort)
-        choice = None
+        choice = chooser = None  # chooser: what put the result off the host vendor (see Router.route)
+        hv = self.host_vendor(host)
         um = spec.get("user_model")
         if um:
             vendor = self.m["models"][um]["vendor"]
@@ -744,17 +815,24 @@ class Router:
                 reason.append("cli_missing:" + vendor)
             else:
                 choice = (um, effort, clamped)
+                chooser = spec.get("pin_origin")  # the role pin or the task that named the model
                 reason.append("user_override")
                 if role == "review" and pinned != grade:
                     reason.append("override_grade_mismatch")
                     notes.append("user-pinned reviewer is grade %s, the author's grade is %s" % (pinned, grade))
         if choice is None:
-            order = self.vendor_order(spec, host, author, reason)
+            order = self.vendor_order(spec, host, author, reason, role)
             expected = order[0] if order else None
+            hv_skip = None  # why the host vendor's own slot gave nothing, when it was tried
             for v in order:
                 cfg = self.m["vendors"][v]
                 standin = v in self.exh
+                slot = v
+                if v == hv:
+                    hv_skip = "none"
                 if standin:
+                    if v == hv:
+                        hv_skip = "exhausted"
                     reason.append("exhausted_skip:" + v)
                     until = parse_ts(self.exh[v]["until"]).strftime("%H:%M")
                     # the vendor's pool is exhausted: first a same-grade fallback_only model (another pool), else the next vendor
@@ -772,12 +850,16 @@ class Router:
                     reason.insert(0, "substituted:%s\u2192%s" % (expected, model_pool(self.m["models"][choice[0]])))
                     break
                 if cfg["host"] != host_family(host) and not cli_present(v, cfg):
+                    if v == hv:
+                        hv_skip = "cli"
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
                     continue
                 choice = self.launchable(role, spec, v, grade, cap, cfg["host"] == "claude" and host == "claude-desktop", False,
                                          author, host)
                 if choice and self.cli_missing(role, choice[0], choice[1], host, cap):
+                    if v == hv:
+                        hv_skip = "cli"
                     reason.append("cli_missing:" + v)
                     notes.append("%s CLI missing, substituted" % v)
                     choice = None
@@ -793,6 +875,16 @@ class Router:
                                                if incomplete else "no usable model found")}, 3 if incomplete else 4
             if not any(r.startswith("substituted") for r in reason):
                 reason.insert(0, "default")
+            if slot == spec.get("user_vendor") and slot != hv:
+                chooser = spec.get("pin_origin")  # the pinned vendor's slot: the pin or task chose it
+            elif slot == hv:  # only a stand-in of the exhausted host vendor leaves the host vendor from its own slot
+                chooser = ("%s exhausted until %s UTC" % (hv, parse_ts(self.exh[hv]["until"]).strftime("%H:%M"))
+                           if hv in self.exh else None)
+            else:  # the host vendor was skipped: not in the order (plan none), exhausted, CLI missing, or nothing usable
+                chooser = {"exhausted": "%s exhausted until %s UTC" % (
+                    hv, parse_ts(self.exh[hv]["until"]).strftime("%H:%M")) if hv in self.exh else None,
+                    "cli": "%s CLI missing" % hv}.get(hv_skip) or (
+                        "%s plan free" % hv if self.plan(hv) == "free" else "no usable %s model" % hv)
         mid, effort, clamped = choice
         model = self.m["models"][mid]
         vendor = model["vendor"]
@@ -826,7 +918,7 @@ class Router:
             notice += " Pass --orchestrator-model/--orchestrator-effort so the router can compare."
         return {"status": "ok", "role": role, "host": host, "model": mid, "effort": effort, "vendor": vendor,
                 "grade": grade, "maker": model_maker(model), "pool": model_pool(model), "launch": launch,
-                "ask_user": ask, "ask_reason": ask_reason, "reason": reason, "notice": notice}, 0
+                "ask_user": ask, "ask_reason": ask_reason, "reason": reason, "notice": notice, "off_cause": chooser}, 0
 
 
 def mark(args, models, path):

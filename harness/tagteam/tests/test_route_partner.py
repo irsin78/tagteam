@@ -236,7 +236,7 @@ class SubstituteTest(PartnerBase):
         self.assertPick(self.route("implement", host="agy"), "claude-opus-5-5@agy", "low")
 
     def test_a_vendor_pin_never_picks_a_partner_without_exhaustion(self):
-        self.local({"roles": {"implement": {"vendor": "google"}}})
+        self.local({"roles": {"implement": {"vendor": "google", "hosts": ["claude-desktop"]}}})  # another vendor: hosts needed
         self.assertEqual(self.route("implement")[1]["model"], "gemini-4-hydrogen")
         self.local({"tasks": {"g": {"about": "x", "base": "implement", "vendor": "google"}}})
         code, r = self.go("--task", "g", "--json")
@@ -269,7 +269,7 @@ class SubstituteTest(PartnerBase):
         self.assertNotEqual(r["maker"], "claude")
 
     def test_only_a_pin_of_the_model_itself_selects_a_partner_without_exhaustion(self):
-        self.local({"roles": {"implement": {"model": "claude-sonnet-5-5@agy"}}})
+        self.local({"roles": {"implement": {"model": "claude-sonnet-5-5@agy", "hosts": ["claude-desktop"]}}})
         r = self.assertPick(self.route("implement"), "claude-sonnet-5-5@agy", "high", "run")
         self.assertIn("user_override", r["reason"])
         self.local({"tasks": {"p": {"about": "x", "base": "implement", "model": "claude-sonnet-5-5@agy"}}})

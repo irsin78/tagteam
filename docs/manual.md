@@ -436,11 +436,13 @@ orchestrator relays to you: `<role> -> <model> (<effort>, <vendor>, grade <g>) v
 | `translate` | B | no | vendors in the order google, openai, claude |
 
 With `--json` the result has `status`, `role`, `model`, `effort`, `vendor`, `maker`, `pool`, `grade`, `launch`, `ask_user`, `reason` and
-`notice`. `launch.kind` is `session` (Claude Code desktop: `start_session` with that model and effort), `subagent` (a worker
+`notice`; a successful result (`status` ok) for `design`, `implement` and `read` also has `off_host_vendor` (true when the model is not of the host vendor, the
+first vendor of `hosts.<host>`) and, when true, `off_host_cause`. `launch.kind` is `session` (Claude Code desktop: `start_session` with that model and effort), `subagent` (a worker
 definition that fixes model and effort, or on Codex the `default` agent with `model` and `reasoning_effort`) or `run`
 (execute `launch.command`, a `run.py` call with `<PROMPT_FILE>` to fill in, run by the Python that runs the router; on Codex
 `escalate: true` means request escalated permissions). A `subagent` is offered only when the definition's model and effort
-equal the chosen ones. `ask_user: true` means a design worker would outrank or cost more than the orchestrator: ask first;
+equal the chosen ones. When the notice ends "Not the host vendor (<vendor>): <cause>." the orchestrator tells you that cause
+before it opens the worker. `ask_user: true` means a design worker would outrank or cost more than the orchestrator: ask first;
 `null` means the router lacked the orchestrator's model and effort. How to open each kind: [hosts.md](../harness/skills/cycle/hosts.md).
 
 Exit codes: 0 chosen; 2 usage or configuration error; 3 no independent reviewer (`status` is `incomplete`); 4 no usable
@@ -485,9 +487,11 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
 ### 5.1 How a choice is made
 
 1. **Vendor order.** From `hosts.<host>` in `models.json` (Claude host: claude, openai, google; Codex host: openai,
-   claude, google), with plan `free` vendors moved last (a named plan, or google's inferred one: section 5.2). A role with its own `vendors` list in `models.json` (only
+   claude, google), with plan `free` vendors moved last (a named plan, or google's inferred one: section 5.2), except the host vendor for
+   `design`, `implement` and `read`, which stays first (not when a task names the model or vendor). A role with its own `vendors` list in `models.json` (only
    `translate`: google, openai, claude) uses that list instead: it wins over the host order and is not reordered for `free`
-   plans. In both cases vendors with plan `none` are dropped, the author's maker is dropped for a review, and vendors whose
+   plans. In both cases vendors with plan `none` are dropped, the author's maker is dropped for a review (only for a review;
+   `--author-vendor` does not reorder other roles), and vendors whose
    CLI is missing are skipped. A vendor whose own pool is in `exhausted.json` is skipped too, after the stand-in below.
    The first vendor that has a candidate wins.
 2. **Candidates.** Every registered model (not `fallback_only`) and effort of that vendor whose `grades` entry equals the role's grade, not above the vendor's `max_effort` (below) unless you fixed that effort, and that
@@ -519,18 +523,29 @@ claude-opus-5-5@agy (google-partner quota)`. If there is none, or `google-partne
 to the next vendor as before.
 
 `reason` lists what happened: `default`, `substituted:<from>→<to>` (a vendor, or the pool of a stand-in), `plan_free_last:<vendor>`,
-`author_vendor_excluded:<vendor>`, `exhausted_skip:<vendor>`, `cli_missing:<vendor>`, `native_model_cap`, `effort_clamped`,
+`author_vendor_excluded:<vendor>` (review only), `pin_other_vendor:<role>`, `exhausted_skip:<vendor>`, `cli_missing:<vendor>`, `native_model_cap`, `effort_clamped`,
 `user_override`, `agy_review_floor_A`, `override_below_floor`, `bench:local`, `bench:none`.
 
 ### 5.2 Per-machine settings: `models.local.json`
 
 | Key | Effect |
 |---|---|
-| `plans.<vendor>` | optional. The levels are `none` < `free` < `pro` < `ultra`; `max` reads as `ultra`, so an older file keeps working. `none` removes the vendor; `free` moves it last in the default order; a model whose `min_plan` is above the vendor's plan is never routed. A vendor with no entry: claude and openai count as `pro`, google is inferred (below). An entry always wins over the inference. Whether the CLI lists a model is judged separately, through `available` (no fresh list: assumed to offer everything) |
+| `plans.<vendor>` | optional. The levels are `none` < `free` < `pro` < `ultra`; `max` reads as `ultra`, so an older file keeps working. `none` removes the vendor; `free` moves it last in the default order (not the host vendor for `design`, `implement` and `read`); a model whose `min_plan` is above the vendor's plan is never routed. A vendor with no entry: claude and openai count as `pro`, google is inferred (below). An entry always wins over the inference. Whether the CLI lists a model is judged separately, through `available` (no fresh list: assumed to offer everything) |
 | `models.<id>.enabled` | `false` hides a model; `true` skips the `available` check for it |
 | `available.<vendor>.ids` | ids the vendor CLI really offers (`checked` records the date); written by `--write-available` |
-| `roles.<role>` | `model`, `effort`, `vendor`, `grade` to pin for a role |
-| `tasks.<name>` | `{about, base, vendor?, model?, effort?, grade?}`: a preference for one kind of work (for example web pages on one vendor), used by `route.py --task <name>` on top of the `base` role; an unusable preference falls back to the role and the result says `task_applied: false`. Session start lists each `about` |
+| `roles.<role>` | `model`, `effort`, `vendor`, `grade` to pin for a role; optional `hosts` (list of host names) limits the whole entry to those hosts. Session start shows each pin as `TAGTEAM: pin <role> - <model or vendor> [<effort>] [grade <grade>] (hosts: <list, all or none>)` (an entry with only effort or grade prints `effort <e>` / `grade <g>`) |
+| `tasks.<name>` | `{about, base, vendor?, model?, effort?, grade?}`: a preference for one kind of work (for example web pages on one vendor), used by `route.py --task <name>` on top of the `base` role; an unusable preference falls back to the role and the result says `task_applied: false`. Session start lists each `about` as `TAGTEAM: task <name> - <about> (route.py --task <name>)` |
+
+**Host scope of a pin.** With `hosts`, the entry (model, vendor, effort and grade) applies only on those hosts and is ignored
+elsewhere; an unknown host name is a configuration error. Without `hosts`, a `design`, `implement` or `read` pin whose model or
+vendor is of another vendor than the host vendor is not applied on that host at all: `reason` gets `pin_other_vendor:<role>`
+and the notice says "roles.<role> pin (<model or vendor>) not applied on host <host>: add hosts to apply it." An entry that names a
+host-vendor model together with another vendor counts as another vendor's entry. An unknown model or vendor in an entry is
+reported only where the entry applies and no task replaces it. Such an entry applies on a host when its model and vendor
+are of that host's vendor; an entry with only `effort` or `grade`, and any `review` or `translate` pin, apply on every host. To use another vendor's model
+on a host on purpose, list that host in `hosts`; the notice then ends "Not the host vendor (<vendor>): roles.<role> pin in
+models.local.json." Other causes it names: `task <name>`, `<vendor> exhausted until <HH:MM> UTC`, `<vendor> plan free`,
+`<vendor> CLI missing`, `no usable <vendor> model`.
 
 A pinned model is used when it is usable, its pool is not exhausted, and it is not the author's maker for a review. A pin
 may name a `fallback_only` id such as `claude-sonnet-5-5@agy`: an explicit choice is allowed and needs no exhaustion. If
@@ -548,8 +563,9 @@ fresh `available` list (from `agy models`): an id of a `min_plan: ultra` model m
 `pro`, otherwise (an empty list included) `free`. Pro-class is read from `models.json`: the built-in orchestrator ids
 (`orchestrators`) and every effort of a model that reaches grade A at some effort. With no fresh list (missing, or `checked` older
 than 14 days, in the future or unreadable) nothing can be inferred and google counts as `free`: models that need `pro` or `ultra`
-(Carbon) drop out, and google moves last in the default order. The route's `reason` gets `plan_free_last:google`, with
-`plan_inferred_free:google` when it is the inference, and `available_stale:<vendor>` for a stale list. A list that is
+(Carbon) drop out, and google moves last in the default order (on `--host agy` it stays first for `design`, `implement`
+and `read`). The route's `reason` gets `plan_free_last:google` (not in that host-first case), with
+`plan_inferred_free:google` when it is the inference (also in the host-first case), and `available_stale:<vendor>` for a stale list. A list that is
 missing or stale still counts as offering everything to a vendor whose plan is named or is `pro`. Keeping the list fresh is the
 job of the `model-update` skill: the session-start notice announces a pending proposal, and applying it copies the proposal's
 `available` lists into `models.local.json` (`models_collect.py --write-available` does it by hand). Set `plans.google` to `pro`,
@@ -580,7 +596,7 @@ guard has no objection (agy's permission rules then decide), `{}` for the other 
 what it cannot block: [design.md](design.md#5-enforcement).
 
 At session start it prints `TAGTEAM: role=<role> host=<host>`, and for an orchestrator one more line when a model-update
-proposal is waiting (section 8). On agy the role is not known at session start (`role=pending`): the first model call of the
+proposal is waiting (section 8), then the task lines and the role pin lines of `models.local.json` (section 5.2). On agy the role is not known at session start (`role=pending`): the first model call of the
 conversation decides it, and that first call is final. A line starting with `HARNESS ROLE: DELEGATE` makes a worker; so does an
 empty input (an agy subagent starts that way) and `HARNESS_DELEGATE_RUN=1`; anything else is the orchestrator. A leading
 slash command such as `/plan ` is ignored when looking for the marker, on every host. The role `unresolved` (agy only) means

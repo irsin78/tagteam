@@ -586,8 +586,9 @@ class TableUnchangedTest(PlanBase):
             r = self.go("--role", "implement", "--json", "--host", host)[1]
             self.assertFalse([x for x in r["reason"] if x.startswith(("plan_free_last", "plan_inferred_free"))], r)
 
-    def test_no_list_and_no_plan_differs_only_by_google_going_last_and_no_carbon(self):
-        """Spec 4: unknown google plan is free. Against the pro table only cells that used google or Carbon may change."""
+    def test_no_list_and_no_plan_differs_only_in_google_cells_and_no_carbon(self):
+        """Spec 4: unknown google plan is free. Against the pro table only cells that used google or Carbon may change (google
+        goes last, except for design, implement and read on agy, where the host vendor keeps its place)."""
         self.local({}, stamp=False, plan_default=False)
         got, pro = self.grid(), self.pro()
         moved = [k for k in pro if got[k] != pro[k]]

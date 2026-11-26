@@ -247,9 +247,10 @@ class RouteTest(RouteBase):
 
     def test_google_is_inferred_free_when_its_list_has_no_pro_model(self):
         r = self.agy_implement({"available": self.FLASH_ONLY})
-        self.assertPick((0, r), "gpt-6.2-sol", "low")
-        self.assertIn("plan_free_last:google", r["reason"])
+        self.assertPick((0, r), "gpt-6.2-sol", "low")  # google stays first on its own host, but offers no grade B
+        self.assertNotIn("plan_free_last:google", r["reason"])
         self.assertIn("plan_inferred_free:google", r["reason"])
+        self.assertEqual(r["off_host_cause"], "google plan free")
 
     def test_google_is_not_inferred_free_with_a_pro_model_or_orchestrator_id(self):
         for ids in (["gemini-3.8-flash-high", "gemini-4-argon-high"], ["gemini-3.8-flash-high", "gemini-4-hydrogen-low"],
@@ -274,9 +275,12 @@ class RouteTest(RouteBase):
             with self.subTest(avail):
                 self.local({"available": avail}, stamp=False, plan_default=False)
                 r = self.route("implement", host="agy")[1]
-                self.assertEqual(r["vendor"], "openai")  # google is last: free
-                self.assertIn("plan_free_last:google", r["reason"])
+                self.assertEqual(r["vendor"], "google")  # free, but the host vendor of agy keeps its place for implement
+                self.assertNotIn("plan_free_last:google", r["reason"])
                 self.assertIn("plan_inferred_free:google", r["reason"])
+                r = self.route("review", "--author-vendor", "claude", host="agy")[1]
+                self.assertEqual(r["vendor"], "openai")  # a review still puts the free vendor last
+                self.assertIn("plan_free_last:google", r["reason"])
                 self.assertEqual(route.Router(self.models(), {"available": avail}, {}).plan("claude"), "pro")
                 self.assertEqual(route.Router(self.models(), {"available": avail}, {}).plan("openai"), "pro")
 
@@ -288,8 +292,9 @@ class RouteTest(RouteBase):
         r = self.agy_read({"plans": {"google": "pro"}, "available": self.FLASH_ONLY})
         self.assertEqual(r["vendor"], "google")
         self.assertNotIn("plan_inferred_free:google", r["reason"])
-        r = self.agy_read({"plans": {"google": "free"}, "available": self.FLASH_ONLY})  # named free: last, not "inferred"
-        self.assertIn("plan_free_last:google", r["reason"])
+        r = self.agy_read({"plans": {"google": "free"}, "available": self.FLASH_ONLY})  # named free: not "inferred"
+        self.assertEqual(r["vendor"], "google")  # the host vendor keeps its place for read even on a free plan
+        self.assertNotIn("plan_free_last:google", r["reason"])
         self.assertNotIn("plan_inferred_free:google", r["reason"])
 
     def days_ago(self, days):
@@ -309,10 +314,10 @@ class RouteTest(RouteBase):
                 self.assertPick((code, r), "gemini-4-hydrogen", "medium")
                 self.assertIn("available_stale:google", r["reason"])
                 self.assertFalse([x for x in r["reason"] if x.startswith(("plan_free_last", "plan_inferred_free"))], r["reason"])
-                # the same list with no plan named: unknown plan is free, google goes last
+                # the same list with no plan named: unknown plan is free, but google stays first on agy for implement
                 self.local({"available": {"google": {"checked": checked, "ids": flash}}}, stamp=False, plan_default=False)
                 code, r = self.route("implement", host="agy")
-                self.assertPick((code, r), "gpt-6.2-sol", "low")
+                self.assertPick((code, r), "gemini-4-hydrogen", "medium")
                 self.assertIn("available_stale:google", r["reason"])
                 self.assertIn("plan_inferred_free:google", r["reason"])
         self.local({"plans": {"google": "pro"}, "available": {"google": {"checked": "2020-01-01", "ids": []}}}, stamp=False)  # stale empty: all offered
@@ -477,7 +482,8 @@ class RouteTest(RouteBase):
         self.assertNotIn("user_override", r["reason"])
 
     def test_pinned_remote_model_checks_cli(self):
-        self.local({"roles": {"implement": {"model": "gpt-6.1-terra", "effort": "high"}}})
+        # another vendor's model: applied only on the hosts the pin names
+        self.local({"roles": {"implement": {"model": "gpt-6.1-terra", "effort": "high", "hosts": ["claude-desktop"]}}})
         r = self.assertPick(self.route("implement"), "gpt-6.1-terra", "high", "run")
         self.assertIn("user_override", r["reason"])
         env = {"TAGTEAM_CLI_CLAUDE": "[]", "TAGTEAM_CLI_GOOGLE": "[]"}  # no codex

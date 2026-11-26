@@ -230,6 +230,10 @@ def session_start_lines(payload, host):
             lines.extend(task_notice())
         except Exception:  # fail open
             pass
+        try:
+            lines.extend(pin_notice())
+        except Exception:  # fail open
+            pass
     return lines
 
 
@@ -313,6 +317,87 @@ def task_notice():
         about = spec.get("about") if isinstance(spec, dict) else None
         if isinstance(about, str) and about.strip():
             lines.append("TAGTEAM: task %s - %s (route.py --task %s)" % (" ".join(str(name).split()), " ".join(about.split()), " ".join(str(name).split())))
+    if len(lines) > TASK_LINES:  # the whole notice stays within TASK_LINES lines
+        extra = len(lines) - (TASK_LINES - 1)
+        lines = lines[:TASK_LINES - 1] + ["TAGTEAM: and %d more" % extra]
+    return lines
+
+
+PIN_EFFORTS = ("low", "medium", "high", "xhigh", "max")  # route.py EFFORTS
+PIN_GRADES = ("C", "B", "A", "S")  # route.py GRADES
+PINNED_ROLES = ("design", "implement", "read")  # route.py PINNED_ROLES: a cross-vendor model or vendor pin without hosts
+PIN_ROLES = ("design", "implement", "review", "read", "translate")  # route.py ROLES (its --role choices)
+PIN_HOSTS = ("claude-desktop", "claude", "codex", "agy")  # route.py HOSTS (its --host choices)
+
+
+def pin_notice():
+    """One line per roles.<role> entry of models.local.json that pins model, vendor, effort or grade, 10 lines at most
+    (the last one "and N more"); [] when a file is unreadable. An invalid entry is skipped. Both files come from the
+    config dir, as for route.py. The hosts shown follow route.py: an entry's `hosts` list when present;
+    else, for a pinned role with a model or vendor, the hosts whose first vendor is the vendor of the model and the explicit
+    vendor alike (none when they differ); else all."""
+    cdir = os.environ.get("TAGTEAM_CONFIG_DIR") or HERE
+    try:
+        with open(os.path.join(cdir, "models.local.json"), encoding="utf-8") as f:
+            roles = json.load(f).get("roles")
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(roles, dict) or not roles:
+        return []
+    try:
+        with open(os.path.join(cdir, "models.json"), encoding="utf-8") as f:
+            m = json.load(f)
+        models, vendors, hosts = m["models"], m["vendors"], m["hosts"]
+        if not all(isinstance(t, dict) for t in (models, vendors, hosts)):
+            return []
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+    def flat(value):  # one line, printable on a strict UTF-8 stdout (a lone surrogate is backslash-escaped)
+        return " ".join(str(value).encode("utf-8", "backslashreplace").decode("utf-8").split())
+
+    def given(entry, key, table):
+        """The value of `key` when set and valid, None when unset (any falsy value, as route.py reads it); raises
+        ValueError when invalid."""
+        value = entry.get(key)
+        if not value:
+            return None
+        if not isinstance(value, str) or value not in table:
+            raise ValueError(key)
+        return value
+
+    lines = []
+    for role, entry in roles.items():
+        if role not in PIN_ROLES or not isinstance(entry, dict):
+            continue
+        try:
+            model, vendor = given(entry, "model", models), given(entry, "vendor", vendors)
+            effort, grade = given(entry, "effort", PIN_EFFORTS), given(entry, "grade", PIN_GRADES)
+            scope = entry.get("hosts")  # present but null is invalid, as for route.py
+            if "hosts" in entry and not (isinstance(scope, list)
+                                         and all(isinstance(h, str) and h in PIN_HOSTS for h in scope)):
+                raise ValueError("hosts")
+            model_vendor = models[model].get("vendor") if model else None
+            if model and not isinstance(model_vendor, str):
+                raise ValueError("vendor")
+            pin_vendors = {v for v in (model_vendor, vendor) if v}  # route.py role_pin: both must be the host vendor
+        except (ValueError, AttributeError):
+            continue  # invalid entry: skipped like an invalid task
+        if not (model or vendor or effort or grade):
+            continue
+        if "hosts" in entry:
+            where = ", ".join(scope) if scope else "none"
+        elif role in PINNED_ROLES and pin_vendors:
+            own = [h for h, order in hosts.items()
+                   if h in PIN_HOSTS and isinstance(order, list) and order and {order[0]} == pin_vendors]
+            where = ", ".join(own) or "none"
+        else:
+            where = "all"
+        if model or vendor:
+            what = [model or vendor] + ([effort] if effort else []) + (["grade " + grade] if grade else [])
+        else:
+            what = (["effort " + effort] if effort else []) + (["grade " + grade] if grade else [])
+        lines.append("TAGTEAM: pin %s - %s (hosts: %s)" % (flat(role), flat(" ".join(what)), flat(where)))
     if len(lines) > TASK_LINES:  # the whole notice stays within TASK_LINES lines
         extra = len(lines) - (TASK_LINES - 1)
         lines = lines[:TASK_LINES - 1] + ["TAGTEAM: and %d more" % extra]

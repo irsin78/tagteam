@@ -235,7 +235,7 @@ give another grade.
   install usable before its first collection.
 - Plans are an optional override, not an installer question: availability decides, and the router infers only what it can
   read. agy's list with the id of an `ultra` model means the Ultra plan, one with a Pro-class id (from `models.json`, not names in
-  code) Pro, any other the free tier, so google goes last. With no fresh list google is taken as free too: an unknown list must
+  code) Pro, any other the free tier, so google goes last (not as the host vendor: see below). With no fresh list google is taken as free too: an unknown list must
   not let a Pro account be routed to a model only Ultra offers (Carbon). Claude and Codex lists carry no such signal and are
   never inferred (no plan named means Pro). A named plan always wins.
 - agy's built-in Orchestrator model has no effort and no grade of its own. The router compares it as a stated pair
@@ -249,6 +249,13 @@ give another grade.
   limit the rule "best index within the cost cap" can keep choosing the top efforts of a cheap-per-task model and use up the
   quota. `openai` carries `"max_effort": "high"`. An effort the user fixed (`roles.<role>.effort`, a task's `effort`) is not
   limited: the user asked for it.
+- Design, implementation and reading stay with the host vendor (the first vendor of `hosts.<host>`), because the user chose that
+  host. So the author's maker is excluded only from a
+  review; a free plan does not move the host vendor last for these roles; and a `roles.<role>` pin of another vendor applies
+  only on the hosts its `hosts` list names (without the list it applies only where that vendor is the host vendor, and the
+  notice says it was not applied). When the result still leaves the host vendor (a task, a pin with `hosts`, exhaustion, a
+  missing CLI, no usable model), the result carries `off_host_vendor: true` and `off_host_cause`, and the notice ends "Not
+  the host vendor (<vendor>): <cause>." so the orchestrator can tell the user before opening the worker.
 
 ### 7.3 Exhaustion
 

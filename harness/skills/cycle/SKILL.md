@@ -160,6 +160,8 @@ latest message, not in edits to earlier context.
   twice and report the unit as blocked with evidence.
 - Exhaustion: the router records it and substitutes the same grade on another vendor;
   say so in the notice line. If review independence cannot be kept, report incomplete.
+- When the router's notice says "Not the host vendor (<vendor>): <cause>.", tell the user that cause before opening
+  the worker.
 
 ## 9. When to ask the user
 

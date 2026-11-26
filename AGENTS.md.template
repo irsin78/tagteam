@@ -39,6 +39,7 @@ Before opening, tell the user in one sentence which model/effort does what and
 why, plus the router's notice line. Ask the user first when the router returns
 `ask_user: true` (a *design session* more capable or more expensive than the
 orchestrator); `null` means it lacked the orchestrator's model and effort.
+When the notice says "Not the host vendor", tell the user that reason before opening the worker.
 
 ## 2. Roles
 

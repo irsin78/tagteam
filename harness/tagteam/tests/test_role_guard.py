@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "role_guard.py")
+HERE_TAGTEAM = os.path.dirname(os.path.abspath(GUARD))
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 sys.path.insert(0, os.path.dirname(GUARD))
 import role_guard  # noqa: E402  (in-process checks of the agy entry points)
@@ -591,6 +592,146 @@ class RoleGuardTest(GuardCase):
         self.assertEqual(len(lines), 3)
         self.assertIn("model update proposal", lines[1])
         self.assertTrue(lines[2].startswith("TAGTEAM: task html"))
+
+    # pin notice (host-vendor spec 4): one line per roles.<role> pin in models.local.json
+    def local(self, data):
+        if not os.path.exists(os.path.join(self.cfg, "models.json")):
+            shutil.copy(os.path.join(HERE_TAGTEAM, "models.json"), self.cfg)  # route.py reads both from the config dir
+        with open(os.path.join(self.cfg, "models.local.json"), "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+    def shared(self, change):
+        """A models.json in the config dir, changed by `change(m)`."""
+        with open(os.path.join(HERE_TAGTEAM, "models.json"), encoding="utf-8") as f:
+            m = json.load(f)
+        change(m)
+        with open(os.path.join(self.cfg, "models.json"), "w", encoding="utf-8") as f:
+            json.dump(m, f)
+
+    def test_pin_notice_silent_without_pins(self):
+        for data in ({}, {"roles": {}}, {"roles": []}, {"roles": {"implement": {}}}, {"tasks": {}}):
+            self.local(data)
+            self.assertEqual(self.start_lines(), [pending()], data)
+
+    def test_pin_notice_one_line_per_pin(self):
+        self.local({"roles": {"implement": {"model": "claude-opus-5-5", "effort": "medium"},
+                              "design": {"model": "claude-fable-5-2"}}})
+        self.assertEqual(self.start_lines()[1:],
+                         ["TAGTEAM: pin implement - claude-opus-5-5 medium (hosts: claude-desktop, claude)",
+                          "TAGTEAM: pin design - claude-fable-5-2 (hosts: claude-desktop, claude)"])
+
+    def test_pin_notice_shows_the_hosts_list(self):
+        self.local({"roles": {"implement": {"model": "gpt-6.2-sol", "effort": "high", "hosts": ["claude", "codex"]}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin implement - gpt-6.2-sol high (hosts: claude, codex)"])
+
+    def test_pin_notice_empty_hosts_list_shows_none(self):
+        self.local({"roles": {"implement": {"model": "claude-opus-5-5", "hosts": []}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin implement - claude-opus-5-5 (hosts: none)"])
+
+    def test_pin_notice_skips_null_hosts(self):
+        self.local({"roles": {"implement": {"model": "gpt-6.2-sol", "hosts": None}}})
+        self.assertEqual(self.start_lines(), [pending()])  # the router rejects a present but null hosts
+
+    def test_pin_notice_silent_without_models_json(self):
+        with open(os.path.join(self.cfg, "models.local.json"), "w", encoding="utf-8") as f:
+            json.dump({"roles": {"implement": {"effort": "high"}}}, f)
+        self.assertEqual(self.start_lines(), [pending()])
+
+    def test_pin_notice_cross_vendor_pin_without_hosts_shows_its_vendors_hosts(self):
+        self.local({"roles": {"implement": {"model": "gpt-6.2-sol"}, "read": {"model": "gemini-4-neon"}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin implement - gpt-6.2-sol (hosts: codex)",
+                                                  "TAGTEAM: pin read - gemini-4-neon (hosts: agy)"])
+
+    def test_pin_notice_vendor_only_pin(self):
+        self.local({"roles": {"design": {"vendor": "openai", "effort": "xhigh"}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin design - openai xhigh (hosts: codex)"])
+
+    def test_pin_notice_model_and_vendor_must_both_be_the_host_vendor(self):
+        self.local({"roles": {"implement": {"model": "claude-opus-5-5", "vendor": "openai"},
+                              "design": {"model": "gpt-6.2-sol", "vendor": "openai"}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin implement - claude-opus-5-5 (hosts: none)",
+                                                  "TAGTEAM: pin design - gpt-6.2-sol (hosts: codex)"])
+
+    def test_pin_notice_effort_or_grade_only_pin_shows_all(self):
+        self.local({"roles": {"implement": {"effort": "high"}, "design": {"grade": "S"},
+                              "read": {"effort": "low", "grade": "B"}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin implement - effort high (hosts: all)",
+                                                  "TAGTEAM: pin design - grade S (hosts: all)",
+                                                  "TAGTEAM: pin read - effort low grade B (hosts: all)"])
+
+    def test_pin_notice_review_and_translate_pins_show_all(self):
+        self.local({"roles": {"review": {"model": "gpt-6.2-astra"}, "translate": {"vendor": "google"}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin review - gpt-6.2-astra (hosts: all)",
+                                                  "TAGTEAM: pin translate - google (hosts: all)"])
+
+    def test_pin_notice_skips_invalid_entries(self):
+        self.local({"roles": {"implement": "gpt-6.2-sol", "design": {"model": "no-such-model"},
+                              "read": {"vendor": "nobody"}, "review": {"effort": "huge"},
+                              "translate": {"grade": "Z"}, "nonrole": {"model": "gpt-6.2-sol"}}})
+        self.assertEqual(self.start_lines(), [pending()])
+        for entry in ({"model": 5}, {"model": "gpt-6.2-sol", "hosts": "codex"}, {"model": "gpt-6.2-sol", "hosts": ["nohost"]},
+                      {"effort": ["high"]}, {"hosts": ["codex"]}):
+            self.local({"roles": {"implement": entry, "read": {"effort": "low"}}})
+            r = self.run_guard("SessionStart", {"session_id": "n"})
+            self.assertEqual((r.returncode, r.stderr), (0, ""), entry)
+            self.assertEqual(r.stdout.strip().splitlines(), [pending(), "TAGTEAM: pin read - effort low (hosts: all)"], entry)
+
+    def test_pin_notice_treats_falsy_values_as_unset(self):
+        self.local({"roles": {"implement": {"model": "gpt-6.2-sol", "effort": False, "grade": 0, "vendor": ""},
+                              "design": {"model": None, "effort": "high"}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin implement - gpt-6.2-sol (hosts: codex)",
+                                                  "TAGTEAM: pin design - effort high (hosts: all)"])
+
+    def test_pin_notice_silent_when_file_broken(self):
+        for raw in ("{broken", "[1]", '{"roles": "x"}'):
+            with open(os.path.join(self.cfg, "models.local.json"), "w", encoding="utf-8") as f:
+                f.write(raw)
+            r = self.run_guard("SessionStart", {"session_id": "n"})
+            self.assertEqual((r.returncode, r.stdout.strip().splitlines(), r.stderr), (0, [pending()], ""), raw)
+
+    def test_pin_notice_uses_models_json_of_the_config_dir_and_only_router_hosts(self):
+        self.shared(lambda m: m.update(hosts={"codex": ["openai", "claude"], "other": ["openai"], "agy": ["openai"]}))
+        self.local({"roles": {"implement": {"model": "gpt-6.2-sol"}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin implement - gpt-6.2-sol (hosts: codex, agy)"])
+        self.local({"roles": {"implement": {"model": "gpt-6.2-sol", "hosts": ["other"]}}})
+        self.assertEqual(self.start_lines(), [pending()])  # the router knows no host "other"
+
+    def test_pin_notice_skips_roles_the_router_does_not_know(self):
+        self.shared(lambda m: m["roles"].update(extra={"grade": "B"}))
+        self.local({"roles": {"extra": {"effort": "high"}, "read": {"effort": "low"}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin read - effort low (hosts: all)"])
+
+    def test_pin_notice_collapses_whitespace_and_is_capped(self):
+        self.shared(lambda m: m["models"].update({"my  model\n": {"vendor": "openai", "grades": {"high": "B"}}}))
+        self.local({"roles": {"implement": {"model": "my  model\n", "hosts": ["codex"]}}})
+        self.assertEqual(self.start_lines()[1:], ["TAGTEAM: pin implement - my model (hosts: codex)"])
+        self.local({"roles": {r: {"effort": "high"} for r in ("design", "implement", "review", "read", "translate")}})
+        with mock.patch.dict(os.environ, {"TAGTEAM_CONFIG_DIR": self.cfg}), mock.patch.object(role_guard, "TASK_LINES", 3):
+            lines = role_guard.pin_notice()
+        self.assertEqual(lines, ["TAGTEAM: pin design - effort high (hosts: all)",
+                                 "TAGTEAM: pin implement - effort high (hosts: all)", "TAGTEAM: and 3 more"])
+        with mock.patch.dict(os.environ, {"TAGTEAM_CONFIG_DIR": self.cfg}):
+            self.assertEqual(len(role_guard.pin_notice()), 5)  # five pins stay within the real cap of ten
+
+    def test_pin_notice_survives_a_lone_surrogate_on_strict_utf8_stdout(self):
+        bad = "bad" + chr(0xD800)
+        self.shared(lambda m: m["models"].update({bad: {"vendor": "openai", "grades": {"high": "B"}}}))
+        self.local({"roles": {"design": {"model": bad}, "implement": {"effort": "high"}}})
+        r = self.run_guard("SessionStart", {"session_id": "n"}, env={"PYTHONIOENCODING": "utf-8:strict"})
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(r.stdout.strip().splitlines(), [pending(), "TAGTEAM: pin design - bad\\ud800 (hosts: codex)",
+                                                         "TAGTEAM: pin implement - effort high (hosts: all)"])
+
+    def test_pin_notice_comes_after_the_task_lines(self):
+        self.local({"tasks": {"html": {"about": "pages", "base": "implement"}},
+                    "roles": {"implement": {"effort": "high"}}})
+        self.assertEqual(self.start_lines(), [pending(), "TAGTEAM: task html - pages (route.py --task html)",
+                                              "TAGTEAM: pin implement - effort high (hosts: all)"])
+
+    def test_pin_notice_only_for_the_orchestrator(self):
+        self.local({"roles": {"implement": {"effort": "high"}}})
+        r = self.run_guard("SessionStart", {"session_id": "s1"}, env={"HARNESS_DELEGATE_RUN": "1"})
+        self.assertEqual(r.stdout.strip(), "TAGTEAM: role=worker host=claude")
 
     # model-update notice (P4)
     def proposal(self, created=None, digest="d1", changes=1, errors=0, applied=None):
@@ -1673,6 +1814,7 @@ class UpdateNoticeTest(unittest.TestCase):
                     mock.patch.object(role_guard, "update_notice", side_effect=lambda *a, f=role_guard.update_notice: f(self.folder)), \
                     mock.patch.object(role_guard, "model_update_notice", return_value=None), \
                     mock.patch.object(role_guard, "task_notice", return_value=[]), \
+                    mock.patch.object(role_guard, "pin_notice", return_value=[]), \
                     mock.patch.object(role_guard, "role_of", return_value=None):
                 self.assertEqual(len(role_guard.session_start_lines(payload, "claude")), 1, effect)
         out = subprocess.CompletedProcess([], 128, "", "fatal")

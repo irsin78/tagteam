@@ -60,4 +60,6 @@ most capable first. `defaults.<vendor>.<grade>` lists only cells of that grade a
 
 - Never run a probe for a model that is not registered (run.py refuses it); a `candidate` registration is enough for the probe.
 - Do not remove a `candidate` flag or change a default route on one source alone.
+- When you write a `roles.<role>` pin into models.local.json, write its `hosts` too (the hosts it is meant for): a design,
+  implement or read pin of another vendor without `hosts` applies only on that vendor's own host.
 - If the proposal is older than the latest `model-update.applied` digest, there is nothing to do.

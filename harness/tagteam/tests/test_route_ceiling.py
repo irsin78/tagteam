@@ -95,9 +95,9 @@ class CeilingTest(RouteBase):
         self.assertPick(self.route("design", "--grade", "S"), "claude-fable-5-2", "max")  # claude has no max_effort
 
     def test_a_user_effort_above_the_limit_is_honoured(self):
-        self.local({"roles": {"design": {"vendor": "openai", "effort": "xhigh"}}})
+        self.local({"roles": {"design": {"vendor": "openai", "effort": "xhigh", "hosts": ["claude-desktop"]}}})
         self.assertPick(self.route("design"), SOL, "xhigh")
-        self.local({"roles": {"design": {"vendor": "openai", "effort": "max"}}})
+        self.local({"roles": {"design": {"vendor": "openai", "effort": "max", "hosts": ["claude-desktop"]}}})
         self.assertPick(self.route("design"), SOL, "max")
         self.local({"tasks": {"deep": {"about": "x", "base": "design", "vendor": "openai", "effort": "xhigh"}}})
         r = self.assertPick(self.go("--task", "deep", "--json"), SOL, "xhigh")
@@ -105,8 +105,9 @@ class CeilingTest(RouteBase):
 
     def test_a_user_effort_does_not_lift_the_limit_for_other_efforts(self):
         # without a user effort the same role stays within the limit
-        self.local({"roles": {"design": {"vendor": "openai"}}})
+        self.local({"roles": {"design": {"vendor": "openai", "hosts": ["claude-desktop"]}}})
         r = self.route("design")[1]
+        self.assertEqual(r["vendor"], "openai")
         self.assertLessEqual(route.EFFORTS.index(r["effort"]), route.EFFORTS.index("high"))
 
     def test_no_max_effort_leaves_every_cell(self):
