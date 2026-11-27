@@ -6,13 +6,17 @@ CLI the orchestrator runs in. Rules tagged `[host: ...]` record a measured limit
 when to re-test them after a host update is in AGENTS.md section 6. "Unconfirmed" marks behaviour that is not established yet: try it, and
 record what happened in status.md.
 
+Hosts known today, with the router's `--host` value: Claude Code desktop (`claude-desktop`), Claude Code CLI (`claude`),
+Codex CLI (`codex`) and agy (`agy`). The launcher `run.py` runs the CLIs claude, codex and agy as workers. A host not
+named here: AGENTS.md section 1.
+
 ## Launch kinds (`route.py --json`, field `launch`)
 
 | `kind` | How to open the worker |
 |---|---|
 | `session` | `start_session` with the returned `model` and `effort`; the first prompt carries the line `HARNESS ROLE: DELEGATE`. `also` may offer a `subagent` alternative for a short mechanical task |
 | `subagent` (`host: claude`) | the `Agent` tool with `subagent_type` = `agent`; the definition fixes model and effort |
-| `subagent` (`host: codex`) | `spawn_agent` with `agent_type` = `agent`, a `task_name`, `fork_turns: "none"` and the brief as `message`. For `agent: "default"` also pass the returned `model` and `reasoning_effort`; for a custom agent pass neither (the hook denies them, see Codex notes) |
+| `subagent` (`host: codex`) | `spawn_agent` with `agent_type` = `agent`, a `task_name`, `fork_turns: "none"` and the brief as `message`. For `agent: "default"` also pass the returned `model` and `reasoning_effort` (the hook denies a spawn of any agent type other than a custom one without both); for a custom agent pass neither (the hook denies them, see Codex notes) |
 | `run` | the returned `command` with `<PROMPT_FILE>` replaced by the brief's file. `escalate: true` means: request escalated permissions for this command (Codex notes) |
 
 The first line `run.py` prints is `RUN <id> started run_dir=...`; the run's logs are in that folder while it runs.
@@ -31,6 +35,9 @@ The first line `run.py` prints is `RUN <id> started run_dir=...`; the run's logs
 | Commit, branch, worktree | as usual | as usual | escalation request (Codex notes 9) | ordinary commands; each may ask the user to approve (agy notes 8) |
 | Read-only review | `run.py --read-only` or a session | `run.py --read-only` | `run.py --read-only` with escalation (Codex notes 4) | `run.py --read-only` |
 
+The *session pool* is made of the workers a follow-up can reach (row Follow-up): Claude Code desktop sessions, Claude Code
+CLI subagents that can be resumed, and Codex subagents. `run.py` runs are one-shot and never pool members.
+
 ## Claude Code notes
 
 1. `start_session` is refused in a turn that a worker's report started; `SendMessage` to an existing
@@ -38,6 +45,11 @@ The first line `run.py` prints is `RUN <id> started run_dir=...`; the run's logs
    measured 2026-11-17 / re-test after a host update]
 2. A task sent by `SendMessage` does not pass the prompt hook, so the worker marker must be in the first
    prompt. [host: Claude Code desktop 2.1, measured 2026-11-16 / re-test after a host update]
+3. The role hook rejects `start_session` without both `model` and `effort`, except an orchestrator's call that
+   starts a stored proposal by `proposal_id` alone (no `model`, `effort` or `prompt`). A worker's `start_session` is
+   always rejected. `run.py` launches are not checked by this hook.
+4. Claude Code loads AGENTS.md through the line `@AGENTS.md` in CLAUDE.md. `install.py --check --host claude` covers
+   both Claude Code desktop and the CLI.
 
 ## Codex notes
 
@@ -104,12 +116,13 @@ The first line `run.py` prints is `RUN <id> started run_dir=...`; the run's logs
     project Codex trusts; an untrusted project's worktree is unconfirmed (it should leave no record). `run.py` therefore
     judges `hooks_not_run` (exit 11) in a worktree as in the main checkout. [host: codex-cli 0.170.0 Windows, trusted
     project, measured 2026-11-19 / re-test after a Codex update]
+13. Codex reads AGENTS.md directly.
 
 ## agy notes
 
 agy is an orchestrator in its interactive mode only, with the built-in Orchestrator model. Every worker of the
-harness is a `run.py` run (for vendor google, `agy -p`): one-shot, no follow-up. That is the harness's routing
-policy, not an agy limit. agy's own subagents are not harness roles (note 5).
+harness is a `run.py` run (for vendor google, `agy -p`; the router returns `run` for every role): one-shot, no
+follow-up. That is the harness's routing policy, not an agy limit. agy's own subagents are not harness roles (note 5).
 
 agy has two quotas: one for Google's models and one for the other companies' models it serves (Claude Opus and Sonnet,
 gpt-oss-120b). The harness records them as the pools `google` and `google-partner` in `exhausted.json`. The two Claude models
@@ -127,9 +140,10 @@ shows the `@agy` models as `Claude Opus 5.5 (High)` for the `ACTUAL_MODEL` check
    measurement) and hands the plan to an execution model inside the same conversation. `agy models` (1.5.12) lists two
    ids, `gemini-pro-orchestrator-neon` "Orchestrator (Neon)" and `gemini-pro-orchestrator-g1-pro` "Orchestrator
    (Argon)"; the interactive `/model` list offers only Neon, and a session on it runs on `neon`
-   (`agy-models.jsonl`). Pass the id of your own conversation: the most recent `agy-models.jsonl` line with your `cid`
-   (the `ANTIGRAVITY_CONVERSATION_ID` of your shell) whose `model` is one of the `orchestrators` ids of `models.json`; the
-   log alternates with the execution model, so the plain last line can name that one.
+   (`agy-models.jsonl`). Pass the id of your own conversation as `--orchestrator-model`: the most recent
+   `.tagteam/agy-models.jsonl` line with your `cid` (the `ANTIGRAVITY_CONVERSATION_ID` of your shell) whose `model` is one
+   of the `orchestrators` ids of `models.json`; the log alternates with the execution model, so the plain last line can
+   name that one. Without such a line, ask `agy models` or the user.
    For the harness that whole conversation is one orchestrator, so the execution side does the
    orchestrator's work: routing, `run.py` launches, comparing a report with the diff, commits. The execution side
    is `gemini-flash-worker-agy`, a Flash-class model, and it alternates with `neon` every turn; whether a long or complex
