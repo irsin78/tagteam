@@ -500,7 +500,7 @@ class RouteTest(RouteBase):
         r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")  # its lowest effort at grade B
         self.assertEqual(r["reason"], ["user_override", "bench:none"])
 
-    # the tiers of pick(), with synthetic numbers (the B cost cap is 2.5)
+    # the tiers of pick_grade(), with synthetic numbers (the B cost cap is 2.5)
     def test_tier0_best_index_within_cost_cap(self):
         self.bench({"claude-sonnet-5-5": [self.b("index", 40, "high"), self.b("cost_per_task", 1.0, "high"),
                                           self.b("index", 35, "medium"), self.b("cost_per_task", 0.5, "medium")],
@@ -536,6 +536,24 @@ class RouteTest(RouteBase):
                                          self.b("index", 31, "max"), self.b("cost_per_task", 4.0, "max")]})
         r = self.assertPick(self.route("implement"), "claude-haiku-5-5", "xhigh")
         self.assertIn("bench:local", r["reason"])
+
+    def test_a_better_cell_of_a_higher_grade_at_about_the_same_cost_is_not_taken(self):
+        # the pick is the role grade's cell, never a stronger one of the same vendor (the upgrade rule is gone)
+        self.assertNotIn("upgrade_cost_ratio", route.load_json(os.path.join(self.cfg, "models.json"), True)["grading"])
+        self.bench({"claude-sonnet-5-5": [self.b("index", 35, "high"), self.b("cost_per_task", 1.0, "high")],
+                    "claude-opus-5-5": [self.b("index", 40, "high"), self.b("cost_per_task", 1.4, "high")]})
+        r = self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")  # opus high is grade A
+        self.assertFalse([x for x in r["reason"] if x.startswith("upgrade")])
+        self.bench({"claude-opus-5-5": [self.b("index", 50, "high"), self.b("cost_per_task", 3.0, "high")],
+                    "claude-fable-5-2": [self.b("index", 62, "high"), self.b("cost_per_task", 4.0, "high")]})
+        r = self.assertPick(self.route("review", "--author-vendor", "openai"), "claude-opus-5-5", "high")  # fable high is S
+        self.assertEqual(r["grade"], "A")
+        self.assertFalse([x for x in r["reason"] if x.startswith("upgrade")])
+
+    def test_a_cell_with_only_a_cost_or_only_an_index_beats_the_unscored_default(self):
+        for known in (self.b("cost_per_task", 1.0, "high"), self.b("index", 35, "high")):
+            self.bench({"claude-sonnet-5-5": [known]})  # sonnet high is grade B; the default B pick is opus medium
+            self.assertPick(self.route("implement"), "claude-sonnet-5-5", "high")
 
     def test_tier3_uses_defaults_then_order(self):
         # scores exist only for pairs of other grades or other efforts: the B pairs are unscored

@@ -217,7 +217,7 @@ Artificial Analysis index at that effort:
 | B | 32.5 | 2.5 |
 | C | below B | 0.2 |
 
-The floors and ceilings are `grading.floors` and `grading.caps`, our own settings, not vendor figures. Each floor sits in the middle of the empty stretch between two neighbouring registered cells (S only above the top group), so a small rescoring by the benchmark does not flip a grade. The A floor sits above Claude Opus at medium effort and the B ceiling admits its cost, so that cell is the Claude implementation pick (grade B). `grading.upgrade_cost_ratio` is a third one: after the pick for a grade, the router may take a strictly higher-grade cell of the same vendor whose index is not lower, whose cost is at most that ratio times the pick's and within the grade's cap, and whose index and cost are both known (highest index, then lowest cost, then registry order). It does not apply when the user fixes the effort. The grade a role asks for is therefore a floor, not an exact match. The benchmark values
+The floors and ceilings are `grading.floors` and `grading.caps`, our own settings, not vendor figures. Each floor sits in the middle of the empty stretch between two neighbouring registered cells (S only above the top group), so a small rescoring by the benchmark does not flip a grade. The A floor sits above Claude Opus at medium effort and the B ceiling admits its cost, so that cell is the Claude implementation pick (grade B). The benchmark values
 themselves live only in the machine-local `bench.local.json` and are not committed. `grades` are the committed result of
 applying the floors, so routing works without benchmark data; the collector reports `grade_changed` when fresh values would
 give another grade.
@@ -243,8 +243,8 @@ give another grade.
 - On `--host agy` a review is raised to at least grade A: the execution half of that model may be weaker than the
   planning half, and nothing else watches its comparison of reports with diffs. A pinned reviewer below A is
   replaced, and a task preference is judged against the raised grade.
-- A vendor may set `max_effort` (an effort word) in `models.json`, and the router then drops that vendor's cells above it, as
-  candidates and as upgrade targets. The reason is quota: a subscription is spent by effort (how long the model reasons), while
+- A vendor may set `max_effort` (an effort word) in `models.json`, and the router then drops that vendor's cells above it from
+  the candidates. The reason is quota: a subscription is spent by effort (how long the model reasons), while
   the choice by grade and cost reads the benchmark's cost per task, which can be low for a model that reasons a lot. Without the
   limit the rule "best index within the cost cap" can keep choosing the top efforts of a cheap-per-task model and use up the
   quota. `openai` carries `"max_effort": "high"`. An effort the user fixed (`roles.<role>.effort`, a task's `effort`) is not

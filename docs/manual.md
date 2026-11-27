@@ -475,7 +475,7 @@ Claude Code entries). agy is asked for `claude-opus-5-5-high` and the like. `gpt
 too low (High 3.8) and agy offers it at medium only.
 
 Optionally a vendor in `models.json` has `max_effort` (`low`, `medium`, `high`, `xhigh` or `max`; committed: `openai` is `high`): the
-router drops that vendor's models' cells above that effort, both as candidates and as upgrade targets. A subscription quota is
+router drops that vendor's models' cells above that effort from the candidates. A subscription quota is
 spent by effort (how long the model reasons), not by the Artificial Analysis cost per task that the pick reads, so a vendor whose
 tasks are cheap at every effort would otherwise be sent to its highest efforts. An effort you fix yourself (`roles.<role>.effort`,
 a task's `effort`) is honoured even above the limit. Any other word is a configuration error (exit 2).
@@ -502,12 +502,6 @@ floors and cost ceilings that produced it (`grading.floors`, `grading.caps`) are
    grade: highest index; no cost but an index: highest index; cost above the cap: lowest cost; nothing known: the first
    usable entry of `defaults.<vendor>.<grade>`, else the first model in `models.json` at its lowest effort. Values come from
    `bench.local.json` at exactly that effort.
-   **Upgrade.** The pick can then move to a cell of a higher grade of the same vendor (same candidate rules) when its index is
-   not lower than the pick's, its cost is at most `grading.upgrade_cost_ratio` (committed: 1.5) times the pick's cost and within the
-   role grade's cap, and both cells have a known index and cost. Among several, the highest index wins, then the lowest cost,
-   then `models.json` order. No upgrade when you fix the effort (`roles.<role>.effort`) or when the pick has no index or cost; a
-   ratio of 0 or none switches it off. The result keeps the role's grade and its `reason` lists `upgrade:<model>:<effort>`. A review
-   is therefore "the author's grade or higher, another maker".
 4. **Orchestrator cap.** A native Claude session may not use a model listed earlier in `models.json` than the
    orchestrator's (earlier means stronger) or a higher effort. Candidates inside the cap are preferred; if none is, the
    launch becomes a `run.py` command. Without `--orchestrator-model` and `--orchestrator-effort` the notice adds "Check

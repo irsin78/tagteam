@@ -1,5 +1,5 @@
-"""Effort ceiling: vendors.<vendor>.max_effort drops that vendor's cells above it from the candidates and from the upgrade
-targets, unless the user fixed that effort. Synthetic numbers on the shipped models.json (openai carries max_effort high)."""
+"""Effort ceiling: vendors.<vendor>.max_effort drops that vendor's cells above it from the candidates, unless the user
+fixed that effort. Synthetic numbers on the shipped models.json (openai carries max_effort high)."""
 import json
 import os
 import sys
@@ -59,12 +59,6 @@ class CeilingTest(RouteBase):
         self.models_edit(lambda d: d["vendors"]["openai"].update(max_effort=value) if value
                          else d["vendors"]["openai"].pop("max_effort", None))
 
-    def sol_bench(self, extra=None):
-        # the anchor: sol low is grade B; sol medium and high are A; sol xhigh is A too; astra high and xhigh are S
-        models = {SOL: [self.b("index", 35, "low"), self.b("cost_per_task", 1.0, "low")]}
-        models.update(extra or {})
-        self.bench(models)
-
     def test_a_cell_above_the_limit_is_not_a_candidate(self):
         self.bench({ASTRA: [self.b("index", 58, "high"), self.b("cost_per_task", 3.0, "high"),
                             self.b("index", 59, "xhigh"), self.b("cost_per_task", 4.0, "xhigh")]})
@@ -72,22 +66,6 @@ class CeilingTest(RouteBase):
         self.assertPick(self.route("review", *args), ASTRA, "high")  # xhigh scores higher but is above the limit
         self.cap(None)
         self.assertPick(self.route("review", *args), ASTRA, "xhigh")
-
-    def test_a_cell_above_the_limit_is_not_an_upgrade_target(self):
-        self.sol_bench({SOL: [self.b("index", 35, "low"), self.b("cost_per_task", 1.0, "low"),
-                              self.b("index", 40, "medium"), self.b("cost_per_task", 1.3, "medium"),
-                              self.b("index", 50, "xhigh"), self.b("cost_per_task", 1.4, "xhigh")]})
-        r = self.assertPick(self.route("implement", host="codex"), SOL, "medium")  # the best cell within the limit
-        self.assertIn("upgrade:%s:medium" % SOL, r["reason"])
-        self.cap(None)
-        r = self.assertPick(self.route("implement", host="codex"), SOL, "xhigh")
-        self.assertIn("upgrade:%s:xhigh" % SOL, r["reason"])
-
-    def test_no_upgrade_when_every_better_cell_is_above_the_limit(self):
-        self.sol_bench({SOL: [self.b("index", 35, "low"), self.b("cost_per_task", 1.0, "low"),
-                              self.b("index", 50, "xhigh"), self.b("cost_per_task", 1.4, "xhigh")]})
-        r = self.assertPick(self.route("implement", host="codex"), SOL, "low")
-        self.assertFalse([x for x in r["reason"] if x.startswith("upgrade")])
 
     def test_the_limit_is_the_vendors_own(self):
         self.bench({"claude-fable-5-2": [self.b("index", 70, "max"), self.b("cost_per_task", 5.0, "max"),
