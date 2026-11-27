@@ -659,6 +659,19 @@ class PartnerAndFixTests(RunTestBase):
         item = self.exhausted()["vendors"]["openai"]
         self.assertEqual((run.parse_iso(item["until"]) - run.parse_iso(item["since"])).total_seconds(), 3600)
 
+    def test_a_workspace_out_of_credits_is_exhaustion(self):
+        code, out, _ = self.go("openai", "exhausted_credits")
+        self.assertEqual(code, 3, out)
+        item = self.exhausted()["vendors"]["openai"]
+        self.assertEqual(item["evidence"], "ERROR: Your workspace is out of credits. Add credits to continue.")
+        self.assertEqual((run.parse_iso(item["until"]) - run.parse_iso(item["since"])).total_seconds(), 3600)
+
+    def test_the_credit_words_inside_other_text_are_not_exhaustion(self):
+        code, out, _ = self.go("openai", "credits_prose")
+        self.assertEqual(code, 1, out)
+        self.assertIn("status=cli_failed", out)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "exhausted.json")))
+
 
 @unittest.skipUnless(shutil.which("git"), "git not installed")
 class GitRepoBase(RunTestBase):

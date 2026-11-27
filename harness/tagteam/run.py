@@ -52,7 +52,8 @@ OPENAI_EX = re.compile(
     "(?:⚠️ |ERROR: |stream error: )*(?:HTTP 429(?: Too Many Requests)?|429 Too Many Requests"
     r"|(?:usage|rate)[ -]limit(?: exceeded| reached)?[.!]?|You['\u2019]ve hit your usage limit.*"
     r"|usage limit (?:reached|exceeded).*|exceeded retry limit, last status: 429.*"
-    r"|Quota exceeded\. Check your plan and billing details\..*)", re.I)
+    r"|Quota exceeded\. Check your plan and billing details\..*"
+    r"|Your workspace is out of credits\.(?: Add credits to continue\.)?)", re.I)
 GOOGLE_JSON_EX = re.compile(r"quota|rate[ -]limit|\b429\b|RESOURCE_EXHAUSTED", re.I)
 GOOGLE_LINE_EX = re.compile(
     r"(?:ERROR: )?(?:HTTP 429.*|429 Too Many Requests|(?:usage|rate)[ -]limit.*"

@@ -107,6 +107,10 @@ def openai(args, mode, model):
         emit(1, "", "ERROR: You\u2019ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
                     "https://chatgpt.com/codex/settings/usage to purchase more credits or try again at %s.\n"
              % os.environ.get("FAKE_TRY_AGAIN", "4:14 AM"))
+    if mode == "exhausted_credits":  # the real codex wording when the workspace has no credit left; printed twice
+        emit(1, "", "ERROR: Your workspace is out of credits. Add credits to continue.\n" * 2)
+    if mode == "credits_prose":  # the same words inside other text, on a failed run: not the CLI's diagnostic
+        emit(1, "Your workspace is out of credits. This is the sample text in the fixture.\n", "")
     text = QUOTA_TEXT if mode == "quota_text_in_prompt" else answer()
     if last:
         with open(last, "w", encoding="utf-8") as fh:
